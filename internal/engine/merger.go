@@ -78,7 +78,16 @@ func NewLocalMerger(cfg config.MergeConfig, localOps LocalMergeOps, es state.Eve
 
 // Merge pushes a branch, creates a PR, and optionally auto-merges it.
 // It emits STORY_PR_CREATED and (if auto-merge is on) STORY_MERGED events.
+// In "local" mode it performs the merge locally without any network access.
 func (m *Merger) Merge(storyID, storyTitle, repoDir, branch string) (MergeResult, error) {
+	if m.mode == MergeModeLocal {
+		return m.mergeLocal(storyID, branch)
+	}
+	return m.mergeGitHub(storyID, storyTitle, repoDir, branch)
+}
+
+// mergeGitHub performs the original push + PR + optional auto-merge flow.
+func (m *Merger) mergeGitHub(storyID, storyTitle, repoDir, branch string) (MergeResult, error) {
 	// Push branch
 	if err := m.ghOps.PushBranch(repoDir, branch); err != nil {
 		return MergeResult{}, fmt.Errorf("push branch %s: %w", branch, err)
@@ -133,4 +142,49 @@ func (m *Merger) Merge(storyID, storyTitle, repoDir, branch string) (MergeResult
 	}
 
 	return result, nil
+}
+
+// mergeLocal performs a local git merge without any network dependency.
+// It emits the same STORY_PR_CREATED and STORY_MERGED events for consistency,
+// using "local://merged" as the PR URL.
+func (m *Merger) mergeLocal(storyID, branch string) (MergeResult, error) {
+	localResult, err := m.localOps.Merge(branch, m.config.BaseBranch)
+	if err != nil {
+		return MergeResult{}, fmt.Errorf("local merge %s into %s: %w", branch, m.config.BaseBranch, err)
+	}
+
+	const localPRURL = "local://merged"
+
+	// Emit PR created event (for event-stream consistency)
+	prEvt := state.NewEvent(state.EventStoryPRCreated, "merger", storyID, map[string]any{
+		"pr_number": 0,
+		"pr_url":    localPRURL,
+		"branch":    branch,
+		"merged_sha": localResult.MergedSHA,
+	})
+	if err := m.eventStore.Append(prEvt); err != nil {
+		return MergeResult{}, fmt.Errorf("emit pr created: %w", err)
+	}
+	if err := m.projStore.Project(prEvt); err != nil {
+		return MergeResult{}, fmt.Errorf("project pr created: %w", err)
+	}
+
+	// Emit merged event
+	mergeEvt := state.NewEvent(state.EventStoryMerged, "merger", storyID, map[string]any{
+		"pr_number":  0,
+		"branch":     branch,
+		"merged_sha": localResult.MergedSHA,
+	})
+	if err := m.eventStore.Append(mergeEvt); err != nil {
+		return MergeResult{}, fmt.Errorf("emit merged: %w", err)
+	}
+	if err := m.projStore.Project(mergeEvt); err != nil {
+		return MergeResult{}, fmt.Errorf("project merged: %w", err)
+	}
+
+	return MergeResult{
+		PRNumber: 0,
+		PRURL:    localPRURL,
+		Merged:   true,
+	}, nil
 }
