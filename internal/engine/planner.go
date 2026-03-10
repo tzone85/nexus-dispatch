@@ -134,6 +134,7 @@ Respond ONLY with the JSON array, no other text.`, requirement)
 			"description":         s.Description,
 			"acceptance_criteria": string(s.AcceptanceCriteria),
 			"complexity":          s.Complexity,
+			"depends_on":          s.DependsOn,
 		}
 		if err := p.emitAndProject(state.EventStoryCreated, "tech-lead", s.ID, storyPayload); err != nil {
 			return PlanResult{}, fmt.Errorf("emit story created %s: %w", s.ID, err)

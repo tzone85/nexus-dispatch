@@ -317,6 +317,36 @@ func (s *SQLiteStore) ListEscalations() ([]Escalation, error) {
 	return escalations, rows.Err()
 }
 
+// StoryDep represents a dependency edge between stories.
+type StoryDep struct {
+	StoryID     string
+	DependsOnID string
+}
+
+// ListStoryDeps returns all dependency edges for stories belonging to the given requirement.
+func (s *SQLiteStore) ListStoryDeps(reqID string) ([]StoryDep, error) {
+	rows, err := s.db.Query(
+		`SELECT sd.story_id, sd.depends_on_id
+		 FROM story_deps sd
+		 JOIN stories s ON sd.story_id = s.id
+		 WHERE s.req_id = ?`, reqID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var deps []StoryDep
+	for rows.Next() {
+		var d StoryDep
+		if err := rows.Scan(&d.StoryID, &d.DependsOnID); err != nil {
+			return nil, err
+		}
+		deps = append(deps, d)
+	}
+	return deps, rows.Err()
+}
+
 // --- private helpers ---
 
 func (s *SQLiteStore) decodePayload(evt Event) map[string]any {
@@ -351,16 +381,37 @@ func (s *SQLiteStore) updateReqStatus(payload map[string]any, status string) err
 
 func (s *SQLiteStore) projectStoryCreated(payload map[string]any) error {
 	complexity := payloadInt(payload, "complexity")
+	storyID := payloadStr(payload, "id")
 	_, err := s.db.Exec(
 		`INSERT INTO stories (id, req_id, title, description, complexity, status)
 		 VALUES (?, ?, ?, ?, ?, 'draft')`,
-		payloadStr(payload, "id"),
+		storyID,
 		payloadStr(payload, "req_id"),
 		payloadStr(payload, "title"),
 		payloadStr(payload, "description"),
 		complexity,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Populate story_deps table
+	if deps, ok := payload["depends_on"]; ok {
+		if depSlice, ok := deps.([]any); ok {
+			for _, dep := range depSlice {
+				if depStr, ok := dep.(string); ok && depStr != "" {
+					_, err := s.db.Exec(
+						`INSERT OR IGNORE INTO story_deps (story_id, depends_on_id) VALUES (?, ?)`,
+						storyID, depStr,
+					)
+					if err != nil {
+						return fmt.Errorf("insert story dep %s -> %s: %w", storyID, depStr, err)
+					}
+				}
+			}
+		}
+	}
+	return nil
 }
 
 func (s *SQLiteStore) projectStoryAssigned(storyID string, payload map[string]any) error {

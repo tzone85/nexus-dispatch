@@ -1,6 +1,9 @@
 package agent
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // PromptContext holds the values substituted into system prompt templates.
 type PromptContext struct {
@@ -22,6 +25,12 @@ type PromptContext struct {
 func SystemPrompt(role Role, ctx PromptContext) string {
 	tmpl := promptTemplates[role]
 	return replacePlaceholders(tmpl, ctx)
+}
+
+// GoalPrompt builds the task description sent to the runtime CLI for a given role and story.
+func GoalPrompt(role Role, ctx PromptContext) string {
+	return fmt.Sprintf("Implement story %s: %s\n\nDescription: %s\n\nAcceptance Criteria:\n%s\n\nWork in the current directory. Commit your changes when done.",
+		ctx.StoryID, ctx.StoryTitle, ctx.StoryDescription, ctx.AcceptanceCriteria)
 }
 
 var promptTemplates = map[Role]string{

@@ -1,11 +1,17 @@
 package cli
 
 import (
+	"context"
 	"fmt"
+	"log"
+	"os"
+	"os/signal"
 
 	"github.com/spf13/cobra"
 	"github.com/tzone85/nexus-dispatch/internal/engine"
+	nxdgit "github.com/tzone85/nexus-dispatch/internal/git"
 	"github.com/tzone85/nexus-dispatch/internal/graph"
+	"github.com/tzone85/nexus-dispatch/internal/runtime"
 	"github.com/tzone85/nexus-dispatch/internal/state"
 )
 
@@ -13,7 +19,7 @@ func newResumeCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "resume <req-id>",
 		Short: "Resume a paused requirement pipeline",
-		Long:  "Loads existing state for a requirement, finds incomplete stories, and dispatches the next wave of ready stories.",
+		Long:  "Loads existing state for a requirement, dispatches the next wave of ready stories, spawns agents in tmux sessions, and monitors progress through review, QA, and merge.",
 		Args:  cobra.ExactArgs(1),
 		RunE:  runResume,
 	}
@@ -38,7 +44,6 @@ func runResume(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("requirement not found: %w", err)
 	}
-
 	fmt.Fprintf(out, "Resuming requirement: %s (%s)\n", req.Title, req.Status)
 
 	// Load all stories for this requirement
@@ -46,14 +51,13 @@ func runResume(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("list stories: %w", err)
 	}
-
 	if len(stories) == 0 {
 		fmt.Fprintf(out, "No stories found for this requirement.\n")
 		return nil
 	}
 
-	// Rebuild the dependency graph from story created events
-	dag, plannedStories, err := rebuildDAGFromEvents(s.Events, reqID, stories)
+	// Rebuild the dependency graph from story_deps table
+	dag, plannedStories, err := rebuildDAG(s.Proj, reqID, stories)
 	if err != nil {
 		return fmt.Errorf("rebuild dependency graph: %w", err)
 	}
@@ -65,10 +69,8 @@ func runResume(cmd *cobra.Command, args []string) error {
 			completed[story.ID] = true
 		}
 	}
-
 	fmt.Fprintf(out, "Stories: %d total, %d completed\n", len(stories), len(completed))
 
-	// Check if all done
 	if len(completed) == len(stories) {
 		fmt.Fprintf(out, "All stories are complete.\n")
 		return nil
@@ -80,27 +82,93 @@ func runResume(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("dispatch wave: %w", err)
 	}
-
 	if len(assignments) == 0 {
 		fmt.Fprintf(out, "No stories ready for dispatch (dependencies not yet met).\n")
 		return nil
 	}
 
-	fmt.Fprintf(out, "\nDispatched %d stories:\n\n", len(assignments))
-	for _, a := range assignments {
-		fmt.Fprintf(out, "  [%s] -> %s (agent: %s, branch: %s)\n",
-			a.StoryID, a.Role, a.AgentID, a.Branch)
+	fmt.Fprintf(out, "\nWave: dispatching %d stories\n\n", len(assignments))
+
+	// Build story map for executor
+	storyMap := make(map[string]engine.PlannedStory, len(plannedStories))
+	for _, ps := range plannedStories {
+		storyMap[ps.ID] = ps
 	}
 
-	return nil
+	// Set up runtime registry
+	reg, err := runtime.NewRegistry(s.Config.Runtimes)
+	if err != nil {
+		return fmt.Errorf("init runtime registry: %w", err)
+	}
+
+	// Detect repo path
+	repoDir, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("get working directory: %w", err)
+	}
+
+	// Spawn agents via executor
+	executor := engine.NewExecutor(reg, s.Config, s.Events, s.Proj)
+	results := executor.SpawnAll(repoDir, assignments, storyMap)
+
+	activeAgents := make([]engine.ActiveAgent, 0, len(results))
+	for _, r := range results {
+		if r.Error != nil {
+			fmt.Fprintf(out, "  [FAIL] %s: %v\n", r.Assignment.StoryID, r.Error)
+			continue
+		}
+		fmt.Fprintf(out, "  [%s] %s -> %s (session: %s, branch: %s)\n",
+			r.Assignment.Role, r.Assignment.StoryID, r.RuntimeName,
+			r.Assignment.SessionName, r.Assignment.Branch)
+		activeAgents = append(activeAgents, engine.ActiveAgent{
+			Assignment:   r.Assignment,
+			WorktreePath: r.WorktreePath,
+			RuntimeName:  r.RuntimeName,
+		})
+	}
+
+	if len(activeAgents) == 0 {
+		return fmt.Errorf("no agents spawned successfully")
+	}
+
+	fmt.Fprintf(out, "\n%d agents working. Monitoring progress...\n", len(activeAgents))
+	fmt.Fprintf(out, "Use 'nxd dashboard' in another terminal to watch progress.\n")
+	fmt.Fprintf(out, "Press Ctrl+C to detach (agents continue in tmux).\n\n")
+
+	// Build pipeline components for post-execution
+	var reviewer *engine.Reviewer
+	llmClient, llmErr := buildLLMClient(s.Config.Models.Senior.Provider)
+	if llmErr != nil {
+		log.Printf("Warning: LLM client unavailable, skipping code review: %v", llmErr)
+	} else {
+		seniorModel := s.Config.Models.Senior
+		reviewer = engine.NewReviewer(llmClient, seniorModel.Model, seniorModel.MaxTokens, s.Events, s.Proj)
+	}
+
+	qaRunner := engine.NewQA(engine.QAConfig{}, &engine.ExecRunner{}, s.Events, s.Proj)
+
+	var merger *engine.Merger
+	if nxdgit.GHAvailable() {
+		merger = engine.NewMerger(s.Config.Merge, &ghOpsAdapter{}, s.Events, s.Proj)
+	}
+
+	watchdog := engine.NewWatchdog(engine.WatchdogConfig{
+		StuckThresholdS: s.Config.Monitor.StuckThresholdS,
+	}, s.Events)
+
+	// Start monitoring loop (Ctrl+C detaches cleanly, agents keep running)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+
+	monitor := engine.NewMonitor(reg, watchdog, reviewer, qaRunner, merger, s.Config, s.Events, s.Proj)
+	return monitor.Run(ctx, activeAgents, repoDir)
 }
 
-// rebuildDAGFromEvents reconstructs the dependency graph from event store data
+// rebuildDAG reconstructs the dependency graph from the story_deps table
 // and builds PlannedStory entries from existing stories.
-func rebuildDAGFromEvents(es state.EventStore, reqID string, stories []state.Story) (*graph.DAG, []engine.PlannedStory, error) {
+func rebuildDAG(proj *state.SQLiteStore, reqID string, stories []state.Story) (*graph.DAG, []engine.PlannedStory, error) {
 	dag := graph.New()
 
-	// Build planned stories from projection data
 	planned := make([]engine.PlannedStory, 0, len(stories))
 	for _, story := range stories {
 		dag.AddNode(story.ID)
@@ -112,26 +180,33 @@ func rebuildDAGFromEvents(es state.EventStore, reqID string, stories []state.Sto
 		})
 	}
 
-	// Reconstruct edges from STORY_CREATED events (they contain depends_on in payload)
-	events, err := es.List(state.EventFilter{Type: state.EventStoryCreated})
+	// Reconstruct edges from story_deps table
+	deps, err := proj.ListStoryDeps(reqID)
 	if err != nil {
-		return nil, nil, fmt.Errorf("list story created events: %w", err)
+		return nil, nil, fmt.Errorf("list story deps: %w", err)
 	}
-
-	storySet := make(map[string]bool, len(stories))
-	for _, story := range stories {
-		storySet[story.ID] = true
-	}
-
-	for _, evt := range events {
-		if !storySet[evt.StoryID] {
-			continue
-		}
-		// Dependencies would be encoded in the payload; for now the graph
-		// is reconstructed without edges since the event payload doesn't
-		// store depends_on. Stories without dependency info will all appear
-		// ready simultaneously, which is the safe fallback.
+	for _, dep := range deps {
+		dag.AddEdge(dep.StoryID, dep.DependsOnID)
 	}
 
 	return dag, planned, nil
+}
+
+// ghOpsAdapter wraps the git package functions to satisfy the engine.GitHubOps interface.
+type ghOpsAdapter struct{}
+
+func (g *ghOpsAdapter) PushBranch(repoDir, branch string) error {
+	return nxdgit.PushBranch(repoDir, branch)
+}
+
+func (g *ghOpsAdapter) CreatePR(repoDir, title, body, baseBranch string) (engine.PRCreationResult, error) {
+	pr, err := nxdgit.CreatePR(repoDir, title, body, baseBranch)
+	if err != nil {
+		return engine.PRCreationResult{}, err
+	}
+	return engine.PRCreationResult{Number: pr.Number, URL: pr.URL}, nil
+}
+
+func (g *ghOpsAdapter) MergePR(repoDir string, prNumber int) error {
+	return nxdgit.MergePR(repoDir, prNumber)
 }
