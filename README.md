@@ -217,6 +217,18 @@ make clean    # Remove binary and coverage artifacts
 make install  # Build and install to $GOPATH/bin
 ```
 
+## Documentation
+
+| Guide | Description |
+|-------|-------------|
+| [Getting Started](docs/guides/getting-started.md) | Installation, first run, step-by-step tutorial |
+| [Configuration](docs/guides/configuration.md) | Full config reference with examples for every hardware tier |
+| [Architecture Deep Dive](docs/guides/architecture.md) | Event sourcing, agent hierarchy, wave dispatch, monitoring |
+| [Model Selection](docs/guides/model-selection.md) | Pick the right Ollama models for your hardware |
+| [Troubleshooting](docs/guides/troubleshooting.md) | Common issues, diagnostics, and fixes |
+| [CLI Reference](docs/reference/cli-reference.md) | Complete command, flag, and option reference |
+| [Event Reference](docs/reference/event-reference.md) | All 31 event types with payloads and state transitions |
+
 ## Comparison: NXD vs VXD
 
 | Feature | NXD (Nexus Dispatch) | VXD (Vortex Dispatch) |
