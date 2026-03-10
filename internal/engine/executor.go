@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/tzone85/nexus-dispatch/internal/agent"
@@ -133,12 +134,35 @@ func (e *Executor) spawn(repoDir string, a Assignment, story PlannedStory) Spawn
 	return result
 }
 
-// runtimeForRole returns the first available configured runtime name.
+// runtimeForRole selects the configured runtime whose CLI can serve the
+// model provider assigned to the given role. For offline setups the default
+// runtime is typically "aider" backed by Ollama.
 func (e *Executor) runtimeForRole(role agent.Role) string {
+	modelCfg := role.ModelConfig(e.config.Models)
+	provider := strings.ToLower(modelCfg.Provider)
+
+	// Well-known provider → runtime mappings
+	providerRuntimes := map[string][]string{
+		"ollama":    {"aider", "ollama"},
+		"anthropic": {"claude-code", "claude"},
+		"openai":    {"codex", "openai"},
+		"google":    {"gemini"},
+		"gemini":    {"gemini"},
+	}
+
+	if candidates, ok := providerRuntimes[provider]; ok {
+		for _, name := range candidates {
+			if _, exists := e.config.Runtimes[name]; exists {
+				return name
+			}
+		}
+	}
+
+	// Fallback: first available runtime
 	for name := range e.config.Runtimes {
 		return name
 	}
-	return "claude-code"
+	return "aider"
 }
 
 // execExpandHome replaces a leading ~ with the user's home directory.

@@ -109,6 +109,27 @@ Respond ONLY with the JSON array, no other text.`, requirement)
 		return PlanResult{}, fmt.Errorf("parse stories: %w (response: %s)", err, resp.Content)
 	}
 
+	// Make story IDs globally unique by prefixing with short req ID.
+	// LLMs always generate generic IDs like "s-001" which collide across
+	// requirements.
+	prefix := reqID
+	if len(prefix) > 8 {
+		prefix = prefix[:8]
+	}
+	idMap := make(map[string]string, len(stories))
+	for i, s := range stories {
+		newID := prefix + "-" + s.ID
+		idMap[s.ID] = newID
+		stories[i].ID = newID
+	}
+	for i, s := range stories {
+		for j, dep := range s.DependsOn {
+			if newDep, ok := idMap[dep]; ok {
+				stories[i].DependsOn[j] = newDep
+			}
+		}
+	}
+
 	// Build dependency graph
 	dag := graph.New()
 	for _, s := range stories {

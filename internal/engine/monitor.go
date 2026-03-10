@@ -97,8 +97,11 @@ func (m *Monitor) pollOnce(ctx context.Context, active map[string]ActiveAgent, r
 		// Check if agent is done
 		status, err := rt.DetectStatus(sessionName)
 		if err != nil {
+			log.Printf("[monitor] %s status check error: %v", ag.Assignment.StoryID, err)
 			continue
 		}
+
+		log.Printf("[monitor] %s: %s", ag.Assignment.StoryID, status)
 
 		if status != runtime.StatusDone && status != runtime.StatusTerminated {
 			continue
