@@ -17,12 +17,12 @@ import (
 
 // PlannedStory represents a story decomposed from a requirement by the Tech Lead.
 type PlannedStory struct {
-	ID                 string   `json:"id"`
-	Title              string   `json:"title"`
-	Description        string   `json:"description"`
-	AcceptanceCriteria string   `json:"acceptance_criteria"`
-	Complexity         int      `json:"complexity"`
-	DependsOn          []string `json:"depends_on"`
+	ID                 string         `json:"id"`
+	Title              string         `json:"title"`
+	Description        string         `json:"description"`
+	AcceptanceCriteria FlexibleString `json:"acceptance_criteria"`
+	Complexity         int            `json:"complexity"`
+	DependsOn          []string       `json:"depends_on"`
 }
 
 // PlanResult holds the output of a planning session: stories and their
@@ -102,9 +102,10 @@ Respond ONLY with the JSON array, no other text.`, requirement)
 		return PlanResult{}, fmt.Errorf("tech lead planning: %w", err)
 	}
 
-	// Parse stories from response
+	// Parse stories from response (strip markdown fences if present)
 	var stories []PlannedStory
-	if err := json.Unmarshal([]byte(resp.Content), &stories); err != nil {
+	cleaned := extractJSON(resp.Content)
+	if err := json.Unmarshal([]byte(cleaned), &stories); err != nil {
 		return PlanResult{}, fmt.Errorf("parse stories: %w (response: %s)", err, resp.Content)
 	}
 
@@ -131,7 +132,7 @@ Respond ONLY with the JSON array, no other text.`, requirement)
 			"req_id":              reqID,
 			"title":               s.Title,
 			"description":         s.Description,
-			"acceptance_criteria": s.AcceptanceCriteria,
+			"acceptance_criteria": string(s.AcceptanceCriteria),
 			"complexity":          s.Complexity,
 		}
 		if err := p.emitAndProject(state.EventStoryCreated, "tech-lead", s.ID, storyPayload); err != nil {

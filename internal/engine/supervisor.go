@@ -63,7 +63,8 @@ Respond with JSON: {"on_track": bool, "concerns": ["..."], "reprioritize": ["sto
 	}
 
 	var result SupervisorResult
-	if err := json.Unmarshal([]byte(resp.Content), &result); err != nil {
+	cleaned := extractJSON(resp.Content)
+	if err := json.Unmarshal([]byte(cleaned), &result); err != nil {
 		return SupervisorResult{}, fmt.Errorf("parse supervisor response: %w", err)
 	}
 

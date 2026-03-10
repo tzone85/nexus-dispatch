@@ -87,7 +87,8 @@ Respond with JSON:
 	}
 
 	var result ReviewResult
-	if err := json.Unmarshal([]byte(resp.Content), &result); err != nil {
+	cleaned := extractJSON(resp.Content)
+	if err := json.Unmarshal([]byte(cleaned), &result); err != nil {
 		return ReviewResult{}, fmt.Errorf("parse review response: %w", err)
 	}
 
