@@ -89,7 +89,7 @@ func TestDispatcher_DispatchWave(t *testing.T) {
 
 	// Verify branch naming
 	for _, a := range assignments {
-		expected := "vxd/" + a.StoryID
+		expected := "nxd/" + a.StoryID
 		if a.Branch != expected {
 			t.Fatalf("expected branch %s, got %s", expected, a.Branch)
 		}

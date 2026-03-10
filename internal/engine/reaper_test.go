@@ -44,7 +44,7 @@ func TestReaper_Reap_Immediate(t *testing.T) {
 	defer cleanup()
 
 	gitOps := &mockGitCleanupOps{
-		existingBranches: map[string]bool{"vxd/s-001": true},
+		existingBranches: map[string]bool{"nxd/s-001": true},
 	}
 
 	cfg := config.CleanupConfig{
@@ -53,7 +53,7 @@ func TestReaper_Reap_Immediate(t *testing.T) {
 	}
 
 	reaper := engine.NewReaper(cfg, gitOps, es)
-	result, err := reaper.Reap("s-001", "/tmp/repo", "/tmp/worktree/s-001", "vxd/s-001")
+	result, err := reaper.Reap("s-001", "/tmp/repo", "/tmp/worktree/s-001", "nxd/s-001")
 	if err != nil {
 		t.Fatalf("reap: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestReaper_Reap_Deferred(t *testing.T) {
 	defer cleanup()
 
 	gitOps := &mockGitCleanupOps{
-		existingBranches: map[string]bool{"vxd/s-001": true},
+		existingBranches: map[string]bool{"nxd/s-001": true},
 	}
 
 	cfg := config.CleanupConfig{
@@ -105,7 +105,7 @@ func TestReaper_Reap_Deferred(t *testing.T) {
 	}
 
 	reaper := engine.NewReaper(cfg, gitOps, es)
-	result, err := reaper.Reap("s-001", "/tmp/repo", "/tmp/worktree/s-001", "vxd/s-001")
+	result, err := reaper.Reap("s-001", "/tmp/repo", "/tmp/worktree/s-001", "nxd/s-001")
 	if err != nil {
 		t.Fatalf("reap: %v", err)
 	}
@@ -126,9 +126,9 @@ func TestReaper_GarbageCollect(t *testing.T) {
 
 	gitOps := &mockGitCleanupOps{
 		existingBranches: map[string]bool{
-			"vxd/s-001": true,
-			"vxd/s-002": true,
-			"vxd/s-003": true,
+			"nxd/s-001": true,
+			"nxd/s-002": true,
+			"nxd/s-003": true,
 		},
 	}
 
@@ -140,9 +140,9 @@ func TestReaper_GarbageCollect(t *testing.T) {
 	reaper := engine.NewReaper(cfg, gitOps, es)
 
 	branches := []engine.BranchInfo{
-		{Name: "vxd/s-001", StoryID: "s-001", MergedAt: time.Now().AddDate(0, 0, -10)}, // expired
-		{Name: "vxd/s-002", StoryID: "s-002", MergedAt: time.Now().AddDate(0, 0, -3)},  // still valid
-		{Name: "vxd/s-003", StoryID: "s-003", MergedAt: time.Now().AddDate(0, 0, -8)},  // expired
+		{Name: "nxd/s-001", StoryID: "s-001", MergedAt: time.Now().AddDate(0, 0, -10)}, // expired
+		{Name: "nxd/s-002", StoryID: "s-002", MergedAt: time.Now().AddDate(0, 0, -3)},  // still valid
+		{Name: "nxd/s-003", StoryID: "s-003", MergedAt: time.Now().AddDate(0, 0, -8)},  // expired
 	}
 
 	deleted, err := reaper.GarbageCollect("/tmp/repo", branches)
@@ -192,7 +192,7 @@ func TestReaper_GarbageCollect_ZeroRetention(t *testing.T) {
 
 	reaper := engine.NewReaper(cfg, gitOps, es)
 	deleted, err := reaper.GarbageCollect("/tmp/repo", []engine.BranchInfo{
-		{Name: "vxd/s-001", StoryID: "s-001", MergedAt: time.Now()},
+		{Name: "nxd/s-001", StoryID: "s-001", MergedAt: time.Now()},
 	})
 	if err != nil {
 		t.Fatalf("gc: %v", err)

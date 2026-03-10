@@ -50,7 +50,7 @@ func TestCreateAndKillSession(t *testing.T) {
 func TestListSessions(t *testing.T) {
 	skipIfNoTmux(t)
 
-	name := "vxd-test-list"
+	name := "nxd-test-list"
 	tmux.KillSession(name)
 
 	err := tmux.CreateSession(name, "/tmp", "")
@@ -79,7 +79,7 @@ func TestListSessions(t *testing.T) {
 func TestSendKeysAndCapture(t *testing.T) {
 	skipIfNoTmux(t)
 
-	name := "vxd-test-capture"
+	name := "nxd-test-capture"
 	tmux.KillSession(name)
 
 	err := tmux.CreateSession(name, "/tmp", "")
@@ -112,7 +112,7 @@ func TestSendKeysAndCapture(t *testing.T) {
 func TestSessionExists_NonExistent(t *testing.T) {
 	skipIfNoTmux(t)
 
-	if tmux.SessionExists("vxd-nonexistent-session-xyz") {
+	if tmux.SessionExists("nxd-nonexistent-session-xyz") {
 		t.Fatal("should not exist")
 	}
 }

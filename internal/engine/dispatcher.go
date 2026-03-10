@@ -65,8 +65,8 @@ func (d *Dispatcher) DispatchWave(dag *graph.DAG, completed map[string]bool, req
 		role := agent.RouteByComplexity(story.Complexity, d.config.Routing)
 		agentCounter++
 		agentID := fmt.Sprintf("%s-%s-%d", role, reqID, agentCounter)
-		sessionName := fmt.Sprintf("vxd-%s-%s-%d", reqID, role, agentCounter)
-		branch := fmt.Sprintf("vxd/%s", storyID)
+		sessionName := fmt.Sprintf("nxd-%s-%s-%d", reqID, role, agentCounter)
+		branch := fmt.Sprintf("nxd/%s", storyID)
 
 		assignment := Assignment{
 			StoryID:     storyID,

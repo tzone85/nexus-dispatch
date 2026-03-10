@@ -1,12 +1,12 @@
 # Binary
-/vxd
+/nxd
 
 # Coverage
 *.out
 coverage.out
 
 # State
-.vxd/
+.nxd/
 
 # Database
 *.db
