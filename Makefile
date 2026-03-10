@@ -20,4 +20,4 @@ clean:
 
 install: build
 	mkdir -p $(INSTALL_DIR)
-	mv $(BINARY) $(INSTALL_DIR)/
+	cp $(BINARY) $(INSTALL_DIR)/
