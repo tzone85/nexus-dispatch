@@ -229,18 +229,6 @@ make install  # Build and install to $GOPATH/bin
 | [CLI Reference](docs/reference/cli-reference.md) | Complete command, flag, and option reference |
 | [Event Reference](docs/reference/event-reference.md) | All 31 event types with payloads and state transitions |
 
-## Comparison: NXD vs VXD
-
-| Feature | NXD (Nexus Dispatch) | VXD (Vortex Dispatch) |
-|---------|---------------------|-----------------------|
-| LLM Provider | Ollama (local) | Anthropic/OpenAI (cloud) |
-| Merge Strategy | Local git merge | GitHub PRs |
-| Default Runtime | Aider | Claude Code |
-| Network Required | No | Yes |
-| API Keys Required | No | Yes |
-| Cost Per Run | $0 (hardware only) | API token costs |
-| State Backend | SQLite | Dolt/SQLite |
-
 ## License
 
 [Apache License 2.0](LICENSE)

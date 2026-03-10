@@ -199,7 +199,7 @@ merge:
   mode: github
 ```
 
-### Full Cloud (same as VXD)
+### Full Cloud
 
 ```yaml
 models:

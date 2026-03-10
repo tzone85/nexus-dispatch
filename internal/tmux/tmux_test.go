@@ -91,7 +91,7 @@ func TestSendKeysAndCapture(t *testing.T) {
 	// Give session time to start.
 	time.Sleep(500 * time.Millisecond)
 
-	err = tmux.SendKeys(name, "echo hello-vxd")
+	err = tmux.SendKeys(name, "echo hello-nxd")
 	if err != nil {
 		t.Fatalf("send keys: %v", err)
 	}
@@ -104,8 +104,8 @@ func TestSendKeysAndCapture(t *testing.T) {
 		t.Fatalf("capture: %v", err)
 	}
 
-	if !strings.Contains(out, "hello-vxd") {
-		t.Fatalf("expected 'hello-vxd' in output, got: %s", out)
+	if !strings.Contains(out, "hello-nxd") {
+		t.Fatalf("expected 'hello-nxd' in output, got: %s", out)
 	}
 }
 
