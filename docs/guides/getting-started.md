@@ -93,7 +93,43 @@ make build
 make install
 ```
 
+#### macOS: Additional Setup
+
+On macOS you may need to complete these extra steps before `make install` and `nxd` will work:
+
+**1. Create the Go bin directory** (if it doesn't already exist):
+
+```bash
+mkdir -p "$(go env GOPATH)/bin"
+```
+
+**2. Add it to your PATH** by appending this line to `~/.zshrc` (or `~/.bash_profile` for Bash):
+
+```bash
+export PATH="$HOME/go/bin:$PATH"
+```
+
+**3. Reload your shell** so the PATH change takes effect:
+
+```bash
+source ~/.zshrc
+```
+
+Then re-run `make install` and proceed to verification below.
+
+> **Note:** Windows setup may differ — refer to the [Go installation docs](https://go.dev/doc/install) for platform-specific guidance on configuring `GOPATH` and `PATH`.
+
 Verify: `nxd --version` should show `0.1.0`.
+
+## Configuration
+
+NXD requires a `nxd.yaml` config file in your project root. You can either let `nxd init` create it for you (see below), or copy it manually:
+
+```bash
+cp nxd.config.example.yaml nxd.yaml
+```
+
+Customize it as needed — see [Configuration](configuration.md) for all available options.
 
 ## First Run
 
@@ -221,6 +257,17 @@ When you run `nxd req`, the following pipeline executes:
 ```
 
 Waves repeat until all stories are merged. If an agent gets stuck, the Watchdog detects it (via screen fingerprinting) and escalates.
+
+## Generating the Demo GIF (optional)
+
+If you want to generate the animated demo GIF, you'll need [VHS](https://github.com/charmbracelet/vhs) along with its dependencies `ffmpeg` and `ttyd`. On macOS:
+
+```bash
+brew install vhs ffmpeg ttyd
+vhs docs/demo.tape
+```
+
+This produces `docs/demo.gif` showing the full `nxd init` through `nxd dashboard` workflow.
 
 ## Next Steps
 

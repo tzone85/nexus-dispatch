@@ -60,6 +60,19 @@ nxd status
 nxd dashboard
 ```
 
+### Demo
+
+Generate an animated demo with [VHS](https://github.com/charmbracelet/vhs).
+
+VHS requires `ffmpeg` and `ttyd` to record terminal sessions. On macOS, install all prerequisites with Homebrew:
+
+```bash
+brew install vhs ffmpeg ttyd
+vhs docs/demo.tape
+```
+
+See the [full getting started guide](docs/guides/getting-started.md) for a step-by-step walkthrough.
+
 ## Features
 
 - **Agent hierarchy with complexity-based routing** — Fibonacci scoring routes stories to the right tier
@@ -216,6 +229,52 @@ make lint     # Run golangci-lint
 make clean    # Remove binary and coverage artifacts
 make install  # Build and install to $GOPATH/bin
 ```
+
+### Local Build & Install (macOS)
+
+If you're building from source on macOS, you may need to complete the following setup steps before `make install` and `nxd` will work correctly.
+
+**1. Ensure `~/go/bin` exists**
+
+The `make install` target moves the built binary to your Go bin directory. If this directory doesn't exist yet, create it:
+
+```bash
+mkdir -p "$(go env GOPATH)/bin"
+```
+
+**2. Add `~/go/bin` to your PATH**
+
+Add the following line to your `~/.zshrc` (or `~/.bash_profile` if using Bash):
+
+```bash
+export PATH="$HOME/go/bin:$PATH"
+```
+
+**3. Reload your shell**
+
+```bash
+source ~/.zshrc
+```
+
+**4. Set up the config file**
+
+NXD requires a `nxd.yaml` config file in the project root. You can either let `nxd init` create it for you, or copy it manually:
+
+```bash
+cp nxd.config.example.yaml nxd.yaml
+```
+
+Then customize it as needed (see [Configuration](docs/guides/configuration.md) for details).
+
+**5. Build and install**
+
+```bash
+make install
+nxd config validate   # Verify config is valid
+nxd --help
+```
+
+> **Note:** These instructions are for macOS. Windows setup may differ — refer to the [Go installation docs](https://go.dev/doc/install) for platform-specific guidance on configuring `GOPATH` and `PATH`.
 
 ## Documentation
 
