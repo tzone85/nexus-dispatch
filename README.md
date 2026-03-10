@@ -32,23 +32,37 @@ Submit a natural-language requirement and NXD decomposes it into stories, assign
 ## Prerequisites
 
 1. **Go 1.23+** — [install](https://go.dev/dl/)
-2. **Ollama** — [install](https://ollama.com) then pull models:
+2. **Ollama** — [install](https://ollama.com) then pull **one** model to get started:
    ```bash
-   ollama pull deepseek-coder-v2:latest    # Tech Lead + Supervisor
-   ollama pull qwen2.5-coder:32b           # Senior (if you have 24GB+ RAM)
-   ollama pull qwen2.5-coder:14b           # Intermediate + QA
-   ollama pull qwen2.5-coder:7b            # Junior
+   ollama pull qwen2.5-coder:14b           # ~9GB — works for all roles
    ```
+   A single model is all you need. NXD assigns models to agent roles via config — point every role at the same model and the full pipeline works. See [Model Selection](docs/guides/model-selection.md) for upgrade options.
+
+   <details>
+   <summary>Full team setup (~50GB, for 64GB+ RAM machines)</summary>
+
+   For maximum quality, use a dedicated model per agent tier:
+   ```bash
+   ollama pull deepseek-coder-v2:latest    # Tech Lead + Supervisor (~9GB)
+   ollama pull qwen2.5-coder:32b           # Senior (~20GB, needs 24GB+ VRAM)
+   ollama pull qwen2.5-coder:14b           # Intermediate + QA (~9GB)
+   ollama pull qwen2.5-coder:7b            # Junior (~4.5GB)
+   ```
+   Bigger models produce better planning, reviews, and code — but are not required.
+   </details>
+
 3. **Aider** (recommended runtime) — `pip install aider-chat`
 4. **tmux** — `brew install tmux` (macOS) or `apt install tmux` (Linux)
 
 ### Hardware Recommendations
 
-| Setup | RAM | GPU VRAM | Models You Can Run |
-|-------|-----|----------|--------------------|
-| Minimum | 16GB | 8GB | 7B models (Junior only) |
-| Recommended | 32GB | 16GB | Up to 14B (Junior + Intermediate) |
-| Full Team | 64GB+ | 24GB+ | Up to 32B (all roles) |
+| Setup | RAM | GPU VRAM | Models | Disk Space |
+|-------|-----|----------|--------|------------|
+| Minimal | 16GB | 8GB | Single 7B for all roles | ~4.5GB |
+| Recommended | 32GB | 16GB | Single 14B for all roles | ~9GB |
+| Full Team | 64GB+ | 24GB+ | Dedicated model per tier | ~50GB |
+
+All three setups run the complete NXD pipeline. The difference is output quality — larger models produce better planning, reviews, and code. Start minimal and upgrade individual roles as needed.
 
 ## Quick Start
 

@@ -38,23 +38,30 @@ ollama serve
 
 This runs in the background on `http://localhost:11434`. Keep this terminal open or run it as a service.
 
-### 3. Pull Models
+### 3. Pull a Model
 
-NXD uses different models for different agent roles. Start with the minimum:
+You only need **one model** to run the full NXD pipeline. Pick based on your hardware:
 
 ```bash
-# Required: covers Junior + Intermediate + QA roles
-ollama pull qwen2.5-coder:7b      # ~4.5GB, runs on 8GB RAM
+# Minimal (~4.5GB) — 16GB RAM / 8GB VRAM
+ollama pull qwen2.5-coder:7b
 
-# Recommended: covers Tech Lead + Supervisor + Senior planning
-ollama pull deepseek-coder-v2:latest  # ~9GB, needs 16GB RAM
-
-# Full team: Senior code review + complex tasks
-ollama pull qwen2.5-coder:14b     # ~9GB, needs 12GB RAM
-ollama pull qwen2.5-coder:32b     # ~20GB, needs 24GB+ RAM
+# Recommended (~9GB) — 32GB RAM / 16GB VRAM
+ollama pull qwen2.5-coder:14b
 ```
 
-**Tip:** Start with the 7B model only. You can always pull larger models later.
+Set all agent roles to the same model in `nxd.yaml` and the complete pipeline (planning, execution, review, QA, merge) works end to end.
+
+**Want higher quality?** You can optionally pull dedicated models per agent tier for better output from planning, review, and complex tasks:
+
+```bash
+ollama pull deepseek-coder-v2:latest  # Tech Lead + Supervisor (~9GB)
+ollama pull qwen2.5-coder:32b        # Senior (~20GB, needs 24GB+ VRAM)
+ollama pull qwen2.5-coder:14b        # Intermediate + QA (~9GB)
+ollama pull qwen2.5-coder:7b         # Junior (~4.5GB)
+```
+
+See [Model Selection](model-selection.md) for detailed recommendations per role and hardware tier.
 
 ### 4. Install tmux
 
