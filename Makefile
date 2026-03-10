@@ -3,6 +3,7 @@
 BINARY=nxd
 VERSION?=0.1.0
 LDFLAGS=-ldflags "-X main.version=$(VERSION)"
+INSTALL_DIR?=$(shell go env GOPATH)/bin
 
 build:
 	go build $(LDFLAGS) -o $(BINARY) ./cmd/nxd/
@@ -18,4 +19,5 @@ clean:
 	rm -f $(BINARY) coverage.out
 
 install: build
-	mv $(BINARY) $(GOPATH)/bin/
+	mkdir -p $(INSTALL_DIR)
+	mv $(BINARY) $(INSTALL_DIR)/
