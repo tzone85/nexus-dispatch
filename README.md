@@ -62,9 +62,9 @@ nxd dashboard
 
 ### Demo
 
-Generate an animated demo with [VHS](https://github.com/charmbracelet/vhs).
+![NXD Demo](https://vhs.charm.sh/vhs-4gxoLg02F8GhnW1EQ4GXMq.gif)
 
-VHS requires `ffmpeg` and `ttyd` to record terminal sessions. On macOS, install all prerequisites with Homebrew:
+To regenerate the demo locally, you'll need [VHS](https://github.com/charmbracelet/vhs) with `ffmpeg` and `ttyd`. On macOS:
 
 ```bash
 brew install vhs ffmpeg ttyd
