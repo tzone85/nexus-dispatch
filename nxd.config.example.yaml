@@ -1,0 +1,83 @@
+version: "1.0"
+
+workspace:
+  state_dir: ~/.nxd
+  backend: sqlite
+  log_level: info
+  log_retention_days: 30
+
+models:
+  tech_lead:
+    provider: ollama
+    model: deepseek-coder-v2:latest
+    max_tokens: 16000
+  senior:
+    provider: ollama
+    model: qwen2.5-coder:32b
+    max_tokens: 8000
+  intermediate:
+    provider: ollama
+    model: qwen2.5-coder:14b
+    max_tokens: 4000
+  junior:
+    provider: ollama
+    model: qwen2.5-coder:7b
+    max_tokens: 4000
+  qa:
+    provider: ollama
+    model: qwen2.5-coder:14b
+    max_tokens: 8000
+  supervisor:
+    provider: ollama
+    model: deepseek-coder-v2:latest
+    max_tokens: 4000
+
+routing:
+  junior_max_complexity: 3
+  intermediate_max_complexity: 5
+  max_retries_before_escalation: 2
+  max_qa_failures_before_escalation: 3
+
+monitor:
+  poll_interval_ms: 10000
+  stuck_threshold_s: 120
+  context_freshness_tokens: 150000
+
+cleanup:
+  worktree_prune: immediate
+  branch_retention_days: 7
+  log_archive: file
+
+merge:
+  auto_merge: true
+  base_branch: main
+  mode: local  # "local" for offline, "github" for cloud
+  pr_template: |
+    ## Story: {story_id}
+    {description}
+    ### Acceptance Criteria
+    {acceptance_criteria}
+
+runtimes:
+  aider:
+    command: aider
+    args: ["--model", "ollama_chat/deepseek-coder-v2:latest", "--no-auto-commits"]
+    models: ["deepseek-coder-v2", "qwen2.5-coder"]
+    detection:
+      idle_pattern: "^>"
+      permission_pattern: "\\[Y/n\\]"
+  claude-code:
+    command: claude
+    args: ["--dangerously-skip-permissions"]
+    models: ["opus-4", "sonnet-4", "haiku-4"]
+    detection:
+      idle_pattern: "^\\$\\s*$"
+      permission_pattern: "\\[Y/n\\]"
+      plan_mode_pattern: "Plan mode"
+  codex:
+    command: codex
+    args: ["--approval-mode", "full-auto"]
+    models: ["o3", "o4-mini"]
+    detection:
+      idle_pattern: "Codex>"
+      permission_pattern: "approve|deny"

@@ -1,0 +1,32 @@
+# Binary
+/vxd
+
+# Coverage
+*.out
+coverage.out
+
+# State
+.vxd/
+
+# Database
+*.db
+
+# Dependencies (if vendored)
+# vendor/
+
+# Web frontend
+node_modules/
+dist/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Environment
+.env
+.env.local

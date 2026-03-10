@@ -1,0 +1,37 @@
+[workflow]
+name = "default"
+description = "Standard SDLC workflow: plan -> dispatch -> execute -> review -> QA -> merge -> cleanup"
+
+[phases]
+order = ["plan", "dispatch", "execute", "review", "qa", "merge", "cleanup"]
+
+[phases.plan]
+description = "Tech Lead decomposes requirement into stories"
+agent_role = "tech_lead"
+execution = "api"
+
+[phases.dispatch]
+description = "Dispatcher assigns stories to agents in wave order"
+execution = "system"
+
+[phases.execute]
+description = "Agents implement stories in isolated worktrees"
+execution = "cli_session"
+
+[phases.review]
+description = "Senior reviews code diffs"
+agent_role = "senior"
+execution = "api"
+
+[phases.qa]
+description = "QA runs lint, build, test"
+agent_role = "qa"
+execution = "api_and_shell"
+
+[phases.merge]
+description = "Create PR and auto-merge"
+execution = "system"
+
+[phases.cleanup]
+description = "Reaper prunes worktrees and archives logs"
+execution = "system"

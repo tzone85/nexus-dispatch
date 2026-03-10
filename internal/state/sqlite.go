@@ -1,0 +1,410 @@
+package state
+
+import (
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"strings"
+
+	_ "github.com/mattn/go-sqlite3"
+)
+
+// initSQL is the schema migration applied on store creation.
+// This mirrors migrations/001_init.sql kept in the repository root for
+// external tooling (e.g. CLI migration commands).
+const initSQL = `
+CREATE TABLE IF NOT EXISTS requirements (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS stories (
+    id TEXT PRIMARY KEY,
+    req_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    complexity INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'draft',
+    agent_id TEXT NOT NULL DEFAULT '',
+    branch TEXT NOT NULL DEFAULT '',
+    pr_url TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS agents (
+    id TEXT PRIMARY KEY,
+    type TEXT NOT NULL,
+    model TEXT NOT NULL DEFAULT '',
+    runtime TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'idle',
+    current_story_id TEXT NOT NULL DEFAULT '',
+    session_name TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS story_deps (
+    story_id TEXT NOT NULL,
+    depends_on_id TEXT NOT NULL,
+    PRIMARY KEY (story_id, depends_on_id)
+);
+
+CREATE TABLE IF NOT EXISTS escalations (
+    id TEXT PRIMARY KEY,
+    story_id TEXT NOT NULL DEFAULT '',
+    from_agent TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    resolution TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    resolved_at TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS agent_scores (
+    id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL,
+    story_id TEXT NOT NULL,
+    quality INTEGER NOT NULL DEFAULT 0,
+    reliability INTEGER NOT NULL DEFAULT 0,
+    duration_s INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+`
+
+// SQLiteStore implements ProjectionStore using SQLite.
+type SQLiteStore struct {
+	db *sql.DB
+}
+
+// NewSQLiteStore opens a SQLite database and applies the schema migration.
+func NewSQLiteStore(dsn string) (*SQLiteStore, error) {
+	db, err := sql.Open("sqlite3", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open sqlite: %w", err)
+	}
+
+	if _, err := db.Exec(initSQL); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("apply migration: %w", err)
+	}
+
+	return &SQLiteStore{db: db}, nil
+}
+
+// Close closes the underlying database connection.
+func (s *SQLiteStore) Close() error {
+	return s.db.Close()
+}
+
+// Project applies a domain event to the projection tables, updating the
+// materialized state accordingly.
+func (s *SQLiteStore) Project(evt Event) error {
+	payload := s.decodePayload(evt)
+
+	switch evt.Type {
+	case EventReqSubmitted:
+		return s.projectReqSubmitted(payload)
+	case EventReqAnalyzed:
+		return s.updateReqStatus(payload, "analyzed")
+	case EventReqPlanned:
+		return s.updateReqStatus(payload, "planned")
+	case EventReqCompleted:
+		return s.updateReqStatus(payload, "completed")
+
+	case EventStoryCreated:
+		return s.projectStoryCreated(payload)
+	case EventStoryEstimated:
+		return s.updateStoryStatus(evt.StoryID, "estimated")
+	case EventStoryAssigned:
+		return s.projectStoryAssigned(evt.StoryID, payload)
+	case EventStoryStarted:
+		return s.updateStoryStatus(evt.StoryID, "in_progress")
+	case EventStoryProgress:
+		return nil // progress events are informational only
+	case EventStoryCompleted:
+		return s.updateStoryStatus(evt.StoryID, "review")
+	case EventStoryReviewRequested:
+		return s.updateStoryStatus(evt.StoryID, "review")
+	case EventStoryReviewPassed:
+		return s.updateStoryStatus(evt.StoryID, "qa")
+	case EventStoryReviewFailed:
+		return s.updateStoryStatus(evt.StoryID, "in_progress")
+	case EventStoryQAStarted:
+		return s.updateStoryStatus(evt.StoryID, "qa")
+	case EventStoryQAPassed:
+		return s.updateStoryStatus(evt.StoryID, "pr_submitted")
+	case EventStoryQAFailed:
+		return s.updateStoryStatus(evt.StoryID, "qa_failed")
+	case EventStoryPRCreated:
+		return s.updateStoryStatus(evt.StoryID, "pr_submitted")
+	case EventStoryMerged:
+		return s.updateStoryStatus(evt.StoryID, "merged")
+
+	default:
+		// Unhandled event types are silently ignored to allow forward
+		// compatibility as new event types are added.
+		return nil
+	}
+}
+
+// GetRequirement returns a single requirement by ID.
+func (s *SQLiteStore) GetRequirement(id string) (Requirement, error) {
+	var req Requirement
+	err := s.db.QueryRow(
+		`SELECT id, title, description, status, created_at FROM requirements WHERE id = ?`,
+		id,
+	).Scan(&req.ID, &req.Title, &req.Description, &req.Status, &req.CreatedAt)
+	if err != nil {
+		return Requirement{}, fmt.Errorf("get requirement %s: %w", id, err)
+	}
+	return req, nil
+}
+
+// GetStory returns a single story by ID.
+func (s *SQLiteStore) GetStory(id string) (Story, error) {
+	var story Story
+	err := s.db.QueryRow(
+		`SELECT id, req_id, title, description, complexity, status, agent_id, branch, pr_url, created_at
+		 FROM stories WHERE id = ?`,
+		id,
+	).Scan(
+		&story.ID, &story.ReqID, &story.Title, &story.Description,
+		&story.Complexity, &story.Status, &story.AgentID, &story.Branch,
+		&story.PRUrl, &story.CreatedAt,
+	)
+	if err != nil {
+		return Story{}, fmt.Errorf("get story %s: %w", id, err)
+	}
+	return story, nil
+}
+
+// ListStories returns stories matching the given filter.
+func (s *SQLiteStore) ListStories(filter StoryFilter) ([]Story, error) {
+	query := `SELECT id, req_id, title, description, complexity, status, agent_id, branch, pr_url, created_at FROM stories`
+	var conditions []string
+	var args []any
+
+	if filter.Status != "" {
+		conditions = append(conditions, "status = ?")
+		args = append(args, filter.Status)
+	}
+	if filter.ReqID != "" {
+		conditions = append(conditions, "req_id = ?")
+		args = append(args, filter.ReqID)
+	}
+
+	if len(conditions) > 0 {
+		query += " WHERE " + strings.Join(conditions, " AND ")
+	}
+	query += " ORDER BY created_at ASC"
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list stories: %w", err)
+	}
+	defer rows.Close()
+
+	var stories []Story
+	for rows.Next() {
+		var story Story
+		if err := rows.Scan(
+			&story.ID, &story.ReqID, &story.Title, &story.Description,
+			&story.Complexity, &story.Status, &story.AgentID, &story.Branch,
+			&story.PRUrl, &story.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan story: %w", err)
+		}
+		stories = append(stories, story)
+	}
+	return stories, rows.Err()
+}
+
+// ListRequirements returns all requirements ordered by creation time.
+func (s *SQLiteStore) ListRequirements() ([]Requirement, error) {
+	rows, err := s.db.Query(
+		`SELECT id, title, description, status, created_at FROM requirements ORDER BY created_at ASC`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list requirements: %w", err)
+	}
+	defer rows.Close()
+
+	var reqs []Requirement
+	for rows.Next() {
+		var req Requirement
+		if err := rows.Scan(&req.ID, &req.Title, &req.Description, &req.Status, &req.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan requirement: %w", err)
+		}
+		reqs = append(reqs, req)
+	}
+	return reqs, rows.Err()
+}
+
+// AgentFilter specifies criteria for filtering agents.
+type AgentFilter struct {
+	Status string
+}
+
+// ListAgents returns agents matching the given filter, ordered by creation time.
+func (s *SQLiteStore) ListAgents(filter AgentFilter) ([]Agent, error) {
+	query := `SELECT id, type, model, runtime, status, current_story_id, session_name, created_at FROM agents`
+	var args []any
+
+	if filter.Status != "" {
+		query += " WHERE status = ?"
+		args = append(args, filter.Status)
+	}
+	query += " ORDER BY created_at ASC"
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list agents: %w", err)
+	}
+	defer rows.Close()
+
+	var agents []Agent
+	for rows.Next() {
+		var a Agent
+		if err := rows.Scan(
+			&a.ID, &a.Type, &a.Model, &a.Runtime,
+			&a.Status, &a.CurrentStoryID, &a.SessionName, &a.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan agent: %w", err)
+		}
+		agents = append(agents, a)
+	}
+	return agents, rows.Err()
+}
+
+// Escalation represents a recorded escalation between agent roles.
+type Escalation struct {
+	ID         string
+	StoryID    string
+	FromAgent  string
+	Reason     string
+	Status     string
+	Resolution string
+	CreatedAt  string
+}
+
+// ListEscalations returns all escalations ordered by creation time descending.
+func (s *SQLiteStore) ListEscalations() ([]Escalation, error) {
+	rows, err := s.db.Query(
+		`SELECT id, story_id, from_agent, reason, status, resolution, created_at
+		 FROM escalations ORDER BY created_at DESC`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list escalations: %w", err)
+	}
+	defer rows.Close()
+
+	var escalations []Escalation
+	for rows.Next() {
+		var e Escalation
+		if err := rows.Scan(
+			&e.ID, &e.StoryID, &e.FromAgent, &e.Reason,
+			&e.Status, &e.Resolution, &e.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan escalation: %w", err)
+		}
+		escalations = append(escalations, e)
+	}
+	return escalations, rows.Err()
+}
+
+// --- private helpers ---
+
+func (s *SQLiteStore) decodePayload(evt Event) map[string]any {
+	if evt.Payload == nil {
+		return map[string]any{}
+	}
+	var m map[string]any
+	if err := json.Unmarshal(evt.Payload, &m); err != nil {
+		return map[string]any{}
+	}
+	return m
+}
+
+func (s *SQLiteStore) projectReqSubmitted(payload map[string]any) error {
+	_, err := s.db.Exec(
+		`INSERT INTO requirements (id, title, description, status) VALUES (?, ?, ?, 'pending')`,
+		payloadStr(payload, "id"),
+		payloadStr(payload, "title"),
+		payloadStr(payload, "description"),
+	)
+	return err
+}
+
+func (s *SQLiteStore) updateReqStatus(payload map[string]any, status string) error {
+	id := payloadStr(payload, "id")
+	_, err := s.db.Exec(
+		`UPDATE requirements SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+		status, id,
+	)
+	return err
+}
+
+func (s *SQLiteStore) projectStoryCreated(payload map[string]any) error {
+	complexity := payloadInt(payload, "complexity")
+	_, err := s.db.Exec(
+		`INSERT INTO stories (id, req_id, title, description, complexity, status)
+		 VALUES (?, ?, ?, ?, ?, 'draft')`,
+		payloadStr(payload, "id"),
+		payloadStr(payload, "req_id"),
+		payloadStr(payload, "title"),
+		payloadStr(payload, "description"),
+		complexity,
+	)
+	return err
+}
+
+func (s *SQLiteStore) projectStoryAssigned(storyID string, payload map[string]any) error {
+	agentID := payloadStr(payload, "agent_id")
+	_, err := s.db.Exec(
+		`UPDATE stories SET status = 'assigned', agent_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+		agentID, storyID,
+	)
+	return err
+}
+
+func (s *SQLiteStore) updateStoryStatus(storyID, status string) error {
+	_, err := s.db.Exec(
+		`UPDATE stories SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+		status, storyID,
+	)
+	return err
+}
+
+// --- payload extraction helpers ---
+
+func payloadStr(m map[string]any, key string) string {
+	v, ok := m[key]
+	if !ok {
+		return ""
+	}
+	s, ok := v.(string)
+	if !ok {
+		return ""
+	}
+	return s
+}
+
+func payloadInt(m map[string]any, key string) int {
+	v, ok := m[key]
+	if !ok {
+		return 0
+	}
+	switch n := v.(type) {
+	case float64:
+		return int(n)
+	case int:
+		return n
+	default:
+		return 0
+	}
+}

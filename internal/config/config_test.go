@@ -1,0 +1,182 @@
+package config_test
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/tzone85/nexus-dispatch/internal/config"
+)
+
+func TestDefaultConfig(t *testing.T) {
+	cfg := config.DefaultConfig()
+	if cfg.Workspace.Backend != "sqlite" {
+		t.Fatalf("expected backend 'sqlite', got %s", cfg.Workspace.Backend)
+	}
+	if cfg.Routing.JuniorMaxComplexity != 3 {
+		t.Fatalf("expected junior max 3, got %d", cfg.Routing.JuniorMaxComplexity)
+	}
+	if cfg.Routing.IntermediateMaxComplexity != 5 {
+		t.Fatalf("expected intermediate max 5, got %d", cfg.Routing.IntermediateMaxComplexity)
+	}
+	if cfg.Merge.AutoMerge != true {
+		t.Fatal("expected auto_merge true")
+	}
+	if cfg.Merge.BaseBranch != "main" {
+		t.Fatalf("expected base_branch 'main', got %s", cfg.Merge.BaseBranch)
+	}
+	if cfg.Merge.Mode != "local" {
+		t.Fatalf("expected merge mode 'local', got %s", cfg.Merge.Mode)
+	}
+	if cfg.Cleanup.LogArchive != "file" {
+		t.Fatalf("expected log_archive 'file', got %s", cfg.Cleanup.LogArchive)
+	}
+	if cfg.Monitor.PollIntervalMs != 10000 {
+		t.Fatalf("expected poll_interval 10000, got %d", cfg.Monitor.PollIntervalMs)
+	}
+}
+
+func TestDefaultConfig_Validates(t *testing.T) {
+	cfg := config.DefaultConfig()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("default config should be valid: %v", err)
+	}
+}
+
+func TestLoadFromFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nxd.config.yaml")
+	os.WriteFile(path, []byte(`
+version: "1.0"
+workspace:
+  backend: sqlite
+  log_level: debug
+routing:
+  junior_max_complexity: 5
+  intermediate_max_complexity: 8
+`), 0644)
+
+	cfg, err := config.LoadFromFile(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Workspace.Backend != "sqlite" {
+		t.Fatalf("expected 'sqlite', got %s", cfg.Workspace.Backend)
+	}
+	if cfg.Workspace.LogLevel != "debug" {
+		t.Fatalf("expected 'debug', got %s", cfg.Workspace.LogLevel)
+	}
+	if cfg.Routing.JuniorMaxComplexity != 5 {
+		t.Fatalf("expected 5, got %d", cfg.Routing.JuniorMaxComplexity)
+	}
+	// Defaults should still be present for unset fields
+	if cfg.Monitor.PollIntervalMs != 10000 {
+		t.Fatalf("expected default poll_interval 10000, got %d", cfg.Monitor.PollIntervalMs)
+	}
+}
+
+func TestLoadFromFile_InvalidBackend(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nxd.config.yaml")
+	os.WriteFile(path, []byte(`
+workspace:
+  backend: postgres
+`), 0644)
+
+	_, err := config.LoadFromFile(path)
+	if err == nil {
+		t.Fatal("expected validation error for invalid backend")
+	}
+}
+
+func TestLoadFromFile_InvalidLogLevel(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nxd.config.yaml")
+	os.WriteFile(path, []byte(`
+workspace:
+  log_level: verbose
+`), 0644)
+
+	_, err := config.LoadFromFile(path)
+	if err == nil {
+		t.Fatal("expected validation error for invalid log level")
+	}
+}
+
+func TestValidation_ComplexityRange(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Routing.JuniorMaxComplexity = 0
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for complexity 0")
+	}
+
+	cfg = config.DefaultConfig()
+	cfg.Routing.JuniorMaxComplexity = 14
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for complexity 14")
+	}
+}
+
+func TestValidation_IntermediateGteJunior(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Routing.JuniorMaxComplexity = 5
+	cfg.Routing.IntermediateMaxComplexity = 3
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error: intermediate < junior")
+	}
+}
+
+func TestLoadFromFile_WithRuntimes(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nxd.config.yaml")
+	os.WriteFile(path, []byte(`
+runtimes:
+  claude-code:
+    command: claude
+    args: ["--dangerously-skip-permissions"]
+    models: ["opus-4", "sonnet-4"]
+    detection:
+      idle_pattern: "^\\$\\s*$"
+      permission_pattern: "\\[Y/n\\]"
+`), 0644)
+
+	cfg, err := config.LoadFromFile(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	rt, ok := cfg.Runtimes["claude-code"]
+	if !ok {
+		t.Fatal("expected claude-code runtime")
+	}
+	if rt.Command != "claude" {
+		t.Fatalf("expected command 'claude', got %s", rt.Command)
+	}
+	if len(rt.Models) != 2 {
+		t.Fatalf("expected 2 models, got %d", len(rt.Models))
+	}
+}
+
+func TestLoadFromFile_FileNotFound(t *testing.T) {
+	_, err := config.LoadFromFile("/nonexistent/path.yaml")
+	if err == nil {
+		t.Fatal("expected error for missing file")
+	}
+}
+
+func TestValidation_InvalidMergeMode(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Merge.Mode = "invalid"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for invalid merge mode")
+	}
+}
+
+func TestValidation_ValidMergeModes(t *testing.T) {
+	for _, mode := range []string{"local", "github"} {
+		cfg := config.DefaultConfig()
+		cfg.Merge.Mode = mode
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("merge mode %q should be valid: %v", mode, err)
+		}
+	}
+}
