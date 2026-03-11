@@ -41,6 +41,7 @@ type SessionConfig struct {
 	Goal         string
 	EnvVars      map[string]string
 	SessionName  string
+	LogFile      string
 }
 
 // Runtime is the interface that CLI runtimes must implement to participate

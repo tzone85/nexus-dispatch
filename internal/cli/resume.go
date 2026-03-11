@@ -122,6 +122,11 @@ func runResume(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("get working directory: %w", err)
 	}
 
+	// Verify the repo has at least one commit (worktrees require a base commit)
+	if !nxdgit.HasCommits(repoDir) {
+		return fmt.Errorf("repository has no commits — run 'git add . && git commit -m \"initial commit\"' first")
+	}
+
 	// Spawn agents via executor
 	executor := engine.NewExecutor(reg, s.Config, s.Events, s.Proj)
 	results := executor.SpawnAll(repoDir, assignments, storyMap)

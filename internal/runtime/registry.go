@@ -2,6 +2,8 @@ package runtime
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 
 	"github.com/tzone85/nexus-dispatch/internal/config"
@@ -101,7 +103,7 @@ func (c *CLIRuntime) Name() string { return c.name }
 func (c *CLIRuntime) SupportedModels() []string { return c.models }
 
 // Spawn creates a new tmux session running the CLI tool with the given
-// configuration.
+// configuration. Output is tee'd to a log file for post-mortem diagnosis.
 func (c *CLIRuntime) Spawn(cfg SessionConfig) error {
 	cmdStr := c.command
 	for _, arg := range c.args {
@@ -110,9 +112,32 @@ func (c *CLIRuntime) Spawn(cfg SessionConfig) error {
 	if cfg.Model != "" {
 		cmdStr += " --model " + cfg.Model
 	}
-	if cfg.Goal != "" {
-		cmdStr += " " + fmt.Sprintf("%q", cfg.Goal)
+
+	// Write the combined prompt (system context + goal) to a file and pipe
+	// it via stdin. This avoids all shell escaping issues with quotes, $,
+	// backticks, and newlines that would break when passed as arguments.
+	prompt := cfg.Goal
+	if cfg.SystemPrompt != "" {
+		prompt = cfg.SystemPrompt + "\n\n---\n\n" + cfg.Goal
 	}
+	if prompt != "" {
+		promptDir := filepath.Join(cfg.WorkDir, ".nxd-prompts")
+		os.MkdirAll(promptDir, 0o755)
+		promptFile := filepath.Join(promptDir, "prompt.txt")
+		if err := os.WriteFile(promptFile, []byte(prompt), 0o644); err != nil {
+			return fmt.Errorf("write prompt file: %w", err)
+		}
+		cmdStr = fmt.Sprintf("cat %q | %s", promptFile, cmdStr)
+	}
+
+	// Tee output to a log file so we can inspect it after the session exits.
+	if cfg.LogFile != "" {
+		cmdStr += fmt.Sprintf(" 2>&1 | tee %q", cfg.LogFile)
+	}
+
+	// Unset CLAUDECODE to prevent "nested session" errors when NXD itself
+	// is running inside a Claude Code session.
+	cmdStr = "unset CLAUDECODE; " + cmdStr
 
 	return tmux.CreateSession(cfg.SessionName, cfg.WorkDir, cmdStr)
 }

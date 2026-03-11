@@ -43,6 +43,13 @@ func CreateWorktree(repoDir, worktreePath, branch string) error {
 	return nil
 }
 
+// HasCommits returns true if the repository has at least one commit.
+func HasCommits(repoDir string) bool {
+	cmd := exec.Command("git", "rev-parse", "HEAD")
+	cmd.Dir = repoDir
+	return cmd.Run() == nil
+}
+
 // DeleteWorktree forcefully removes a worktree at the given path.
 func DeleteWorktree(repoDir, worktreePath string) error {
 	cmd := exec.Command("git", "worktree", "remove", "--force", worktreePath)
