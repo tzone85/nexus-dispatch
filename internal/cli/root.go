@@ -19,6 +19,7 @@ func init() {
 	rootCmd.AddCommand(newInitCmd())
 	rootCmd.AddCommand(newReqCmd())
 	rootCmd.AddCommand(newStatusCmd())
+	rootCmd.AddCommand(newPauseCmd())
 	rootCmd.AddCommand(newResumeCmd())
 	rootCmd.AddCommand(newAgentsCmd())
 	rootCmd.AddCommand(newEscalationsCmd())

@@ -67,6 +67,7 @@ var (
 	statusReviewStyle     = lipgloss.NewStyle().Foreground(colorBlue)
 	statusQAStyle         = lipgloss.NewStyle().Foreground(colorCyan)
 	statusMergedStyle     = lipgloss.NewStyle().Foreground(colorGreen)
+	statusPausedStyle     = lipgloss.NewStyle().Foreground(colorOrange).Bold(true)
 	statusDefaultStyle    = lipgloss.NewStyle().Foreground(colorWhite)
 
 	// Agent status colors.
@@ -106,6 +107,8 @@ func storyStatusStyle(status string) lipgloss.Style {
 		return statusQAStyle
 	case "pr_submitted", "merged":
 		return statusMergedStyle
+	case "paused":
+		return statusPausedStyle
 	default:
 		return statusDefaultStyle
 	}

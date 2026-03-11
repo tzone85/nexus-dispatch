@@ -44,6 +44,21 @@ func runResume(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("requirement not found: %w", err)
 	}
+
+	// If paused, emit REQ_RESUMED event to transition back to planned
+	if req.Status == "paused" {
+		resumeEvt := state.NewEvent(state.EventReqResumed, "", "", map[string]any{
+			"id": reqID,
+		})
+		if err := s.Events.Append(resumeEvt); err != nil {
+			return fmt.Errorf("append resume event: %w", err)
+		}
+		if err := s.Proj.Project(resumeEvt); err != nil {
+			return fmt.Errorf("project resume event: %w", err)
+		}
+		fmt.Fprintf(out, "Unpaused requirement: %s\n", req.Title)
+	}
+
 	fmt.Fprintf(out, "Resuming requirement: %s (%s)\n", req.Title, req.Status)
 
 	// Load all stories for this requirement

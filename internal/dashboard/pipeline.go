@@ -24,12 +24,22 @@ var pipelineLabels = map[string]string{
 }
 
 // renderPipeline renders Panel 1: the story pipeline grouped by status.
-func renderPipeline(stories []state.Story, width, height int) string {
+// If any requirements are paused, a banner is shown at the top.
+func renderPipeline(stories []state.Story, reqs []state.Requirement, width, height int) string {
+	var rows []string
+
+	// Show paused requirement banners
+	pausedBanner := renderPausedBanner(reqs, width)
+	if pausedBanner != "" {
+		rows = append(rows, pausedBanner)
+		height -= 2 // account for banner line + spacing
+	}
+
 	grouped := groupStoriesByStatus(stories)
 
 	columnCount := len(pipelineStatuses)
 	if columnCount == 0 {
-		return ""
+		return strings.Join(rows, "\n")
 	}
 
 	// Reserve space for borders and padding between columns.
@@ -45,7 +55,35 @@ func renderPipeline(stories []state.Story, width, height int) string {
 		columns = append(columns, col)
 	}
 
-	return lipgloss.JoinHorizontal(lipgloss.Top, columns...)
+	rows = append(rows, lipgloss.JoinHorizontal(lipgloss.Top, columns...))
+	return lipgloss.JoinVertical(lipgloss.Left, rows...)
+}
+
+// renderPausedBanner returns a warning banner for any paused requirements,
+// or an empty string if none are paused.
+func renderPausedBanner(reqs []state.Requirement, width int) string {
+	var paused []state.Requirement
+	for _, r := range reqs {
+		if r.Status == "paused" {
+			paused = append(paused, r)
+		}
+	}
+
+	if len(paused) == 0 {
+		return ""
+	}
+
+	var labels []string
+	for _, r := range paused {
+		id := r.ID
+		if len(id) > 8 {
+			id = id[:8]
+		}
+		labels = append(labels, fmt.Sprintf("%s (%s)", id, r.Title))
+	}
+
+	banner := fmt.Sprintf("PAUSED: %s", strings.Join(labels, ", "))
+	return statusPausedStyle.Width(width).Align(lipgloss.Center).Render(banner)
 }
 
 // renderPipelineColumn renders a single status column in the pipeline.

@@ -113,6 +113,10 @@ func (s *SQLiteStore) Project(evt Event) error {
 		return s.updateReqStatus(payload, "analyzed")
 	case EventReqPlanned:
 		return s.updateReqStatus(payload, "planned")
+	case EventReqPaused:
+		return s.updateReqStatus(payload, "paused")
+	case EventReqResumed:
+		return s.updateReqStatus(payload, "planned")
 	case EventReqCompleted:
 		return s.updateReqStatus(payload, "completed")
 

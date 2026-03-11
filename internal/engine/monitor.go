@@ -187,6 +187,32 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 		log.Printf("[pipeline] %s -> PR #%d (%s) merged=%v",
 			storyID, result.PRNumber, result.PRURL, result.Merged)
 	}
+
+	// 4. Check if requirement is paused before next wave dispatch
+	if m.isRequirementPaused(storyID) {
+		log.Printf("[pipeline] requirement for %s is paused, skipping next wave dispatch", storyID)
+		return
+	}
+
+	log.Printf("[pipeline] post-execution complete for %s, next wave can be dispatched", storyID)
+}
+
+// isRequirementPaused looks up the requirement for a story and returns true
+// if it is in the "paused" state.
+func (m *Monitor) isRequirementPaused(storyID string) bool {
+	story, err := m.projStore.GetStory(storyID)
+	if err != nil {
+		log.Printf("[monitor] failed to get story %s for pause check: %v", storyID, err)
+		return false
+	}
+
+	req, err := m.projStore.GetRequirement(story.ReqID)
+	if err != nil {
+		log.Printf("[monitor] failed to get requirement %s for pause check: %v", story.ReqID, err)
+		return false
+	}
+
+	return req.Status == "paused"
 }
 
 // gitDiff returns the git diff for committed changes in a worktree.

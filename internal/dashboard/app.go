@@ -36,11 +36,12 @@ type tickMsg time.Time
 
 // dataMsg carries refreshed data from the stores.
 type dataMsg struct {
-	stories     []state.Story
-	agents      []state.Agent
-	events      []state.Event
-	escalations []state.Escalation
-	err         error
+	requirements []state.Requirement
+	stories      []state.Story
+	agents       []state.Agent
+	events       []state.Event
+	escalations  []state.Escalation
+	err          error
 }
 
 // Model is the top-level Bubbletea model for the NXD dashboard.
@@ -54,12 +55,13 @@ type Model struct {
 	height      int
 
 	// Cached data from last refresh.
-	stories     []state.Story
-	agents      []state.Agent
-	events      []state.Event
-	escalations []state.Escalation
-	lastRefresh time.Time
-	err         error
+	requirements []state.Requirement
+	stories      []state.Story
+	agents       []state.Agent
+	events       []state.Event
+	escalations  []state.Escalation
+	lastRefresh  time.Time
+	err          error
 }
 
 // New creates a new dashboard Model with the given stores and version string.
@@ -117,7 +119,7 @@ func (m Model) View() string {
 	var content string
 	switch m.activePanel {
 	case panelPipeline:
-		content = renderPipeline(m.stories, panelWidth, panelHeight)
+		content = renderPipeline(m.stories, m.requirements, panelWidth, panelHeight)
 	case panelAgents:
 		content = renderAgents(m.agents, panelWidth, panelHeight)
 	case panelActivity:
@@ -215,6 +217,13 @@ func (m Model) fetchData() tea.Cmd {
 	return func() tea.Msg {
 		var d dataMsg
 
+		reqs, err := ps.ListRequirements()
+		if err != nil {
+			d.err = fmt.Errorf("list requirements: %w", err)
+			return d
+		}
+		d.requirements = reqs
+
 		stories, err := ps.ListStories(state.StoryFilter{})
 		if err != nil {
 			d.err = fmt.Errorf("list stories: %w", err)
@@ -250,18 +259,19 @@ func (m Model) fetchData() tea.Cmd {
 // applyData updates the model with freshly fetched data.
 func (m Model) applyData(d dataMsg) Model {
 	return Model{
-		eventStore:  m.eventStore,
-		projStore:   m.projStore,
-		version:     m.version,
-		activePanel: m.activePanel,
-		width:       m.width,
-		height:      m.height,
-		stories:     d.stories,
-		agents:      d.agents,
-		events:      d.events,
-		escalations: d.escalations,
-		lastRefresh: time.Now(),
-		err:         d.err,
+		eventStore:   m.eventStore,
+		projStore:    m.projStore,
+		version:      m.version,
+		activePanel:  m.activePanel,
+		width:        m.width,
+		height:       m.height,
+		requirements: d.requirements,
+		stories:      d.stories,
+		agents:       d.agents,
+		events:       d.events,
+		escalations:  d.escalations,
+		lastRefresh:  time.Now(),
+		err:          d.err,
 	}
 }
 
