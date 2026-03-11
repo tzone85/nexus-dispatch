@@ -94,6 +94,9 @@ func NewSQLiteStore(dsn string) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("apply migration: %w", err)
 	}
 
+	// Migrate existing databases: add acceptance_criteria column if missing.
+	db.Exec(`ALTER TABLE stories ADD COLUMN acceptance_criteria TEXT NOT NULL DEFAULT ''`)
+
 	return &SQLiteStore{db: db}, nil
 }
 
@@ -435,6 +438,26 @@ func (s *SQLiteStore) updateStoryStatus(storyID, status string) error {
 		status, storyID,
 	)
 	return err
+}
+
+// BackfillAcceptanceCriteria updates stories that have an empty
+// acceptance_criteria by extracting it from STORY_CREATED events.
+// This handles databases created before the column was added.
+func (s *SQLiteStore) BackfillAcceptanceCriteria(events []Event) {
+	for _, evt := range events {
+		if evt.Type != EventStoryCreated || evt.Payload == nil {
+			continue
+		}
+		payload := s.decodePayload(evt)
+		ac := payloadStr(payload, "acceptance_criteria")
+		storyID := payloadStr(payload, "id")
+		if ac != "" && storyID != "" {
+			s.db.Exec(
+				`UPDATE stories SET acceptance_criteria = ? WHERE id = ? AND acceptance_criteria = ''`,
+				ac, storyID,
+			)
+		}
+	}
 }
 
 // --- payload extraction helpers ---

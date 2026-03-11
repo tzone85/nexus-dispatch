@@ -38,6 +38,10 @@ func loadStores(cfgPath string) (stores, error) {
 		return stores{}, fmt.Errorf("open projection store: %w", err)
 	}
 
+	// Backfill acceptance_criteria for stories created before the column existed.
+	allEvents, _ := es.List(state.EventFilter{Type: state.EventStoryCreated})
+	ps.BackfillAcceptanceCriteria(allEvents)
+
 	return stores{
 		Config: cfg,
 		Events: es,

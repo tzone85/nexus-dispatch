@@ -155,7 +155,15 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 
 	// 1. Code Review
 	if m.reviewer != nil {
-		result, err := m.reviewer.Review(ctx, storyID, storyID, "", diff)
+		// Look up story details for the reviewer
+		storyTitle := storyID
+		storyAC := ""
+		if story, err := m.projStore.GetStory(storyID); err == nil {
+			storyTitle = story.Title
+			storyAC = story.AcceptanceCriteria
+		}
+
+		result, err := m.reviewer.Review(ctx, storyID, storyTitle, storyAC, diff)
 		if err != nil {
 			log.Printf("[pipeline] review error for %s: %v", storyID, err)
 			return
