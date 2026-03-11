@@ -135,9 +135,27 @@ func (c *CLIRuntime) Spawn(cfg SessionConfig) error {
 		cmdStr += fmt.Sprintf(" 2>&1 | tee %q", cfg.LogFile)
 	}
 
-	// Unset CLAUDECODE to prevent "nested session" errors when NXD itself
-	// is running inside a Claude Code session.
-	cmdStr = "unset CLAUDECODE; " + cmdStr
+	// Pass through API keys and unset CLAUDECODE to prevent "nested session"
+	// errors when NXD itself is running inside a Claude Code session.
+	// Tmux sessions don't inherit the parent shell's environment reliably,
+	// so we explicitly export any API keys the current process has.
+	var envExports string
+	for _, key := range []string{
+		"ANTHROPIC_API_KEY",
+		"OPENAI_API_KEY",
+		"GOOGLE_API_KEY",
+		"GEMINI_API_KEY",
+		"OLLAMA_HOST",
+	} {
+		if val := os.Getenv(key); val != "" {
+			envExports += fmt.Sprintf("export %s=%q; ", key, val)
+		}
+	}
+	// Also pass through any env vars from the session config.
+	for key, val := range cfg.EnvVars {
+		envExports += fmt.Sprintf("export %s=%q; ", key, val)
+	}
+	cmdStr = envExports + "unset CLAUDECODE; " + cmdStr
 
 	return tmux.CreateSession(cfg.SessionName, cfg.WorkDir, cmdStr)
 }
