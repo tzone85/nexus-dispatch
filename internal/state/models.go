@@ -13,16 +13,17 @@ type Requirement struct {
 
 // Story represents a single unit of work derived from a requirement.
 type Story struct {
-	ID          string
-	ReqID       string
-	Title       string
-	Description string
-	Complexity  int
-	Status      string
-	AgentID     string
-	Branch      string
-	PRUrl       string
-	CreatedAt   time.Time
+	ID                 string
+	ReqID              string
+	Title              string
+	Description        string
+	AcceptanceCriteria string
+	Complexity         int
+	Status             string
+	AgentID            string
+	Branch             string
+	PRUrl              string
+	CreatedAt          time.Time
 }
 
 // Agent represents an AI agent that can work on stories.

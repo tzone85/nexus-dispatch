@@ -143,24 +143,28 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 
 	log.Printf("[pipeline] starting post-execution for %s", storyID)
 
+	// Check if agent produced any changes
+	diff, err := gitDiff(ag.WorktreePath)
+	if err != nil {
+		log.Printf("[pipeline] git diff error for %s: %v", storyID, err)
+	}
+	if diff == "" {
+		log.Printf("[pipeline] no changes produced for %s, skipping post-execution", storyID)
+		return
+	}
+
 	// 1. Code Review
 	if m.reviewer != nil {
-		diff, err := gitDiff(ag.WorktreePath)
+		result, err := m.reviewer.Review(ctx, storyID, storyID, "", diff)
 		if err != nil {
-			log.Printf("[pipeline] git diff error for %s: %v", storyID, err)
+			log.Printf("[pipeline] review error for %s: %v", storyID, err)
+			return
 		}
-		if diff != "" {
-			result, err := m.reviewer.Review(ctx, storyID, storyID, "", diff)
-			if err != nil {
-				log.Printf("[pipeline] review error for %s: %v", storyID, err)
-				return
-			}
-			if !result.Passed {
-				log.Printf("[pipeline] review rejected %s: %s", storyID, result.Summary)
-				return
-			}
-			log.Printf("[pipeline] review passed for %s", storyID)
+		if !result.Passed {
+			log.Printf("[pipeline] review rejected %s: %s", storyID, result.Summary)
+			return
 		}
+		log.Printf("[pipeline] review passed for %s", storyID)
 	}
 
 	// 2. QA

@@ -17,11 +17,12 @@ type PRInfo struct {
 
 // CreatePR opens a new pull request from the current branch to baseBranch
 // using the gh CLI.
-func CreatePR(repoDir, title, body, baseBranch string) (PRInfo, error) {
+func CreatePR(repoDir, title, body, baseBranch, headBranch string) (PRInfo, error) {
 	cmd := exec.Command("gh", "pr", "create",
 		"--title", title,
 		"--body", body,
 		"--base", baseBranch,
+		"--head", headBranch,
 	)
 	cmd.Dir = repoDir
 	out, err := cmd.CombinedOutput()

@@ -111,19 +111,21 @@ func TestIntegration_PlannerToDispatcher(t *testing.T) {
 		t.Fatalf("dispatch wave 1: %v", err)
 	}
 
-	// Wave 1: s-001 (no deps) and s-003 depends on s-001, s-002 depends on s-001
-	// Only s-001 is ready in wave 1.
+	// Story IDs are prefixed: reqID "r-integ-1" (9 chars) → prefix "r-integ-"
+	// So "s-001" → "r-integ--s-001", "s-002" → "r-integ--s-002", etc.
+
+	// Wave 1: s-001 (no deps) is the only story ready.
 	if len(assignments) != 1 {
 		t.Fatalf("expected 1 assignment in wave 1, got %d", len(assignments))
 	}
-	if assignments[0].StoryID != "s-001" {
-		t.Fatalf("expected s-001 in wave 1, got %s", assignments[0].StoryID)
+	if assignments[0].StoryID != "r-integ--s-001" {
+		t.Fatalf("expected r-integ--s-001 in wave 1, got %s", assignments[0].StoryID)
 	}
 
-	// Verify story s-001 is now 'assigned' in projection.
-	s001, err := ps.GetStory("s-001")
+	// Verify story is now 'assigned' in projection.
+	s001, err := ps.GetStory("r-integ--s-001")
 	if err != nil {
-		t.Fatalf("get story s-001: %v", err)
+		t.Fatalf("get story r-integ--s-001: %v", err)
 	}
 	if s001.Status != "assigned" {
 		t.Fatalf("expected s-001 status 'assigned', got %q", s001.Status)
@@ -135,7 +137,7 @@ func TestIntegration_PlannerToDispatcher(t *testing.T) {
 	}
 
 	// --- Phase 3: Dispatch Wave 2 ---
-	completed["s-001"] = true
+	completed["r-integ--s-001"] = true
 	assignments2, err := dispatcher.DispatchWave(planResult.Graph, completed, "r-integ-1", planResult.Stories)
 	if err != nil {
 		t.Fatalf("dispatch wave 2: %v", err)
@@ -152,24 +154,24 @@ func TestIntegration_PlannerToDispatcher(t *testing.T) {
 		assignmentMap[a.StoryID] = a
 	}
 
-	if a, ok := assignmentMap["s-002"]; ok {
+	if a, ok := assignmentMap["r-integ--s-002"]; ok {
 		if a.Role != "intermediate" {
 			t.Fatalf("s-002 (complexity 5) should route to intermediate, got %s", a.Role)
 		}
 	} else {
-		t.Fatal("s-002 not found in wave 2 assignments")
+		t.Fatal("r-integ--s-002 not found in wave 2 assignments")
 	}
 
-	if a, ok := assignmentMap["s-003"]; ok {
+	if a, ok := assignmentMap["r-integ--s-003"]; ok {
 		if a.Role != "junior" {
 			t.Fatalf("s-003 (complexity 3) should route to junior, got %s", a.Role)
 		}
 	} else {
-		t.Fatal("s-003 not found in wave 2 assignments")
+		t.Fatal("r-integ--s-003 not found in wave 2 assignments")
 	}
 
 	// Verify all wave 2 stories are now 'assigned'.
-	for _, id := range []string{"s-002", "s-003"} {
+	for _, id := range []string{"r-integ--s-002", "r-integ--s-003"} {
 		story, err := ps.GetStory(id)
 		if err != nil {
 			t.Fatalf("get story %s: %v", id, err)
@@ -396,14 +398,17 @@ func TestIntegration_MultiStoryPipeline(t *testing.T) {
 		t.Fatalf("plan: %v", err)
 	}
 
+	// Story IDs are prefixed: reqID "r-multi" (7 chars) → prefix "r-multi"
+	// So "s-m1" → "r-multi-s-m1", "s-m2" → "r-multi-s-m2"
+
 	// Dispatch wave 1: only s-m1 (no deps).
 	dispatcher := engine.NewDispatcher(cfg, es, ps)
 	wave1, err := dispatcher.DispatchWave(planResult.Graph, map[string]bool{}, "r-multi", planResult.Stories)
 	if err != nil {
 		t.Fatalf("dispatch wave 1: %v", err)
 	}
-	if len(wave1) != 1 || wave1[0].StoryID != "s-m1" {
-		t.Fatalf("wave 1: expected [s-m1], got %v", wave1)
+	if len(wave1) != 1 || wave1[0].StoryID != "r-multi-s-m1" {
+		t.Fatalf("wave 1: expected [r-multi-s-m1], got %v", wave1)
 	}
 
 	// Simulate s-m1 completion through the full lifecycle.
@@ -414,7 +419,7 @@ func TestIntegration_MultiStoryPipeline(t *testing.T) {
 		state.EventStoryQAPassed,
 		state.EventStoryMerged,
 	} {
-		evt := state.NewEvent(evtType, "agent-m1", "s-m1", nil)
+		evt := state.NewEvent(evtType, "agent-m1", "r-multi-s-m1", nil)
 		if err := es.Append(evt); err != nil {
 			t.Fatalf("append %s: %v", evtType, err)
 		}
@@ -424,18 +429,18 @@ func TestIntegration_MultiStoryPipeline(t *testing.T) {
 	}
 
 	// Verify s-m1 is merged.
-	sm1, _ := ps.GetStory("s-m1")
+	sm1, _ := ps.GetStory("r-multi-s-m1")
 	if sm1.Status != "merged" {
-		t.Fatalf("expected s-m1 'merged', got %q", sm1.Status)
+		t.Fatalf("expected r-multi-s-m1 'merged', got %q", sm1.Status)
 	}
 
 	// Dispatch wave 2: s-m2 depends on s-m1 which is now completed.
-	wave2, err := dispatcher.DispatchWave(planResult.Graph, map[string]bool{"s-m1": true}, "r-multi", planResult.Stories)
+	wave2, err := dispatcher.DispatchWave(planResult.Graph, map[string]bool{"r-multi-s-m1": true}, "r-multi", planResult.Stories)
 	if err != nil {
 		t.Fatalf("dispatch wave 2: %v", err)
 	}
-	if len(wave2) != 1 || wave2[0].StoryID != "s-m2" {
-		t.Fatalf("wave 2: expected [s-m2], got %v", wave2)
+	if len(wave2) != 1 || wave2[0].StoryID != "r-multi-s-m2" {
+		t.Fatalf("wave 2: expected [r-multi-s-m2], got %v", wave2)
 	}
 
 	// Complexity 8 should route to senior.
@@ -444,13 +449,13 @@ func TestIntegration_MultiStoryPipeline(t *testing.T) {
 	}
 
 	// Verify s-m2 is assigned.
-	sm2, _ := ps.GetStory("s-m2")
+	sm2, _ := ps.GetStory("r-multi-s-m2")
 	if sm2.Status != "assigned" {
-		t.Fatalf("expected s-m2 'assigned', got %q", sm2.Status)
+		t.Fatalf("expected r-multi-s-m2 'assigned', got %q", sm2.Status)
 	}
 
 	// No more waves should be dispatchable.
-	completed := map[string]bool{"s-m1": true, "s-m2": true}
+	completed := map[string]bool{"r-multi-s-m1": true, "r-multi-s-m2": true}
 	wave3, err := dispatcher.DispatchWave(planResult.Graph, completed, "r-multi", planResult.Stories)
 	if err != nil {
 		t.Fatalf("dispatch wave 3: %v", err)
@@ -505,8 +510,8 @@ func TestIntegration_PlannerEventPersistence(t *testing.T) {
 		t.Fatalf("expected 1 REQ_PLANNED event, got %d", len(plannedEvents))
 	}
 
-	// Verify projection has the story.
-	story, err := ps.GetStory("s-p1")
+	// Verify projection has the story (prefixed: "r-persis" + "-" + "s-p1").
+	story, err := ps.GetStory("r-persis-s-p1")
 	if err != nil {
 		t.Fatalf("get story: %v", err)
 	}

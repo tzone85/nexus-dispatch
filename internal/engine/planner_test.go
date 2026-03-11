@@ -73,8 +73,8 @@ func TestPlanner_Plan(t *testing.T) {
 		t.Fatalf("expected 3 STORY_CREATED events, got %d", len(events))
 	}
 
-	// Verify projection
-	story, err := projStore.GetStory("s-001")
+	// Verify projection (story IDs are prefixed with short reqID)
+	story, err := projStore.GetStory("r-001-s-001")
 	if err != nil {
 		t.Fatalf("get story: %v", err)
 	}

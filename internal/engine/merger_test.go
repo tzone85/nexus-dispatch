@@ -26,7 +26,7 @@ func (m *mockGitHubOps) PushBranch(_, _ string) error {
 	return m.pushErr
 }
 
-func (m *mockGitHubOps) CreatePR(_, _, _, _ string) (engine.PRCreationResult, error) {
+func (m *mockGitHubOps) CreatePR(_, _, _, _, _ string) (engine.PRCreationResult, error) {
 	return m.createPR, m.createErr
 }
 

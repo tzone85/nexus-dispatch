@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS stories (
     req_id TEXT NOT NULL,
     title TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
+    acceptance_criteria TEXT NOT NULL DEFAULT '',
     complexity INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'draft',
     agent_id TEXT NOT NULL DEFAULT '',
@@ -173,12 +174,12 @@ func (s *SQLiteStore) GetRequirement(id string) (Requirement, error) {
 func (s *SQLiteStore) GetStory(id string) (Story, error) {
 	var story Story
 	err := s.db.QueryRow(
-		`SELECT id, req_id, title, description, complexity, status, agent_id, branch, pr_url, created_at
+		`SELECT id, req_id, title, description, acceptance_criteria, complexity, status, agent_id, branch, pr_url, created_at
 		 FROM stories WHERE id = ?`,
 		id,
 	).Scan(
 		&story.ID, &story.ReqID, &story.Title, &story.Description,
-		&story.Complexity, &story.Status, &story.AgentID, &story.Branch,
+		&story.AcceptanceCriteria, &story.Complexity, &story.Status, &story.AgentID, &story.Branch,
 		&story.PRUrl, &story.CreatedAt,
 	)
 	if err != nil {
@@ -189,7 +190,7 @@ func (s *SQLiteStore) GetStory(id string) (Story, error) {
 
 // ListStories returns stories matching the given filter.
 func (s *SQLiteStore) ListStories(filter StoryFilter) ([]Story, error) {
-	query := `SELECT id, req_id, title, description, complexity, status, agent_id, branch, pr_url, created_at FROM stories`
+	query := `SELECT id, req_id, title, description, acceptance_criteria, complexity, status, agent_id, branch, pr_url, created_at FROM stories`
 	var conditions []string
 	var args []any
 
@@ -218,7 +219,7 @@ func (s *SQLiteStore) ListStories(filter StoryFilter) ([]Story, error) {
 		var story Story
 		if err := rows.Scan(
 			&story.ID, &story.ReqID, &story.Title, &story.Description,
-			&story.Complexity, &story.Status, &story.AgentID, &story.Branch,
+			&story.AcceptanceCriteria, &story.Complexity, &story.Status, &story.AgentID, &story.Branch,
 			&story.PRUrl, &story.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan story: %w", err)
@@ -387,12 +388,13 @@ func (s *SQLiteStore) projectStoryCreated(payload map[string]any) error {
 	complexity := payloadInt(payload, "complexity")
 	storyID := payloadStr(payload, "id")
 	_, err := s.db.Exec(
-		`INSERT INTO stories (id, req_id, title, description, complexity, status)
-		 VALUES (?, ?, ?, ?, ?, 'draft')`,
+		`INSERT INTO stories (id, req_id, title, description, acceptance_criteria, complexity, status)
+		 VALUES (?, ?, ?, ?, ?, ?, 'draft')`,
 		storyID,
 		payloadStr(payload, "req_id"),
 		payloadStr(payload, "title"),
 		payloadStr(payload, "description"),
+		payloadStr(payload, "acceptance_criteria"),
 		complexity,
 	)
 	if err != nil {

@@ -193,10 +193,11 @@ func rebuildDAG(proj *state.SQLiteStore, reqID string, stories []state.Story) (*
 	for _, story := range stories {
 		dag.AddNode(story.ID)
 		planned = append(planned, engine.PlannedStory{
-			ID:          story.ID,
-			Title:       story.Title,
-			Description: story.Description,
-			Complexity:  story.Complexity,
+			ID:                 story.ID,
+			Title:              story.Title,
+			Description:        story.Description,
+			AcceptanceCriteria: engine.FlexibleString(story.AcceptanceCriteria),
+			Complexity:         story.Complexity,
 		})
 	}
 
@@ -219,8 +220,8 @@ func (g *ghOpsAdapter) PushBranch(repoDir, branch string) error {
 	return nxdgit.PushBranch(repoDir, branch)
 }
 
-func (g *ghOpsAdapter) CreatePR(repoDir, title, body, baseBranch string) (engine.PRCreationResult, error) {
-	pr, err := nxdgit.CreatePR(repoDir, title, body, baseBranch)
+func (g *ghOpsAdapter) CreatePR(repoDir, title, body, baseBranch, headBranch string) (engine.PRCreationResult, error) {
+	pr, err := nxdgit.CreatePR(repoDir, title, body, baseBranch, headBranch)
 	if err != nil {
 		return engine.PRCreationResult{}, err
 	}

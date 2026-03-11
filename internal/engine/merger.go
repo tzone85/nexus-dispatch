@@ -11,7 +11,7 @@ import (
 // GitHubOps abstracts GitHub operations for testability.
 type GitHubOps interface {
 	PushBranch(repoDir, branch string) error
-	CreatePR(repoDir, title, body, baseBranch string) (PRCreationResult, error)
+	CreatePR(repoDir, title, body, baseBranch, headBranch string) (PRCreationResult, error)
 	MergePR(repoDir string, prNumber int) error
 }
 
@@ -97,7 +97,7 @@ func (m *Merger) mergeGitHub(storyID, storyTitle, repoDir, branch string) (Merge
 	prTitle := fmt.Sprintf("[NXD] %s", storyTitle)
 	prBody := fmt.Sprintf("Automated PR for story %s\n\n%s", storyID, storyTitle)
 
-	pr, err := m.ghOps.CreatePR(repoDir, prTitle, prBody, m.config.BaseBranch)
+	pr, err := m.ghOps.CreatePR(repoDir, prTitle, prBody, m.config.BaseBranch, branch)
 	if err != nil {
 		return MergeResult{}, fmt.Errorf("create PR for %s: %w", storyID, err)
 	}
