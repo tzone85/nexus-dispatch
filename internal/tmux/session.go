@@ -14,7 +14,11 @@ func Available() bool {
 
 // CreateSession starts a new detached tmux session with the given name and
 // working directory. An optional initial command may be provided.
+// If a session with the same name already exists it is killed first.
 func CreateSession(name, workDir, command string) error {
+	if SessionExists(name) {
+		KillSession(name)
+	}
 	args := []string{"new-session", "-d", "-s", name, "-c", workDir}
 	if command != "" {
 		args = append(args, command)
