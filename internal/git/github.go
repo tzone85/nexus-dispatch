@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 )
 
@@ -31,7 +32,16 @@ func CreatePR(repoDir, title, body, baseBranch, headBranch string) (PRInfo, erro
 	}
 
 	url := strings.TrimSpace(string(out))
-	return PRInfo{URL: url}, nil
+
+	// Extract PR number from URL (e.g. https://github.com/owner/repo/pull/123)
+	var number int
+	if parts := strings.Split(url, "/"); len(parts) > 0 {
+		if n, err := strconv.Atoi(parts[len(parts)-1]); err == nil {
+			number = n
+		}
+	}
+
+	return PRInfo{Number: number, URL: url}, nil
 }
 
 // MergePR squash-merges the given PR number and deletes the source branch.

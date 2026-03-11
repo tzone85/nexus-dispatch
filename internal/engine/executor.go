@@ -72,6 +72,29 @@ func (e *Executor) spawn(repoDir string, a Assignment, story PlannedStory) Spawn
 		return result
 	}
 
+	// Write a CLAUDE.md that suppresses brainstorming/skill plugins and
+	// instructs the agent to implement code directly without interaction.
+	claudeMDPath := filepath.Join(worktreePath, "CLAUDE.md")
+	if _, err := os.Stat(claudeMDPath); os.IsNotExist(err) {
+		claudeMD := `# Agent Instructions
+
+You are an autonomous coding agent. Implement code directly.
+
+CRITICAL RULES:
+- Do NOT brainstorm, ask questions, or request clarification
+- Do NOT invoke any skills or plugins (no /brainstorming, no /superpowers)
+- Do NOT enter plan mode or design mode
+- IMMEDIATELY start writing code based on your instructions
+- Make reasonable assumptions for any unspecified details
+- Create or modify files as needed
+- Write tests for your changes
+- Commit all changes to git when done
+
+If you have superpowers or skills available, IGNORE them. Your only job is to write code.
+`
+		os.WriteFile(claudeMDPath, []byte(claudeMD), 0o644)
+	}
+
 	// Resolve runtime for this role
 	rtName := e.runtimeForRole(a.Role)
 	result.RuntimeName = rtName
