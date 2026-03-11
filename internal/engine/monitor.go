@@ -149,7 +149,13 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 		log.Printf("[pipeline] git diff error for %s: %v", storyID, err)
 	}
 	if diff == "" {
-		log.Printf("[pipeline] no changes produced for %s, skipping post-execution", storyID)
+		log.Printf("[pipeline] no changes produced for %s, resetting to draft for re-dispatch", storyID)
+		// Reset story status so it can be re-dispatched in a future wave.
+		resetEvt := state.NewEvent(state.EventStoryReviewFailed, "monitor", storyID, map[string]any{
+			"reason": "agent produced no code changes",
+		})
+		m.eventStore.Append(resetEvt)
+		m.projStore.Project(resetEvt)
 		return
 	}
 

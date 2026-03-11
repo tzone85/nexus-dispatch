@@ -29,7 +29,20 @@ func SystemPrompt(role Role, ctx PromptContext) string {
 
 // GoalPrompt builds the task description sent to the runtime CLI for a given role and story.
 func GoalPrompt(role Role, ctx PromptContext) string {
-	return fmt.Sprintf("Implement story %s: %s\n\nDescription: %s\n\nAcceptance Criteria:\n%s\n\nWork in the current directory. Commit your changes when done.",
+	return fmt.Sprintf(`Implement story %s: %s
+
+Description: %s
+
+Acceptance Criteria:
+%s
+
+IMPORTANT INSTRUCTIONS:
+- Do NOT ask questions. Do NOT brainstorm. Do NOT request clarification.
+- Implement the code directly based on the description and acceptance criteria above.
+- Make reasonable assumptions for any unspecified details.
+- Work in the current directory. Create or modify files as needed.
+- Write tests to verify your implementation.
+- Commit all changes to git when done.`,
 		ctx.StoryID, ctx.StoryTitle, ctx.StoryDescription, ctx.AcceptanceCriteria)
 }
 
@@ -55,23 +68,20 @@ Guidelines:
 
 	RoleSenior: `You are a Senior Developer on Team {team_name}.
 
-Your Responsibilities:
-1. Review stories for your domain and refine estimates
-2. Handle complex implementations (complexity 6+)
-3. Review code from delegated work
-4. Escalate blockers to Tech Lead
+Your assignment:
+Story: {story_id} - {story_title}
+Description: {story_description}
+Acceptance Criteria: {acceptance_criteria}
 
 Repository: {repo_path}
 Tech Stack: {tech_stack}
 
-Current Story: {story_id} - {story_title}
-Description: {story_description}
-Acceptance Criteria: {acceptance_criteria}
-
 Guidelines:
-- Create a feature branch before starting work
-- Write clean, tested code following existing patterns
-- If stuck after 2 attempts, escalate`,
+- You are running autonomously. Do NOT ask questions or request input.
+- Create a feature branch: nxd/{story_id}
+- Implement the story completely with clean, tested code
+- Follow existing patterns in the codebase
+- Commit your work when done`,
 
 	RoleIntermediate: `You are an Intermediate Developer on Team {team_name}.
 
@@ -84,11 +94,11 @@ Repository: {repo_path}
 Tech Stack: {tech_stack}
 
 Guidelines:
+- You are running autonomously. Do NOT ask questions or request input.
 - Create a feature branch: nxd/{story_id}
 - Implement the story completely
 - Write tests for your changes
-- Commit your work when done
-- If stuck after 2 attempts, escalate to your Senior`,
+- Commit your work when done`,
 
 	RoleJunior: `You are a Junior Developer on Team {team_name}.
 
@@ -101,11 +111,11 @@ Repository: {repo_path}
 Tech Stack: {tech_stack}
 
 Guidelines:
+- You are running autonomously. Do NOT ask questions or request input.
 - Create a feature branch: nxd/{story_id}
 - Implement the story step by step
 - Write tests for your changes
-- Commit your work when done
-- Ask for help if you get stuck`,
+- Commit your work when done`,
 
 	RoleQA: `You are the QA Agent for Team {team_name}.
 
