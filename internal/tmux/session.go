@@ -2,6 +2,7 @@ package tmux
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -17,7 +18,9 @@ func Available() bool {
 // If a session with the same name already exists it is killed first.
 func CreateSession(name, workDir, command string) error {
 	if SessionExists(name) {
-		KillSession(name)
+		if err := KillSession(name); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to kill existing session %s: %v\n", name, err)
+		}
 	}
 	args := []string{"new-session", "-d", "-s", name, "-c", workDir}
 	if command != "" {

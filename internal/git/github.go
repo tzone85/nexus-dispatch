@@ -44,12 +44,13 @@ func CreatePR(repoDir, title, body, baseBranch, headBranch string) (PRInfo, erro
 	return PRInfo{Number: number, URL: url}, nil
 }
 
-// MergePR squash-merges the given PR number and deletes the source branch.
+// MergePR squash-merges the given PR number. Branch cleanup is handled
+// separately because local branches checked out in worktrees cannot be
+// deleted by gh.
 func MergePR(repoDir string, prNumber int) error {
 	cmd := exec.Command("gh", "pr", "merge",
 		fmt.Sprintf("%d", prNumber),
 		"--squash",
-		"--delete-branch",
 	)
 	cmd.Dir = repoDir
 	out, err := cmd.CombinedOutput()
@@ -85,6 +86,64 @@ func PushBranch(repoDir, branch string) error {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("git push: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// DeleteRemoteBranch removes a branch from the origin remote.
+func DeleteRemoteBranch(repoDir, branch string) error {
+	cmd := exec.Command("git", "push", "origin", "--delete", branch)
+	cmd.Dir = repoDir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git push --delete: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// RemoveWorktree removes a git worktree and its local branch.
+func RemoveWorktree(repoDir, worktreePath, branch string) error {
+	// Remove the worktree first so the branch is no longer checked out.
+	rmCmd := exec.Command("git", "worktree", "remove", "--force", worktreePath)
+	rmCmd.Dir = repoDir
+	if out, err := rmCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git worktree remove: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+
+	// Now the local branch can be safely deleted.
+	brCmd := exec.Command("git", "branch", "-D", branch)
+	brCmd.Dir = repoDir
+	if out, err := brCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git branch -D: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+
+	return nil
+}
+
+// FetchBranch fetches a single branch from origin.
+func FetchBranch(repoDir, branch string) error {
+	cmd := exec.Command("git", "fetch", "origin", branch)
+	cmd.Dir = repoDir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git fetch: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// RebaseOnto rebases the branch in the given worktree onto the specified
+// upstream ref (e.g. "origin/main"). Returns an error if the rebase fails,
+// typically due to conflicts.
+func RebaseOnto(worktreePath, upstream string) error {
+	cmd := exec.Command("git", "rebase", upstream)
+	cmd.Dir = worktreePath
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		// Abort the failed rebase to leave the worktree in a clean state.
+		abort := exec.Command("git", "rebase", "--abort")
+		abort.Dir = worktreePath
+		abort.CombinedOutput()
+		return fmt.Errorf("git rebase %s: %w (%s)", upstream, err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }

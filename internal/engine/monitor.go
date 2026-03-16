@@ -4,10 +4,14 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"os/exec"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/tzone85/nexus-dispatch/internal/config"
+	nxdgit "github.com/tzone85/nexus-dispatch/internal/git"
 	"github.com/tzone85/nexus-dispatch/internal/runtime"
 	"github.com/tzone85/nexus-dispatch/internal/state"
 )
@@ -23,6 +27,11 @@ type Monitor struct {
 	config     config.Config
 	eventStore state.EventStore
 	projStore  state.ProjectionStore
+
+	// mergeMu serializes the rebase-push-merge cycle so that each story
+	// rebases onto the latest main before merging, preventing conflicts
+	// when parallel agents touch the same files.
+	mergeMu sync.Mutex
 }
 
 // NewMonitor creates a Monitor wired to all pipeline components.
@@ -49,7 +58,8 @@ func NewMonitor(
 }
 
 // Run polls active agents at the configured interval until all are done
-// or the context is cancelled.
+// or the context is cancelled. When all agents finish naturally, Run waits
+// for their post-execution pipelines (review, QA, merge) to complete.
 func (m *Monitor) Run(ctx context.Context, agents []ActiveAgent, repoDir string) error {
 	pollInterval := time.Duration(m.config.Monitor.PollIntervalMs) * time.Millisecond
 	if pollInterval == 0 {
@@ -58,6 +68,8 @@ func (m *Monitor) Run(ctx context.Context, agents []ActiveAgent, repoDir string)
 
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
+
+	var pipelineWG sync.WaitGroup
 
 	active := make(map[string]ActiveAgent, len(agents))
 	for _, a := range agents {
@@ -73,18 +85,20 @@ func (m *Monitor) Run(ctx context.Context, agents []ActiveAgent, repoDir string)
 			return nil // graceful detach, agents continue in tmux
 		case <-ticker.C:
 			if len(active) == 0 {
-				log.Printf("[monitor] all agents finished")
+				log.Printf("[monitor] all agents finished, waiting for post-execution pipelines")
+				pipelineWG.Wait()
+				log.Printf("[monitor] all pipelines complete")
 				return nil
 			}
 
-			m.pollOnce(ctx, active, repoDir)
+			m.pollOnce(ctx, &pipelineWG, active, repoDir)
 		}
 	}
 }
 
 // pollOnce performs a single pass over active agents, checking status and
 // kicking off post-execution pipelines for any that have finished.
-func (m *Monitor) pollOnce(ctx context.Context, active map[string]ActiveAgent, repoDir string) {
+func (m *Monitor) pollOnce(ctx context.Context, wg *sync.WaitGroup, active map[string]ActiveAgent, repoDir string) {
 	for sessionName, ag := range active {
 		rt, err := m.registry.Get(ag.RuntimeName)
 		if err != nil {
@@ -126,7 +140,11 @@ func (m *Monitor) pollOnce(ctx context.Context, active map[string]ActiveAgent, r
 		}
 
 		// Drive post-execution pipeline
-		go m.postExecutionPipeline(ctx, ag, repoDir)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			m.postExecutionPipeline(ctx, ag, repoDir)
+		}()
 
 		// Remove from active tracking
 		m.watchdog.ClearFingerprint(sessionName)
@@ -142,6 +160,12 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 	branch := ag.Assignment.Branch
 
 	log.Printf("[pipeline] starting post-execution for %s", storyID)
+
+	// Auto-commit any uncommitted work left by the agent.
+	// Agents frequently exit without committing their changes,
+	// especially in -p (prompt) mode. This safety net ensures we capture
+	// the work before checking the diff.
+	autoCommit(ag.WorktreePath, storyID)
 
 	// Check if agent produced any changes
 	diff, err := gitDiff(ag.WorktreePath)
@@ -172,10 +196,16 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 		result, err := m.reviewer.Review(ctx, storyID, storyTitle, storyAC, diff)
 		if err != nil {
 			log.Printf("[pipeline] review error for %s: %v", storyID, err)
+			m.resetStoryToDraft(storyID, "reviewer", fmt.Sprintf("review error: %v", err))
 			return
 		}
 		if !result.Passed {
 			log.Printf("[pipeline] review rejected %s: %s", storyID, result.Summary)
+			failEvt := state.NewEvent(state.EventStoryReviewFailed, "reviewer", storyID, map[string]any{
+				"reason": result.Summary,
+			})
+			m.eventStore.Append(failEvt)
+			m.projStore.Project(failEvt)
 			return
 		}
 		log.Printf("[pipeline] review passed for %s", storyID)
@@ -186,24 +216,44 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 		result, err := m.qa.Run(ctx, storyID, ag.WorktreePath)
 		if err != nil {
 			log.Printf("[pipeline] QA error for %s: %v", storyID, err)
+			m.resetStoryToDraft(storyID, "qa", fmt.Sprintf("QA error: %v", err))
 			return
 		}
 		if !result.Passed {
 			log.Printf("[pipeline] QA failed for %s", storyID)
+			failEvt := state.NewEvent(state.EventStoryReviewFailed, "qa", storyID, map[string]any{
+				"reason": "QA checks failed",
+			})
+			m.eventStore.Append(failEvt)
+			m.projStore.Project(failEvt)
 			return
 		}
 		log.Printf("[pipeline] QA passed for %s", storyID)
 	}
 
-	// 3. Merge
+	// 3. Merge (serialized: rebase onto latest main, then push + merge)
 	if m.merger != nil {
-		result, err := m.merger.Merge(storyID, storyID, repoDir, branch)
+		m.mergeMu.Lock()
+		result, err := m.rebaseAndMerge(storyID, branch, repoDir, ag.WorktreePath)
+		m.mergeMu.Unlock()
+
 		if err != nil {
 			log.Printf("[pipeline] merge error for %s: %v", storyID, err)
+			m.resetStoryToDraft(storyID, "merger", fmt.Sprintf("merge/rebase error: %v", err))
 			return
 		}
 		log.Printf("[pipeline] %s -> PR #%d (%s) merged=%v",
 			storyID, result.PRNumber, result.PRURL, result.Merged)
+
+		// Clean up worktree and branches after successful merge.
+		if result.Merged {
+			if err := nxdgit.RemoveWorktree(repoDir, ag.WorktreePath, branch); err != nil {
+				log.Printf("[pipeline] worktree cleanup for %s: %v", storyID, err)
+			}
+			if err := nxdgit.DeleteRemoteBranch(repoDir, branch); err != nil {
+				log.Printf("[pipeline] remote branch cleanup for %s: %v", storyID, err)
+			}
+		}
 	}
 
 	// 4. Check if requirement is paused before next wave dispatch
@@ -213,6 +263,31 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 	}
 
 	log.Printf("[pipeline] post-execution complete for %s, next wave can be dispatched", storyID)
+}
+
+// rebaseAndMerge fetches the latest base branch, rebases the worktree onto
+// it, then delegates to the merger for push + PR + auto-merge. This must be
+// called while holding mergeMu so that each story sees the result of any
+// prior merge before rebasing.
+func (m *Monitor) rebaseAndMerge(storyID, branch, repoDir, worktreePath string) (MergeResult, error) {
+	baseBranch := m.config.Merge.BaseBranch
+	if baseBranch == "" {
+		baseBranch = "main"
+	}
+
+	log.Printf("[pipeline] fetching %s and rebasing %s for %s", baseBranch, branch, storyID)
+
+	if err := nxdgit.FetchBranch(repoDir, baseBranch); err != nil {
+		return MergeResult{}, fmt.Errorf("fetch %s: %w", baseBranch, err)
+	}
+
+	if err := nxdgit.RebaseOnto(worktreePath, "origin/"+baseBranch); err != nil {
+		return MergeResult{}, fmt.Errorf("rebase onto %s: %w", baseBranch, err)
+	}
+
+	log.Printf("[pipeline] rebase succeeded for %s, proceeding to merge", storyID)
+
+	return m.merger.Merge(storyID, storyID, repoDir, branch)
 }
 
 // isRequirementPaused looks up the requirement for a story and returns true
@@ -231,6 +306,88 @@ func (m *Monitor) isRequirementPaused(storyID string) bool {
 	}
 
 	return req.Status == "paused"
+}
+
+// resetStoryToDraft emits a STORY_REVIEW_FAILED event to move a story back
+// to "draft" so it can be re-dispatched. This handles error paths (review
+// errors, QA errors, rebase conflicts) that would otherwise leave the story
+// stuck in an intermediate status.
+func (m *Monitor) resetStoryToDraft(storyID, fromAgent, reason string) {
+	evt := state.NewEvent(state.EventStoryReviewFailed, fromAgent, storyID, map[string]any{
+		"reason": reason,
+	})
+	if err := m.eventStore.Append(evt); err != nil {
+		log.Printf("[pipeline] failed to append reset event for %s: %v", storyID, err)
+	}
+	if err := m.projStore.Project(evt); err != nil {
+		log.Printf("[pipeline] failed to project reset event for %s: %v", storyID, err)
+	}
+	log.Printf("[pipeline] reset %s to draft: %s", storyID, reason)
+}
+
+// autoCommit stages and commits any uncommitted changes in the worktree.
+// This is a safety net for agents that produce code but exit without
+// committing. NXD artifacts (.nxd-prompts, CLAUDE.md, .serena) are excluded.
+func autoCommit(worktreePath, storyID string) {
+	// Check for uncommitted changes (staged or unstaged).
+	statusCmd := exec.Command("git", "status", "--porcelain")
+	statusCmd.Dir = worktreePath
+	statusOut, err := statusCmd.CombinedOutput()
+	if err != nil || len(strings.TrimSpace(string(statusOut))) == 0 {
+		return // nothing to commit
+	}
+
+	log.Printf("[pipeline] auto-committing uncommitted work for %s", storyID)
+
+	// Ensure NXD artifacts are in .gitignore so they are never committed.
+	ensureGitignorePatterns(worktreePath)
+
+	// Stage all non-ignored changes.
+	addCmd := exec.Command("git", "add", "-A")
+	addCmd.Dir = worktreePath
+	if out, err := addCmd.CombinedOutput(); err != nil {
+		log.Printf("[pipeline] git add failed for %s: %v (%s)", storyID, err, strings.TrimSpace(string(out)))
+		return
+	}
+
+	// Commit with a descriptive message.
+	commitCmd := exec.Command("git", "commit", "-m",
+		fmt.Sprintf("feat(%s): auto-commit agent work\n\nNXD auto-committed changes that the agent left uncommitted.", storyID))
+	commitCmd.Dir = worktreePath
+	if out, err := commitCmd.CombinedOutput(); err != nil {
+		log.Printf("[pipeline] auto-commit failed for %s: %v (%s)", storyID, err, strings.TrimSpace(string(out)))
+		return
+	}
+
+	log.Printf("[pipeline] auto-commit succeeded for %s", storyID)
+}
+
+// ensureGitignorePatterns appends NXD artifact patterns to .gitignore if
+// they are not already present, preventing CLAUDE.md, .nxd-prompts/,
+// .serena/, and other tool artifacts from being committed by agents.
+func ensureGitignorePatterns(worktreePath string) {
+	nxdPatterns := []string{
+		"CLAUDE.md",
+		".nxd-prompts/",
+		".serena/",
+	}
+
+	giPath := worktreePath + "/.gitignore"
+	existing, _ := os.ReadFile(giPath)
+	content := string(existing)
+
+	var toAdd []string
+	for _, pat := range nxdPatterns {
+		if !strings.Contains(content, pat) {
+			toAdd = append(toAdd, pat)
+		}
+	}
+	if len(toAdd) == 0 {
+		return
+	}
+
+	appendix := "\n# NXD agent artifacts (auto-added)\n" + strings.Join(toAdd, "\n") + "\n"
+	os.WriteFile(giPath, append(existing, []byte(appendix)...), 0o644)
 }
 
 // gitDiff returns the git diff for committed changes in a worktree.

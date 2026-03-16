@@ -102,9 +102,38 @@ func (c *CLIRuntime) Name() string { return c.name }
 // SupportedModels returns the list of models this runtime can use.
 func (c *CLIRuntime) SupportedModels() []string { return c.models }
 
+// nxdMDContent is written to each worktree on every spawn so that
+// Claude Code's superpowers/brainstorming plugins don't override the
+// -p prompt instructions. Re-written unconditionally because a reused
+// worktree may have a stale or missing CLAUDE.md.
+const nxdMDContent = `# NXD Agent Directive
+
+You are an automated coding agent dispatched by NXD (nexus-dispatch).
+Follow these rules strictly:
+
+1. **Do NOT brainstorm or plan.** Execute the task described in the prompt immediately.
+2. **Do NOT ask questions.** Make reasonable decisions and proceed.
+3. **Do NOT enter plan mode.** Write code directly.
+4. **Do NOT use interactive features.** No confirmations, no menus.
+5. **Commit your changes** when the task is complete.
+6. **Stay focused on the assigned story only.** Do not refactor unrelated code.
+`
+
 // Spawn creates a new tmux session running the CLI tool with the given
 // configuration. Output is tee'd to a log file for post-mortem diagnosis.
 func (c *CLIRuntime) Spawn(cfg SessionConfig) error {
+	// Write CLAUDE.md unconditionally to the worktree to suppress
+	// brainstorming/planning plugins that would override -p prompt
+	// instructions. This must happen on every spawn, not just the first
+	// worktree creation, because reused worktrees may have stale content.
+	if cfg.WorkDir != "" {
+		claudeMDPath := filepath.Join(cfg.WorkDir, "CLAUDE.md")
+		if err := os.WriteFile(claudeMDPath, []byte(nxdMDContent), 0o644); err != nil {
+			// Non-fatal: log and continue so the agent can still run.
+			fmt.Fprintf(os.Stderr, "warning: failed to write CLAUDE.md to %s: %v\n", cfg.WorkDir, err)
+		}
+	}
+
 	cmdStr := c.command
 	for _, arg := range c.args {
 		cmdStr += " " + arg
@@ -113,9 +142,10 @@ func (c *CLIRuntime) Spawn(cfg SessionConfig) error {
 		cmdStr += " --model " + cfg.Model
 	}
 
-	// Write the combined prompt (system context + goal) to a file and pipe
-	// it via stdin. This avoids all shell escaping issues with quotes, $,
-	// backticks, and newlines that would break when passed as arguments.
+	// Write the combined prompt (system context + goal) to a file and pass
+	// it via --prompt-file if the runtime supports it, otherwise via shell
+	// argument with proper quoting. Piping via stdin does not work reliably
+	// inside tmux detached sessions.
 	prompt := cfg.Goal
 	if cfg.SystemPrompt != "" {
 		prompt = cfg.SystemPrompt + "\n\n---\n\n" + cfg.Goal
@@ -127,7 +157,9 @@ func (c *CLIRuntime) Spawn(cfg SessionConfig) error {
 		if err := os.WriteFile(promptFile, []byte(prompt), 0o644); err != nil {
 			return fmt.Errorf("write prompt file: %w", err)
 		}
-		cmdStr = fmt.Sprintf("cat %q | %s", promptFile, cmdStr)
+		// Pass the prompt file contents as a shell argument using $(...) to
+		// avoid stdin pipe issues in tmux.
+		cmdStr = fmt.Sprintf("%s \"$(cat %q)\"", cmdStr, promptFile)
 	}
 
 	// Tee output to a log file so we can inspect it after the session exits.
