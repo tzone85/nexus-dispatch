@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
+	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/oklog/ulid/v2"
@@ -15,18 +17,27 @@ import (
 
 func newReqCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "req <requirement>",
+		Use:   "req [requirement]",
 		Short: "Submit a new requirement for planning",
-		Long:  "Takes a requirement as a positional argument, decomposes it into stories via the Tech Lead LLM, and prints the plan.",
-		Args:  cobra.ExactArgs(1),
-		RunE:  runReq,
+		Long: `Decomposes a requirement into stories via the Tech Lead LLM and prints the plan.
+
+The requirement text can be provided as:
+  - A positional argument:  nxd req "Add a health check endpoint"
+  - A file (--file/-f):     nxd req --file requirements.md
+  - Stdin:                  cat spec.md | nxd req --file -`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: runReq,
 	}
+	cmd.Flags().StringP("file", "f", "", "read requirement from a file (use - for stdin)")
 	cmd.SilenceUsage = true
 	return cmd
 }
 
 func runReq(cmd *cobra.Command, args []string) error {
-	requirement := args[0]
+	requirement, err := resolveRequirement(cmd, args)
+	if err != nil {
+		return err
+	}
 
 	cfgPath, _ := cmd.Flags().GetString("config")
 	s, err := loadStores(cfgPath)
@@ -82,6 +93,41 @@ func runReq(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(out, "Run 'nxd status --req %s' to track progress.\n", reqID)
 
 	return nil
+}
+
+// resolveRequirement reads the requirement text from either the --file flag,
+// stdin (when --file is "-"), or the positional argument.
+func resolveRequirement(cmd *cobra.Command, args []string) (string, error) {
+	filePath, _ := cmd.Flags().GetString("file")
+
+	switch {
+	case filePath != "" && len(args) > 0:
+		return "", fmt.Errorf("provide either a positional argument or --file, not both")
+	case filePath == "-":
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return "", fmt.Errorf("read stdin: %w", err)
+		}
+		text := strings.TrimSpace(string(data))
+		if text == "" {
+			return "", fmt.Errorf("stdin was empty")
+		}
+		return text, nil
+	case filePath != "":
+		data, err := os.ReadFile(filePath)
+		if err != nil {
+			return "", fmt.Errorf("read file %s: %w", filePath, err)
+		}
+		text := strings.TrimSpace(string(data))
+		if text == "" {
+			return "", fmt.Errorf("file %s is empty", filePath)
+		}
+		return text, nil
+	case len(args) > 0:
+		return args[0], nil
+	default:
+		return "", fmt.Errorf("provide a requirement as an argument or via --file")
+	}
 }
 
 // buildLLMClient creates an LLM client based on the provider name.
