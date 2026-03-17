@@ -341,7 +341,35 @@ func (m *Monitor) isRequirementPaused(storyID string) bool {
 // to "draft" so it can be re-dispatched. This handles error paths (review
 // errors, QA errors, rebase conflicts) that would otherwise leave the story
 // stuck in an intermediate status.
+//
+// Before resetting, it checks how many times this story has already been
+// reset. If the count exceeds the configured max_retries_before_escalation,
+// the entire requirement is paused instead of resetting — preventing infinite
+// retry loops that drain credits.
 func (m *Monitor) resetStoryToDraft(storyID, fromAgent, reason string) {
+	// Count existing STORY_REVIEW_FAILED events for this story to detect
+	// infinite retry loops (e.g. persistent merge conflicts, repeated QA
+	// failures, credit exhaustion).
+	maxRetries := m.config.Routing.MaxRetriesBeforeEscalation
+	if maxRetries <= 0 {
+		maxRetries = 3
+	}
+
+	resetCount, err := m.eventStore.Count(state.EventFilter{
+		Type:    state.EventStoryReviewFailed,
+		StoryID: storyID,
+	})
+	if err != nil {
+		log.Printf("[pipeline] failed to count reset events for %s: %v", storyID, err)
+		// On error, proceed with reset rather than silently pausing.
+	} else if resetCount >= maxRetries {
+		log.Printf("[pipeline] story %s exceeded max retries (%d), pausing requirement", storyID, maxRetries)
+		m.pauseRequirement(storyID, fmt.Sprintf(
+			"story exceeded max retries (%d/%d): %s", resetCount, maxRetries, reason,
+		))
+		return
+	}
+
 	evt := state.NewEvent(state.EventStoryReviewFailed, fromAgent, storyID, map[string]any{
 		"reason": reason,
 	})
@@ -351,7 +379,7 @@ func (m *Monitor) resetStoryToDraft(storyID, fromAgent, reason string) {
 	if err := m.projStore.Project(evt); err != nil {
 		log.Printf("[pipeline] failed to project reset event for %s: %v", storyID, err)
 	}
-	log.Printf("[pipeline] reset %s to draft: %s", storyID, reason)
+	log.Printf("[pipeline] reset %s to draft (attempt %d/%d): %s", storyID, resetCount+1, maxRetries, reason)
 }
 
 // pauseRequirement pauses the entire requirement that owns the given story.

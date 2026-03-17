@@ -25,25 +25,27 @@ func StartRebase(worktreePath, upstream string) error {
 }
 
 // ConflictedFiles returns the list of files with unresolved merge conflicts
-// in the given worktree.
+// in the given worktree. It uses `git status --porcelain` which reliably
+// detects all unmerged states (UU, AA, DD, AU, UA, DU, UD), unlike
+// `git diff --diff-filter=U` which can miss some conflict types.
 func ConflictedFiles(worktreePath string) ([]string, error) {
-	cmd := exec.Command("git", "diff", "--name-only", "--diff-filter=U")
+	cmd := exec.Command("git", "status", "--porcelain")
 	cmd.Dir = worktreePath
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return nil, fmt.Errorf("git diff --name-only --diff-filter=U: %w", err)
-	}
-
-	raw := strings.TrimSpace(string(out))
-	if raw == "" {
-		return nil, nil
+		return nil, fmt.Errorf("git status: %w", err)
 	}
 
 	var files []string
-	for _, f := range strings.Split(raw, "\n") {
-		f = strings.TrimSpace(f)
-		if f != "" {
-			files = append(files, f)
+	for _, line := range strings.Split(string(out), "\n") {
+		if len(line) < 4 {
+			continue
+		}
+		// Unmerged status codes: UU, AA, DD, AU, UA, DU, UD
+		xy := line[:2]
+		if xy == "UU" || xy == "AA" || xy == "DD" ||
+			xy == "AU" || xy == "UA" || xy == "DU" || xy == "UD" {
+			files = append(files, strings.TrimSpace(line[3:]))
 		}
 	}
 	return files, nil
