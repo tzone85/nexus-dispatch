@@ -181,6 +181,14 @@ func runResume(cmd *cobra.Command, args []string) error {
 	defer cancel()
 
 	monitor := engine.NewMonitor(reg, watchdog, reviewer, qaRunner, merger, s.Config, s.Events, s.Proj)
+
+	// Enable LLM-powered conflict resolution during rebase.
+	if llmClient != nil {
+		seniorModel := s.Config.Models.Senior
+		conflictResolver := engine.NewConflictResolver(llmClient, seniorModel.Model, seniorModel.MaxTokens, s.Events)
+		monitor.SetConflictResolver(conflictResolver)
+	}
+
 	return monitor.Run(ctx, activeAgents, repoDir)
 }
 

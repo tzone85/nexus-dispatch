@@ -134,6 +134,13 @@ func (c *CLIRuntime) Spawn(cfg SessionConfig) error {
 		}
 	}
 
+	// Propagate critical API keys and host overrides (OLLAMA_HOST,
+	// ANTHROPIC_API_KEY, OPENAI_API_KEY) from the current process into
+	// the tmux global environment. This ensures agents spawned in tmux
+	// sessions pick up freshly-sourced values from ~/.zshrc rather than
+	// inheriting stale keys from a long-running tmux server.
+	tmux.PropagateCriticalEnv()
+
 	cmdStr := c.command
 	for _, arg := range c.args {
 		cmdStr += " " + arg

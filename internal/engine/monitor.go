@@ -12,6 +12,7 @@ import (
 
 	"github.com/tzone85/nexus-dispatch/internal/config"
 	nxdgit "github.com/tzone85/nexus-dispatch/internal/git"
+	"github.com/tzone85/nexus-dispatch/internal/llm"
 	"github.com/tzone85/nexus-dispatch/internal/runtime"
 	"github.com/tzone85/nexus-dispatch/internal/state"
 )
@@ -19,14 +20,15 @@ import (
 // Monitor polls running agents and progresses completed stories through
 // review, QA, and merge.
 type Monitor struct {
-	registry   *runtime.Registry
-	watchdog   *Watchdog
-	reviewer   *Reviewer
-	qa         *QA
-	merger     *Merger
-	config     config.Config
-	eventStore state.EventStore
-	projStore  state.ProjectionStore
+	registry         *runtime.Registry
+	watchdog         *Watchdog
+	reviewer         *Reviewer
+	qa               *QA
+	merger           *Merger
+	conflictResolver *ConflictResolver
+	config           config.Config
+	eventStore       state.EventStore
+	projStore        state.ProjectionStore
 
 	// mergeMu serializes the rebase-push-merge cycle so that each story
 	// rebases onto the latest main before merging, preventing conflicts
@@ -55,6 +57,12 @@ func NewMonitor(
 		eventStore: es,
 		projStore:  ps,
 	}
+}
+
+// SetConflictResolver enables LLM-based automatic conflict resolution during
+// rebase. Without this, rebase conflicts cause the story to be reset to draft.
+func (m *Monitor) SetConflictResolver(cr *ConflictResolver) {
+	m.conflictResolver = cr
 }
 
 // Run polls active agents at the configured interval until all are done
@@ -195,6 +203,14 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 
 		result, err := m.reviewer.Review(ctx, storyID, storyTitle, storyAC, diff)
 		if err != nil {
+			// Fatal API errors (auth failures, billing exhaustion,
+			// permission denied) will never succeed on retry — pause
+			// the entire requirement to stop the infinite loop.
+			if llm.IsFatalAPIError(err) {
+				log.Printf("[pipeline] FATAL: non-retryable API error — pausing requirement for %s: %v", storyID, err)
+				m.pauseRequirement(storyID, fmt.Sprintf("fatal API error: %v", err))
+				return
+			}
 			log.Printf("[pipeline] review error for %s: %v", storyID, err)
 			m.resetStoryToDraft(storyID, "reviewer", fmt.Sprintf("review error: %v", err))
 			return
@@ -234,7 +250,7 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 	// 3. Merge (serialized: rebase onto latest main, then push + merge)
 	if m.merger != nil {
 		m.mergeMu.Lock()
-		result, err := m.rebaseAndMerge(storyID, branch, repoDir, ag.WorktreePath)
+		result, err := m.rebaseAndMerge(ctx, storyID, branch, repoDir, ag.WorktreePath)
 		m.mergeMu.Unlock()
 
 		if err != nil {
@@ -269,7 +285,10 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 // it, then delegates to the merger for push + PR + auto-merge. This must be
 // called while holding mergeMu so that each story sees the result of any
 // prior merge before rebasing.
-func (m *Monitor) rebaseAndMerge(storyID, branch, repoDir, worktreePath string) (MergeResult, error) {
+//
+// If a ConflictResolver is configured, rebase conflicts are automatically
+// resolved via LLM instead of failing immediately.
+func (m *Monitor) rebaseAndMerge(ctx context.Context, storyID, branch, repoDir, worktreePath string) (MergeResult, error) {
 	baseBranch := m.config.Merge.BaseBranch
 	if baseBranch == "" {
 		baseBranch = "main"
@@ -281,8 +300,18 @@ func (m *Monitor) rebaseAndMerge(storyID, branch, repoDir, worktreePath string) 
 		return MergeResult{}, fmt.Errorf("fetch %s: %w", baseBranch, err)
 	}
 
-	if err := nxdgit.RebaseOnto(worktreePath, "origin/"+baseBranch); err != nil {
-		return MergeResult{}, fmt.Errorf("rebase onto %s: %w", baseBranch, err)
+	upstream := "origin/" + baseBranch
+
+	if m.conflictResolver != nil {
+		// Use LLM-powered conflict resolution during rebase.
+		if err := m.conflictResolver.RebaseWithResolution(ctx, storyID, worktreePath, upstream); err != nil {
+			return MergeResult{}, fmt.Errorf("rebase onto %s: %w", baseBranch, err)
+		}
+	} else {
+		// Fall back to the original abort-on-conflict behavior.
+		if err := nxdgit.RebaseOnto(worktreePath, upstream); err != nil {
+			return MergeResult{}, fmt.Errorf("rebase onto %s: %w", baseBranch, err)
+		}
 	}
 
 	log.Printf("[pipeline] rebase succeeded for %s, proceeding to merge", storyID)
@@ -323,6 +352,31 @@ func (m *Monitor) resetStoryToDraft(storyID, fromAgent, reason string) {
 		log.Printf("[pipeline] failed to project reset event for %s: %v", storyID, err)
 	}
 	log.Printf("[pipeline] reset %s to draft: %s", storyID, reason)
+}
+
+// pauseRequirement pauses the entire requirement that owns the given story.
+// This is used when a fatal, non-retryable error (e.g. billing exhaustion)
+// makes further progress impossible. The user must resolve the issue and
+// run "nxd resume" to continue.
+func (m *Monitor) pauseRequirement(storyID, reason string) {
+	story, err := m.projStore.GetStory(storyID)
+	if err != nil {
+		log.Printf("[pipeline] cannot pause: failed to look up story %s: %v", storyID, err)
+		return
+	}
+
+	pauseEvt := state.NewEvent(state.EventReqPaused, "monitor", "", map[string]any{
+		"id":     story.ReqID,
+		"reason": reason,
+	})
+	if err := m.eventStore.Append(pauseEvt); err != nil {
+		log.Printf("[pipeline] failed to append pause event for req %s: %v", story.ReqID, err)
+	}
+	if err := m.projStore.Project(pauseEvt); err != nil {
+		log.Printf("[pipeline] failed to project pause event for req %s: %v", story.ReqID, err)
+	}
+	log.Printf("[pipeline] requirement %s paused: %s", story.ReqID, reason)
+	log.Printf("[pipeline] resolve the issue and run 'nxd resume %s' to continue", story.ReqID)
 }
 
 // autoCommit stages and commits any uncommitted changes in the worktree.

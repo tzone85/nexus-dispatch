@@ -96,8 +96,10 @@ See the [full getting started guide](docs/guides/getting-started.md) for a step-
 - **Pluggable runtimes via YAML config** — Aider (default), Claude Code, Codex, Gemini CLI
 - **Watchdog monitoring** — stuck detection, permission bypass, context freshness checks
 - **Supervisor oversight** — periodic drift detection and reprioritization
+- **LLM-powered conflict resolution** — automatic merge conflict resolution during rebase using local Ollama or cloud LLMs
 - **Senior code review** — automated review via local LLM
 - **Automated QA pipeline** — lint, build, and test execution per story
+- **Fatal error detection** — non-retryable API errors (401, 403, billing exhaustion) pause the requirement instead of retrying forever
 - **Tiered cleanup** — worktree pruning, branch garbage collection with configurable retention
 - **TUI dashboard** — 4-panel Bubbletea interface (pipeline, agents, activity, escalations)
 - **Reputation scoring** — per-agent performance tracking across assignments
@@ -179,6 +181,9 @@ Requirement
 [QA] --> Lint + build + test pipeline (all local)
     |
     v
+[Rebase] --> LLM-powered conflict resolution (if conflicts detected)
+    |
+    v
 [Merge] --> Local git merge (or GitHub PR in cloud mode)
     |
     v
@@ -212,6 +217,7 @@ internal/
     dispatcher.go     Wave-based parallel dispatch
     watchdog.go       Stuck detection, permission bypass
     supervisor.go     Drift detection, reprioritization
+    conflict_resolver.go  LLM-powered merge conflict resolution
     reviewer.go       Senior code review
     qa.go             Lint/build/test pipeline
     merger.go         PR creation, auto-merge, or local merge

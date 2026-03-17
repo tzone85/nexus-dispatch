@@ -133,6 +133,12 @@ func resolveRequirement(cmd *cobra.Command, args []string) (string, error) {
 // buildLLMClient creates an LLM client based on the provider name.
 func buildLLMClient(provider string) (llm.Client, error) {
 	switch provider {
+	case "ollama":
+		var opts []llm.OllamaOption
+		if host := os.Getenv("OLLAMA_HOST"); host != "" {
+			opts = append(opts, llm.WithOllamaBaseURL(host))
+		}
+		return llm.NewOllamaClient("", opts...), nil
 	case "anthropic":
 		apiKey := os.Getenv("ANTHROPIC_API_KEY")
 		if apiKey == "" {
@@ -146,6 +152,6 @@ func buildLLMClient(provider string) (llm.Client, error) {
 		}
 		return llm.NewOpenAIClient(apiKey), nil
 	default:
-		return nil, fmt.Errorf("unsupported LLM provider: %s", provider)
+		return nil, fmt.Errorf("unsupported LLM provider: %s (supported: ollama, anthropic, openai)", provider)
 	}
 }
