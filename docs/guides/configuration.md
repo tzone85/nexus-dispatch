@@ -62,6 +62,8 @@ models:
 | `anthropic` | `https://api.anthropic.com` | `ANTHROPIC_API_KEY` | No |
 | `openai` | `https://api.openai.com` | `OPENAI_API_KEY` | No |
 
+> **Authentication note:** These API keys are used for NXD's **internal operations** only — planning, code review, and QA. They are **not** passed to spawned coding agents. If you use Claude Code as a runtime, it authenticates via its own OAuth session (your Max/Pro subscription via `claude login`), so spawned agents incur no additional API cost. The API key is only consumed by the lightweight internal LLM calls (a few per story per stage).
+
 You can mix providers — for example, use Ollama for juniors and Anthropic for the Tech Lead.
 
 ### routing
