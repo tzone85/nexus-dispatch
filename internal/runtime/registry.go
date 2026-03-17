@@ -167,13 +167,16 @@ func (c *CLIRuntime) Spawn(cfg SessionConfig) error {
 		cmdStr += fmt.Sprintf(" 2>&1 | tee %q", cfg.LogFile)
 	}
 
-	// Pass through API keys and unset CLAUDECODE to prevent "nested session"
-	// errors when NXD itself is running inside a Claude Code session.
-	// Tmux sessions don't inherit the parent shell's environment reliably,
-	// so we explicitly export any API keys the current process has.
+	// Pass through non-Anthropic API keys and unset CLAUDECODE to prevent
+	// "nested session" errors when NXD itself is running inside Claude Code.
+	// ANTHROPIC_API_KEY is intentionally NOT exported: Claude Code agents
+	// should authenticate via the user's OAuth session (Max subscription)
+	// rather than the pay-per-token API. NXD's own internal LLM calls
+	// (planner, reviewer, QA) still use the API key from the parent process.
+	// If an agent runtime genuinely needs the Anthropic API key, it can be
+	// configured explicitly via EnvVars in the session config.
 	var envExports string
 	for _, key := range []string{
-		"ANTHROPIC_API_KEY",
 		"OPENAI_API_KEY",
 		"GOOGLE_API_KEY",
 		"GEMINI_API_KEY",
