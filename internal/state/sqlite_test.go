@@ -145,6 +145,46 @@ func TestSQLiteStore_ListStoriesByStatus(t *testing.T) {
 	}
 }
 
+func TestSQLiteStore_StoryOwnedFiles(t *testing.T) {
+	db, err := state.NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatalf("new sqlite store: %v", err)
+	}
+	defer db.Close()
+
+	evt := state.NewEvent(state.EventStoryCreated, "tech-lead", "s-001", map[string]any{
+		"id":          "s-001",
+		"req_id":      "r-001",
+		"title":       "Add user model",
+		"description": "Create user struct",
+		"complexity":  3,
+		"owned_files": []string{"src/models/user.go", "src/models/user_test.go"},
+		"wave_hint":   "sequential",
+	})
+
+	if err := db.Project(evt); err != nil {
+		t.Fatalf("project: %v", err)
+	}
+
+	story, err := db.GetStory("s-001")
+	if err != nil {
+		t.Fatalf("get story: %v", err)
+	}
+
+	if len(story.OwnedFiles) != 2 {
+		t.Fatalf("expected 2 owned files, got %d", len(story.OwnedFiles))
+	}
+	if story.OwnedFiles[0] != "src/models/user.go" {
+		t.Fatalf("expected 'src/models/user.go', got %s", story.OwnedFiles[0])
+	}
+	if story.OwnedFiles[1] != "src/models/user_test.go" {
+		t.Fatalf("expected 'src/models/user_test.go', got %s", story.OwnedFiles[1])
+	}
+	if story.WaveHint != "sequential" {
+		t.Fatalf("expected wave_hint 'sequential', got %s", story.WaveHint)
+	}
+}
+
 func TestSQLiteStore_QAFailedReturnsToDev(t *testing.T) {
 	db, _ := state.NewSQLiteStore(":memory:")
 	defer db.Close()

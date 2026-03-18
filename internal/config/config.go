@@ -13,7 +13,14 @@ type Config struct {
 	Monitor   MonitorConfig            `yaml:"monitor"`
 	Cleanup   CleanupConfig            `yaml:"cleanup"`
 	Merge     MergeConfig              `yaml:"merge"`
+	Planning  PlanningConfig           `yaml:"planning"`
 	Runtimes  map[string]RuntimeConfig `yaml:"runtimes"`
+}
+
+// PlanningConfig controls how the planner decomposes requirements into stories.
+type PlanningConfig struct {
+	SequentialFilePatterns []string `yaml:"sequential_file_patterns"`
+	MaxStoryComplexity     int      `yaml:"max_story_complexity"`
 }
 
 // WorkspaceConfig holds workspace-level settings.

@@ -168,3 +168,154 @@ func TestPlanner_LLMError(t *testing.T) {
 		t.Fatal("expected LLM error when replay client is exhausted")
 	}
 }
+
+func TestPlannedStory_HasFileOwnership(t *testing.T) {
+	story := engine.PlannedStory{
+		ID:          "s-001",
+		Title:       "Add user model",
+		Description: "Create user struct",
+		Complexity:  3,
+		OwnedFiles:  []string{"src/models/user.go", "src/models/user_test.go"},
+		WaveHint:    "parallel",
+	}
+
+	if len(story.OwnedFiles) != 2 {
+		t.Fatalf("expected 2 owned files, got %d", len(story.OwnedFiles))
+	}
+	if story.OwnedFiles[0] != "src/models/user.go" {
+		t.Fatalf("expected 'src/models/user.go', got %s", story.OwnedFiles[0])
+	}
+	if story.OwnedFiles[1] != "src/models/user_test.go" {
+		t.Fatalf("expected 'src/models/user_test.go', got %s", story.OwnedFiles[1])
+	}
+	if story.WaveHint != "parallel" {
+		t.Fatalf("expected wave_hint 'parallel', got %s", story.WaveHint)
+	}
+
+	// Verify JSON marshaling round-trip
+	storySeq := engine.PlannedStory{
+		ID:         "s-002",
+		Title:      "Config setup",
+		Complexity: 2,
+		OwnedFiles: []string{"package.json"},
+		WaveHint:   "sequential",
+	}
+	if storySeq.WaveHint != "sequential" {
+		t.Fatalf("expected wave_hint 'sequential', got %s", storySeq.WaveHint)
+	}
+}
+
+func TestPlan_ParsesOwnedFiles(t *testing.T) {
+	dir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module test"), 0644)
+
+	eventStore, err := state.NewFileStore(filepath.Join(dir, "events.jsonl"))
+	if err != nil {
+		t.Fatalf("create event store: %v", err)
+	}
+	defer eventStore.Close()
+
+	projStore, err := state.NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatalf("create proj store: %v", err)
+	}
+	defer projStore.Close()
+
+	response := `[
+		{"id": "s-001", "title": "Setup", "description": "scaffold", "acceptance_criteria": "exists", "complexity": 2, "depends_on": [], "owned_files": ["src/main.go", "go.mod"], "wave_hint": "sequential"},
+		{"id": "s-002", "title": "Add API", "description": "api layer", "acceptance_criteria": "endpoints work", "complexity": 3, "depends_on": ["s-001"], "owned_files": ["src/api/handler.go"], "wave_hint": "parallel"}
+	]`
+
+	client := llm.NewReplayClient(llm.CompletionResponse{Content: response})
+	cfg := config.DefaultConfig()
+	planner := engine.NewPlanner(client, cfg, eventStore, projStore)
+
+	result, err := planner.Plan(context.Background(), "r-002", "Add API layer", dir)
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+
+	if len(result.Stories) != 2 {
+		t.Fatalf("expected 2 stories, got %d", len(result.Stories))
+	}
+
+	// Verify owned_files were parsed
+	if len(result.Stories[0].OwnedFiles) != 2 {
+		t.Fatalf("expected 2 owned files for s-001, got %d", len(result.Stories[0].OwnedFiles))
+	}
+	if result.Stories[0].OwnedFiles[0] != "src/main.go" {
+		t.Fatalf("expected 'src/main.go', got %s", result.Stories[0].OwnedFiles[0])
+	}
+	if result.Stories[0].WaveHint != "sequential" {
+		t.Fatalf("expected wave_hint 'sequential', got %s", result.Stories[0].WaveHint)
+	}
+
+	if len(result.Stories[1].OwnedFiles) != 1 {
+		t.Fatalf("expected 1 owned file for s-002, got %d", len(result.Stories[1].OwnedFiles))
+	}
+	if result.Stories[1].WaveHint != "parallel" {
+		t.Fatalf("expected wave_hint 'parallel', got %s", result.Stories[1].WaveHint)
+	}
+}
+
+func TestPlan_RejectsExcessiveComplexity(t *testing.T) {
+	dir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module test"), 0644)
+
+	eventStore, err := state.NewFileStore(filepath.Join(dir, "events.jsonl"))
+	if err != nil {
+		t.Fatalf("create event store: %v", err)
+	}
+	defer eventStore.Close()
+
+	projStore, err := state.NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatalf("create proj store: %v", err)
+	}
+	defer projStore.Close()
+
+	response := `[
+		{"id": "s-001", "title": "Big task", "description": "too complex", "acceptance_criteria": "ac", "complexity": 13, "depends_on": [], "owned_files": ["src/big.go"], "wave_hint": "parallel"}
+	]`
+
+	client := llm.NewReplayClient(llm.CompletionResponse{Content: response})
+	cfg := config.DefaultConfig()
+	cfg.Planning.MaxStoryComplexity = 5
+	planner := engine.NewPlanner(client, cfg, eventStore, projStore)
+
+	_, err = planner.Plan(context.Background(), "r-003", "Big feature", dir)
+	if err == nil {
+		t.Fatal("expected complexity validation error")
+	}
+}
+
+func TestPlan_RejectsFileOverlap(t *testing.T) {
+	dir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module test"), 0644)
+
+	eventStore, err := state.NewFileStore(filepath.Join(dir, "events.jsonl"))
+	if err != nil {
+		t.Fatalf("create event store: %v", err)
+	}
+	defer eventStore.Close()
+
+	projStore, err := state.NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatalf("create proj store: %v", err)
+	}
+	defer projStore.Close()
+
+	response := `[
+		{"id": "s-001", "title": "Task A", "description": "d", "acceptance_criteria": "ac", "complexity": 3, "depends_on": [], "owned_files": ["src/shared.go", "src/a.go"], "wave_hint": "parallel"},
+		{"id": "s-002", "title": "Task B", "description": "d", "acceptance_criteria": "ac", "complexity": 3, "depends_on": [], "owned_files": ["src/shared.go", "src/b.go"], "wave_hint": "parallel"}
+	]`
+
+	client := llm.NewReplayClient(llm.CompletionResponse{Content: response})
+	cfg := config.DefaultConfig()
+	planner := engine.NewPlanner(client, cfg, eventStore, projStore)
+
+	_, err = planner.Plan(context.Background(), "r-004", "Overlapping files", dir)
+	if err == nil {
+		t.Fatal("expected file overlap validation error")
+	}
+}

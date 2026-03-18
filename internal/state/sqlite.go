@@ -97,6 +97,10 @@ func NewSQLiteStore(dsn string) (*SQLiteStore, error) {
 	// Migrate existing databases: add acceptance_criteria column if missing.
 	db.Exec(`ALTER TABLE stories ADD COLUMN acceptance_criteria TEXT NOT NULL DEFAULT ''`)
 
+	// Migrate existing databases: add owned_files and wave_hint columns if missing.
+	db.Exec(`ALTER TABLE stories ADD COLUMN owned_files TEXT NOT NULL DEFAULT '[]'`)
+	db.Exec(`ALTER TABLE stories ADD COLUMN wave_hint TEXT NOT NULL DEFAULT 'parallel'`)
+
 	return &SQLiteStore{db: db}, nil
 }
 
@@ -176,24 +180,31 @@ func (s *SQLiteStore) GetRequirement(id string) (Requirement, error) {
 // GetStory returns a single story by ID.
 func (s *SQLiteStore) GetStory(id string) (Story, error) {
 	var story Story
+	var ownedFilesJSON string
 	err := s.db.QueryRow(
-		`SELECT id, req_id, title, description, acceptance_criteria, complexity, status, agent_id, branch, pr_url, created_at
+		`SELECT id, req_id, title, description, acceptance_criteria, complexity, status, agent_id, branch, pr_url, owned_files, wave_hint, created_at
 		 FROM stories WHERE id = ?`,
 		id,
 	).Scan(
 		&story.ID, &story.ReqID, &story.Title, &story.Description,
 		&story.AcceptanceCriteria, &story.Complexity, &story.Status, &story.AgentID, &story.Branch,
-		&story.PRUrl, &story.CreatedAt,
+		&story.PRUrl, &ownedFilesJSON, &story.WaveHint, &story.CreatedAt,
 	)
 	if err != nil {
 		return Story{}, fmt.Errorf("get story %s: %w", id, err)
+	}
+	if ownedFilesJSON != "" {
+		json.Unmarshal([]byte(ownedFilesJSON), &story.OwnedFiles)
+	}
+	if story.OwnedFiles == nil {
+		story.OwnedFiles = []string{}
 	}
 	return story, nil
 }
 
 // ListStories returns stories matching the given filter.
 func (s *SQLiteStore) ListStories(filter StoryFilter) ([]Story, error) {
-	query := `SELECT id, req_id, title, description, acceptance_criteria, complexity, status, agent_id, branch, pr_url, created_at FROM stories`
+	query := `SELECT id, req_id, title, description, acceptance_criteria, complexity, status, agent_id, branch, pr_url, owned_files, wave_hint, created_at FROM stories`
 	var conditions []string
 	var args []any
 
@@ -220,12 +231,19 @@ func (s *SQLiteStore) ListStories(filter StoryFilter) ([]Story, error) {
 	var stories []Story
 	for rows.Next() {
 		var story Story
+		var ownedFilesJSON string
 		if err := rows.Scan(
 			&story.ID, &story.ReqID, &story.Title, &story.Description,
 			&story.AcceptanceCriteria, &story.Complexity, &story.Status, &story.AgentID, &story.Branch,
-			&story.PRUrl, &story.CreatedAt,
+			&story.PRUrl, &ownedFilesJSON, &story.WaveHint, &story.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan story: %w", err)
+		}
+		if ownedFilesJSON != "" {
+			json.Unmarshal([]byte(ownedFilesJSON), &story.OwnedFiles)
+		}
+		if story.OwnedFiles == nil {
+			story.OwnedFiles = []string{}
 		}
 		stories = append(stories, story)
 	}
@@ -390,15 +408,30 @@ func (s *SQLiteStore) updateReqStatus(payload map[string]any, status string) err
 func (s *SQLiteStore) projectStoryCreated(payload map[string]any) error {
 	complexity := payloadInt(payload, "complexity")
 	storyID := payloadStr(payload, "id")
+
+	ownedFilesJSON := "[]"
+	if of, ok := payload["owned_files"]; ok {
+		if b, err := json.Marshal(of); err == nil {
+			ownedFilesJSON = string(b)
+		}
+	}
+
+	waveHint := payloadStr(payload, "wave_hint")
+	if waveHint == "" {
+		waveHint = "parallel"
+	}
+
 	_, err := s.db.Exec(
-		`INSERT INTO stories (id, req_id, title, description, acceptance_criteria, complexity, status)
-		 VALUES (?, ?, ?, ?, ?, ?, 'draft')`,
+		`INSERT INTO stories (id, req_id, title, description, acceptance_criteria, complexity, status, owned_files, wave_hint)
+		 VALUES (?, ?, ?, ?, ?, ?, 'draft', ?, ?)`,
 		storyID,
 		payloadStr(payload, "req_id"),
 		payloadStr(payload, "title"),
 		payloadStr(payload, "description"),
 		payloadStr(payload, "acceptance_criteria"),
 		complexity,
+		ownedFilesJSON,
+		waveHint,
 	)
 	if err != nil {
 		return err

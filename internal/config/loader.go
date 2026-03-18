@@ -39,6 +39,10 @@ func DefaultConfig() Config {
 			BaseBranch: "main",
 			Mode:       "local",
 		},
+		Planning: PlanningConfig{
+			SequentialFilePatterns: []string{"package.json", "*.config.*", "src/core/*"},
+			MaxStoryComplexity:     5,
+		},
 	}
 }
 

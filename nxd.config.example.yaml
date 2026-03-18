@@ -48,6 +48,13 @@ cleanup:
   branch_retention_days: 7
   log_archive: file
 
+planning:
+  sequential_file_patterns:
+    - "package.json"
+    - "*.config.*"
+    - "src/core/*"
+  max_story_complexity: 5
+
 merge:
   auto_merge: true
   base_branch: main

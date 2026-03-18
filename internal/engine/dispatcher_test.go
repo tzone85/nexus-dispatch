@@ -179,3 +179,90 @@ func TestDispatcher_EventEmission(t *testing.T) {
 		t.Fatalf("expected story status 'assigned', got %s", story.Status)
 	}
 }
+
+func TestDispatchWave_SequentialFirst(t *testing.T) {
+	es, ps, cleanup := newTestStores(t)
+	defer cleanup()
+
+	// Pre-populate stories in projection
+	for _, s := range []struct {
+		id    string
+		title string
+	}{
+		{"s-001", "Sequential config"},
+		{"s-002", "Parallel A"},
+		{"s-003", "Parallel B"},
+	} {
+		evt := state.NewEvent(state.EventStoryCreated, "tech-lead", s.id, map[string]any{
+			"id": s.id, "req_id": "r-001", "title": s.title, "description": "d", "complexity": 3,
+		})
+		ps.Project(evt)
+	}
+
+	cfg := config.DefaultConfig()
+	dispatcher := engine.NewDispatcher(cfg, es, ps)
+
+	stories := []engine.PlannedStory{
+		{ID: "s-001", Title: "Sequential config", Complexity: 2, OwnedFiles: []string{"package.json"}, WaveHint: "sequential"},
+		{ID: "s-002", Title: "Parallel A", Complexity: 3, OwnedFiles: []string{"src/a.go"}, WaveHint: "parallel"},
+		{ID: "s-003", Title: "Parallel B", Complexity: 3, OwnedFiles: []string{"src/b.go"}, WaveHint: "parallel"},
+	}
+
+	dag := graph.New()
+	for _, s := range stories {
+		dag.AddNode(s.ID)
+	}
+
+	// All 3 stories are ready, but s-001 is sequential — only it should dispatch
+	assignments, err := dispatcher.DispatchWave(dag, map[string]bool{}, "r-001", stories)
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if len(assignments) != 1 {
+		t.Fatalf("expected 1 assignment (sequential first), got %d", len(assignments))
+	}
+	if assignments[0].StoryID != "s-001" {
+		t.Fatalf("expected sequential story s-001, got %s", assignments[0].StoryID)
+	}
+}
+
+func TestDispatchWave_RejectsOverlap(t *testing.T) {
+	es, ps, cleanup := newTestStores(t)
+	defer cleanup()
+
+	// Pre-populate stories in projection
+	for _, s := range []struct {
+		id    string
+		title string
+	}{
+		{"s-001", "Story A"},
+		{"s-002", "Story B"},
+	} {
+		evt := state.NewEvent(state.EventStoryCreated, "tech-lead", s.id, map[string]any{
+			"id": s.id, "req_id": "r-001", "title": s.title, "description": "d", "complexity": 3,
+		})
+		ps.Project(evt)
+	}
+
+	cfg := config.DefaultConfig()
+	dispatcher := engine.NewDispatcher(cfg, es, ps)
+
+	stories := []engine.PlannedStory{
+		{ID: "s-001", Title: "Story A", Complexity: 3, OwnedFiles: []string{"src/shared.go", "src/a.go"}, WaveHint: "parallel"},
+		{ID: "s-002", Title: "Story B", Complexity: 3, OwnedFiles: []string{"src/shared.go", "src/b.go"}, WaveHint: "parallel"},
+	}
+
+	dag := graph.New()
+	for _, s := range stories {
+		dag.AddNode(s.ID)
+	}
+
+	// Both are ready and parallel, but they share src/shared.go — only 1 should dispatch
+	assignments, err := dispatcher.DispatchWave(dag, map[string]bool{}, "r-001", stories)
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if len(assignments) != 1 {
+		t.Fatalf("expected 1 assignment (overlap filtering), got %d", len(assignments))
+	}
+}

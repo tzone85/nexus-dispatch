@@ -23,6 +23,8 @@ type PlannedStory struct {
 	AcceptanceCriteria FlexibleString `json:"acceptance_criteria"`
 	Complexity         int            `json:"complexity"`
 	DependsOn          []string       `json:"depends_on"`
+	OwnedFiles         []string       `json:"owned_files"`
+	WaveHint           string         `json:"wave_hint"`
 }
 
 // PlanResult holds the output of a planning session: stories and their
@@ -84,12 +86,22 @@ Requirement: %s
 Respond with a JSON array of stories. Each story must have:
 - id: short identifier (e.g., "s-001")
 - title: brief title
-- description: what to implement
+- description: what to implement, including exact file paths (e.g., "Create src/models/user.js")
 - acceptance_criteria: how to verify it's done
 - complexity: Fibonacci score (1, 2, 3, 5, 8, 13)
 - depends_on: array of story IDs this depends on (empty if none)
+- owned_files: array of exact file paths this story will create or modify (e.g., ["src/models/user.go", "src/models/user_test.go"])
+- wave_hint: either "sequential" or "parallel" — use "sequential" for stories that modify shared config, lock files, or core infrastructure
 
-Respond ONLY with the JSON array, no other text.`, requirement)
+IMPORTANT:
+- The first story (s-001) MUST establish the project directory structure and scaffold empty placeholder files.
+- All subsequent stories MUST reference specific file paths in their descriptions.
+- Distribute work across different files to minimize merge conflicts between parallel agents.
+- Each file path MUST appear in exactly ONE story's owned_files — no overlapping file ownership between stories.
+- Use explicit relative paths from the project root (e.g., "src/api/handler.go", not just "handler.go").
+- Keep story complexity at or below %d.
+
+Respond ONLY with the JSON array, no other text.`, requirement, p.config.Planning.MaxStoryComplexity)
 
 	// Call Tech Lead
 	resp, err := p.llmClient.Complete(ctx, llm.CompletionRequest{
@@ -130,6 +142,24 @@ Respond ONLY with the JSON array, no other text.`, requirement)
 		}
 	}
 
+	// Validate story complexity
+	for _, s := range stories {
+		if p.config.Planning.MaxStoryComplexity > 0 && s.Complexity > p.config.Planning.MaxStoryComplexity {
+			return PlanResult{}, fmt.Errorf("story %s complexity %d exceeds max %d", s.ID, s.Complexity, p.config.Planning.MaxStoryComplexity)
+		}
+	}
+
+	// Validate no overlapping file ownership
+	fileOwner := make(map[string]string)
+	for _, s := range stories {
+		for _, f := range s.OwnedFiles {
+			if owner, exists := fileOwner[f]; exists {
+				return PlanResult{}, fmt.Errorf("file %s claimed by %s and %s", f, owner, s.ID)
+			}
+			fileOwner[f] = s.ID
+		}
+	}
+
 	// Build dependency graph
 	dag := graph.New()
 	for _, s := range stories {
@@ -156,6 +186,8 @@ Respond ONLY with the JSON array, no other text.`, requirement)
 			"acceptance_criteria": string(s.AcceptanceCriteria),
 			"complexity":          s.Complexity,
 			"depends_on":          s.DependsOn,
+			"owned_files":         s.OwnedFiles,
+			"wave_hint":           s.WaveHint,
 		}
 		if err := p.emitAndProject(state.EventStoryCreated, "tech-lead", s.ID, storyPayload); err != nil {
 			return PlanResult{}, fmt.Errorf("emit story created %s: %w", s.ID, err)

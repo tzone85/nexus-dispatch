@@ -392,6 +392,7 @@ func TestIntegration_MultiStoryPipeline(t *testing.T) {
 	})
 
 	cfg := config.DefaultConfig()
+	cfg.Planning.MaxStoryComplexity = 13
 	planner := engine.NewPlanner(client, cfg, es, ps)
 	planResult, err := planner.Plan(context.Background(), "r-multi", "Build multi-story feature", repoDir)
 	if err != nil {
@@ -411,7 +412,7 @@ func TestIntegration_MultiStoryPipeline(t *testing.T) {
 		t.Fatalf("wave 1: expected [r-multi-s-m1], got %v", wave1)
 	}
 
-	// Simulate s-m1 completion through the full lifecycle.
+	// Simulate r-multi-s-m1 completion through the full lifecycle.
 	for _, evtType := range []state.EventType{
 		state.EventStoryStarted,
 		state.EventStoryCompleted,
@@ -428,13 +429,13 @@ func TestIntegration_MultiStoryPipeline(t *testing.T) {
 		}
 	}
 
-	// Verify s-m1 is merged.
+	// Verify r-multi-s-m1 is merged.
 	sm1, _ := ps.GetStory("r-multi-s-m1")
 	if sm1.Status != "merged" {
 		t.Fatalf("expected r-multi-s-m1 'merged', got %q", sm1.Status)
 	}
 
-	// Dispatch wave 2: s-m2 depends on s-m1 which is now completed.
+	// Dispatch wave 2: r-multi-s-m2 depends on r-multi-s-m1 which is now completed.
 	wave2, err := dispatcher.DispatchWave(planResult.Graph, map[string]bool{"r-multi-s-m1": true}, "r-multi", planResult.Stories)
 	if err != nil {
 		t.Fatalf("dispatch wave 2: %v", err)
@@ -448,7 +449,7 @@ func TestIntegration_MultiStoryPipeline(t *testing.T) {
 		t.Fatalf("expected senior role for complexity 8, got %s", wave2[0].Role)
 	}
 
-	// Verify s-m2 is assigned.
+	// Verify r-multi-s-m2 is assigned.
 	sm2, _ := ps.GetStory("r-multi-s-m2")
 	if sm2.Status != "assigned" {
 		t.Fatalf("expected r-multi-s-m2 'assigned', got %q", sm2.Status)
