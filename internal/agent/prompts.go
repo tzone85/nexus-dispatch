@@ -18,6 +18,7 @@ type PromptContext struct {
 	LintCommand        string
 	BuildCommand       string
 	TestCommand        string
+	ReviewFeedback     string
 }
 
 // SystemPrompt renders the system prompt for the given role, substituting
@@ -29,7 +30,7 @@ func SystemPrompt(role Role, ctx PromptContext) string {
 
 // GoalPrompt builds the task description sent to the runtime CLI for a given role and story.
 func GoalPrompt(role Role, ctx PromptContext) string {
-	return fmt.Sprintf(`Implement story %s: %s
+	base := fmt.Sprintf(`Implement story %s: %s
 
 Description: %s
 
@@ -44,6 +45,16 @@ IMPORTANT INSTRUCTIONS:
 - Write tests to verify your implementation.
 - Commit all changes to git when done.`,
 		ctx.StoryID, ctx.StoryTitle, ctx.StoryDescription, ctx.AcceptanceCriteria)
+
+	if ctx.ReviewFeedback != "" {
+		base += fmt.Sprintf(`
+
+## Previous Review Feedback (MUST ADDRESS)
+The previous implementation was rejected. Fix these issues:
+%s`, ctx.ReviewFeedback)
+	}
+
+	return base
 }
 
 var promptTemplates = map[Role]string{

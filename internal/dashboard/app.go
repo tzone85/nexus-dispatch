@@ -49,6 +49,7 @@ type Model struct {
 	eventStore state.EventStore
 	projStore  *state.SQLiteStore
 	version    string
+	reqFilter  state.ReqFilter
 
 	activePanel int
 	width       int
@@ -64,12 +65,14 @@ type Model struct {
 	err          error
 }
 
-// New creates a new dashboard Model with the given stores and version string.
-func New(es state.EventStore, ps *state.SQLiteStore, version string) Model {
+// New creates a new dashboard Model with the given stores, version string,
+// and requirement filter for workspace scoping.
+func New(es state.EventStore, ps *state.SQLiteStore, version string, filter state.ReqFilter) Model {
 	return Model{
 		eventStore:  es,
 		projStore:   ps,
 		version:     version,
+		reqFilter:   filter,
 		activePanel: panelPipeline,
 	}
 }
@@ -214,22 +217,41 @@ func (m Model) renderStatusBar() string {
 func (m Model) fetchData() tea.Cmd {
 	es := m.eventStore
 	ps := m.projStore
+	filter := m.reqFilter
 	return func() tea.Msg {
 		var d dataMsg
 
-		reqs, err := ps.ListRequirements()
+		reqs, err := ps.ListRequirementsFiltered(filter)
 		if err != nil {
 			d.err = fmt.Errorf("list requirements: %w", err)
 			return d
 		}
 		d.requirements = reqs
 
-		stories, err := ps.ListStories(state.StoryFilter{})
+		// Build a set of requirement IDs to scope stories
+		reqIDs := make(map[string]bool, len(reqs))
+		for _, r := range reqs {
+			reqIDs[r.ID] = true
+		}
+
+		allStories, err := ps.ListStories(state.StoryFilter{})
 		if err != nil {
 			d.err = fmt.Errorf("list stories: %w", err)
 			return d
 		}
-		d.stories = stories
+
+		// Filter stories to only those belonging to visible requirements
+		if len(reqIDs) > 0 {
+			var filtered []state.Story
+			for _, s := range allStories {
+				if reqIDs[s.ReqID] {
+					filtered = append(filtered, s)
+				}
+			}
+			d.stories = filtered
+		} else {
+			d.stories = allStories
+		}
 
 		agents, err := ps.ListAgents(state.AgentFilter{})
 		if err != nil {
@@ -262,6 +284,7 @@ func (m Model) applyData(d dataMsg) Model {
 		eventStore:   m.eventStore,
 		projStore:    m.projStore,
 		version:      m.version,
+		reqFilter:    m.reqFilter,
 		activePanel:  m.activePanel,
 		width:        m.width,
 		height:       m.height,

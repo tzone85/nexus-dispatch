@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -93,6 +94,7 @@ func (e *Executor) spawn(repoDir string, a Assignment, story PlannedStory) Spawn
 		AcceptanceCriteria: string(story.AcceptanceCriteria),
 		RepoPath:           worktreePath,
 		Complexity:         story.Complexity,
+		ReviewFeedback:     e.latestReviewFeedback(a.StoryID),
 	}
 
 	// Resolve model for this role
@@ -164,6 +166,35 @@ func (e *Executor) runtimeForRole(role agent.Role) string {
 		return name
 	}
 	return "aider"
+}
+
+// latestReviewFeedback queries the event store for the most recent
+// STORY_REVIEW_FAILED event (emitted by "monitor") for the given story
+// and extracts the "feedback" field from its payload. Returns an empty
+// string if no feedback is found.
+func (e *Executor) latestReviewFeedback(storyID string) string {
+	events, err := e.eventStore.List(state.EventFilter{
+		Type:    state.EventStoryReviewFailed,
+		AgentID: "monitor",
+		StoryID: storyID,
+	})
+	if err != nil || len(events) == 0 {
+		return ""
+	}
+
+	// Take the most recent event (last in the list).
+	latest := events[len(events)-1]
+	if latest.Payload == nil {
+		return ""
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(latest.Payload, &payload); err != nil {
+		return ""
+	}
+
+	feedback, _ := payload["feedback"].(string)
+	return feedback
 }
 
 // execExpandHome replaces a leading ~ with the user's home directory.

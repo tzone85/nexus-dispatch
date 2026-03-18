@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 	"github.com/tzone85/nexus-dispatch/internal/state"
@@ -11,10 +12,11 @@ func newStatusCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "status",
 		Short: "Show requirement and story status",
-		Long:  "Lists requirements and their stories with current status. Use --req to filter by requirement ID.",
+		Long:  "Lists requirements and their stories with current status. Use --req to filter by requirement ID. Use --all to show archived requirements and those from other repos.",
 		RunE:  runStatus,
 	}
 	cmd.Flags().String("req", "", "Filter by requirement ID")
+	cmd.Flags().Bool("all", false, "Show all requirements including archived and from other repos")
 	cmd.SilenceUsage = true
 	return cmd
 }
@@ -22,6 +24,7 @@ func newStatusCmd() *cobra.Command {
 func runStatus(cmd *cobra.Command, _ []string) error {
 	cfgPath, _ := cmd.Flags().GetString("config")
 	reqFilter, _ := cmd.Flags().GetString("req")
+	showAll, _ := cmd.Flags().GetBool("all")
 
 	s, err := loadStores(cfgPath)
 	if err != nil {
@@ -35,14 +38,24 @@ func runStatus(cmd *cobra.Command, _ []string) error {
 		return showRequirementStatus(cmd, s, reqFilter)
 	}
 
-	// List all requirements
-	reqs, err := s.Proj.ListRequirements()
+	// Build filter based on flags
+	var filter state.ReqFilter
+	if !showAll {
+		cwd, _ := os.Getwd()
+		filter.RepoPath = cwd
+		filter.ExcludeArchived = true
+	}
+
+	reqs, err := s.Proj.ListRequirementsFiltered(filter)
 	if err != nil {
 		return fmt.Errorf("list requirements: %w", err)
 	}
 
 	if len(reqs) == 0 {
 		fmt.Fprintf(out, "No requirements found. Run 'nxd req \"<requirement>\"' to get started.\n")
+		if !showAll {
+			fmt.Fprintf(out, "Hint: use --all to show requirements from all repos and archived ones.\n")
+		}
 		return nil
 	}
 

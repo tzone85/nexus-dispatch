@@ -74,7 +74,7 @@ func (d *Dispatcher) DispatchWave(dag *graph.DAG, completed map[string]bool, req
 	agentCounter := 0
 
 	for _, story := range dispatchable {
-		role := agent.RouteByComplexity(story.Complexity, d.config.Routing)
+		role := d.routeStory(story)
 		agentCounter++
 		agentID := fmt.Sprintf("%s-%s-%d", role, reqID, agentCounter)
 		sessionName := fmt.Sprintf("nxd-%s-%s-%d", reqID, role, agentCounter)
@@ -201,4 +201,18 @@ func (d *Dispatcher) hasFileConflict(story PlannedStory, claimed map[string]bool
 		}
 	}
 	return false
+}
+
+// routeStory determines the agent role for a story. If the story has an
+// ESCALATION_CREATED event, it is routed to a senior agent regardless of
+// complexity. Otherwise, it falls back to complexity-based routing.
+func (d *Dispatcher) routeStory(story PlannedStory) agent.Role {
+	escalationCount, err := d.eventStore.Count(state.EventFilter{
+		Type:    state.EventEscalationCreated,
+		StoryID: story.ID,
+	})
+	if err == nil && escalationCount > 0 {
+		return agent.RoleSenior
+	}
+	return agent.RouteByComplexity(story.Complexity, d.config.Routing)
 }

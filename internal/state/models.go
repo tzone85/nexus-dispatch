@@ -8,7 +8,14 @@ type Requirement struct {
 	Title       string
 	Description string
 	Status      string
+	RepoPath    string
 	CreatedAt   time.Time
+}
+
+// ReqFilter specifies criteria for filtering requirements from the projection store.
+type ReqFilter struct {
+	RepoPath        string
+	ExcludeArchived bool
 }
 
 // Story represents a single unit of work derived from a requirement.

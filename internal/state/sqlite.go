@@ -101,6 +101,9 @@ func NewSQLiteStore(dsn string) (*SQLiteStore, error) {
 	db.Exec(`ALTER TABLE stories ADD COLUMN owned_files TEXT NOT NULL DEFAULT '[]'`)
 	db.Exec(`ALTER TABLE stories ADD COLUMN wave_hint TEXT NOT NULL DEFAULT 'parallel'`)
 
+	// Migrate existing databases: add repo_path column to requirements if missing.
+	db.Exec(`ALTER TABLE requirements ADD COLUMN repo_path TEXT NOT NULL DEFAULT ''`)
+
 	return &SQLiteStore{db: db}, nil
 }
 
@@ -168,9 +171,9 @@ func (s *SQLiteStore) Project(evt Event) error {
 func (s *SQLiteStore) GetRequirement(id string) (Requirement, error) {
 	var req Requirement
 	err := s.db.QueryRow(
-		`SELECT id, title, description, status, created_at FROM requirements WHERE id = ?`,
+		`SELECT id, title, description, status, repo_path, created_at FROM requirements WHERE id = ?`,
 		id,
-	).Scan(&req.ID, &req.Title, &req.Description, &req.Status, &req.CreatedAt)
+	).Scan(&req.ID, &req.Title, &req.Description, &req.Status, &req.RepoPath, &req.CreatedAt)
 	if err != nil {
 		return Requirement{}, fmt.Errorf("get requirement %s: %w", id, err)
 	}
@@ -252,9 +255,30 @@ func (s *SQLiteStore) ListStories(filter StoryFilter) ([]Story, error) {
 
 // ListRequirements returns all requirements ordered by creation time.
 func (s *SQLiteStore) ListRequirements() ([]Requirement, error) {
-	rows, err := s.db.Query(
-		`SELECT id, title, description, status, created_at FROM requirements ORDER BY created_at ASC`,
-	)
+	return s.ListRequirementsFiltered(ReqFilter{})
+}
+
+// ListRequirementsFiltered returns requirements matching the given filter,
+// ordered by creation time.
+func (s *SQLiteStore) ListRequirementsFiltered(filter ReqFilter) ([]Requirement, error) {
+	query := `SELECT id, title, description, status, repo_path, created_at FROM requirements`
+	var conditions []string
+	var args []any
+
+	if filter.RepoPath != "" {
+		conditions = append(conditions, "repo_path = ?")
+		args = append(args, filter.RepoPath)
+	}
+	if filter.ExcludeArchived {
+		conditions = append(conditions, "status != 'archived'")
+	}
+
+	if len(conditions) > 0 {
+		query += " WHERE " + strings.Join(conditions, " AND ")
+	}
+	query += " ORDER BY created_at ASC"
+
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list requirements: %w", err)
 	}
@@ -263,7 +287,7 @@ func (s *SQLiteStore) ListRequirements() ([]Requirement, error) {
 	var reqs []Requirement
 	for rows.Next() {
 		var req Requirement
-		if err := rows.Scan(&req.ID, &req.Title, &req.Description, &req.Status, &req.CreatedAt); err != nil {
+		if err := rows.Scan(&req.ID, &req.Title, &req.Description, &req.Status, &req.RepoPath, &req.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan requirement: %w", err)
 		}
 		reqs = append(reqs, req)
@@ -388,10 +412,11 @@ func (s *SQLiteStore) decodePayload(evt Event) map[string]any {
 
 func (s *SQLiteStore) projectReqSubmitted(payload map[string]any) error {
 	_, err := s.db.Exec(
-		`INSERT INTO requirements (id, title, description, status) VALUES (?, ?, ?, 'pending')`,
+		`INSERT INTO requirements (id, title, description, status, repo_path) VALUES (?, ?, ?, 'pending', ?)`,
 		payloadStr(payload, "id"),
 		payloadStr(payload, "title"),
 		payloadStr(payload, "description"),
+		payloadStr(payload, "repo_path"),
 	)
 	return err
 }
@@ -491,6 +516,24 @@ func (s *SQLiteStore) BackfillAcceptanceCriteria(events []Event) {
 			)
 		}
 	}
+}
+
+// ArchiveRequirement sets a requirement's status to "archived".
+func (s *SQLiteStore) ArchiveRequirement(reqID string) error {
+	_, err := s.db.Exec(
+		`UPDATE requirements SET status = 'archived', updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+		reqID,
+	)
+	return err
+}
+
+// ArchiveStoriesByReq sets all stories for a given requirement to "archived".
+func (s *SQLiteStore) ArchiveStoriesByReq(reqID string) error {
+	_, err := s.db.Exec(
+		`UPDATE stories SET status = 'archived', updated_at = CURRENT_TIMESTAMP WHERE req_id = ?`,
+		reqID,
+	)
+	return err
 }
 
 // --- payload extraction helpers ---

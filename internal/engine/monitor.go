@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/tzone85/nexus-dispatch/internal/config"
 	nxdgit "github.com/tzone85/nexus-dispatch/internal/git"
+	"github.com/tzone85/nexus-dispatch/internal/graph"
 	"github.com/tzone85/nexus-dispatch/internal/llm"
 	"github.com/tzone85/nexus-dispatch/internal/runtime"
 	"github.com/tzone85/nexus-dispatch/internal/state"
@@ -29,6 +31,12 @@ type Monitor struct {
 	config           config.Config
 	eventStore       state.EventStore
 	projStore        state.ProjectionStore
+
+	// dispatcher + executor allow the monitor to automatically spawn the
+	// next wave of stories after merges complete, removing the need for
+	// the user to manually run "nxd resume" between waves.
+	dispatcher *Dispatcher
+	executor   *Executor
 
 	// mergeMu serializes the rebase-push-merge cycle so that each story
 	// rebases onto the latest main before merging, preventing conflicts
@@ -65,10 +73,33 @@ func (m *Monitor) SetConflictResolver(cr *ConflictResolver) {
 	m.conflictResolver = cr
 }
 
+// SetAutoResume enables automatic dispatch of the next wave when stories
+// complete. Without this, the monitor exits after one wave and the user
+// must manually run "nxd resume".
+func (m *Monitor) SetAutoResume(d *Dispatcher, e *Executor) {
+	m.dispatcher = d
+	m.executor = e
+}
+
+// RunContext carries the state needed for auto-resume across waves.
+type RunContext struct {
+	ReqID          string
+	PlannedStories []PlannedStory
+	DAG            *graph.DAG
+}
+
 // Run polls active agents at the configured interval until all are done
 // or the context is cancelled. When all agents finish naturally, Run waits
 // for their post-execution pipelines (review, QA, merge) to complete.
+// If auto-resume is enabled (SetAutoResume was called), Run then dispatches
+// the next wave of ready stories and continues monitoring. This repeats
+// until all stories are complete or context is cancelled.
 func (m *Monitor) Run(ctx context.Context, agents []ActiveAgent, repoDir string) error {
+	return m.RunWithContext(ctx, agents, repoDir, nil)
+}
+
+// RunWithContext is like Run but accepts a RunContext for auto-resume.
+func (m *Monitor) RunWithContext(ctx context.Context, agents []ActiveAgent, repoDir string, rc *RunContext) error {
 	pollInterval := time.Duration(m.config.Monitor.PollIntervalMs) * time.Millisecond
 	if pollInterval == 0 {
 		pollInterval = 10 * time.Second
@@ -96,6 +127,19 @@ func (m *Monitor) Run(ctx context.Context, agents []ActiveAgent, repoDir string)
 				log.Printf("[monitor] all agents finished, waiting for post-execution pipelines")
 				pipelineWG.Wait()
 				log.Printf("[monitor] all pipelines complete")
+
+				// Auto-resume: dispatch next wave if possible.
+				if rc != nil && m.dispatcher != nil && m.executor != nil {
+					newAgents := m.dispatchNextWave(ctx, rc, repoDir)
+					if len(newAgents) > 0 {
+						for _, a := range newAgents {
+							active[a.Assignment.SessionName] = a
+						}
+						log.Printf("[monitor] auto-resumed: tracking %d new agents", len(newAgents))
+						continue
+					}
+				}
+
 				return nil
 			}
 
@@ -216,12 +260,7 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 			return
 		}
 		if !result.Passed {
-			log.Printf("[pipeline] review rejected %s: %s", storyID, result.Summary)
-			failEvt := state.NewEvent(state.EventStoryReviewFailed, "reviewer", storyID, map[string]any{
-				"reason": result.Summary,
-			})
-			m.eventStore.Append(failEvt)
-			m.projStore.Project(failEvt)
+			m.handleReviewFailure(storyID, result)
 			return
 		}
 		log.Printf("[pipeline] review passed for %s", storyID)
@@ -410,6 +449,161 @@ func (m *Monitor) pauseRequirement(storyID, reason string) {
 	}
 	log.Printf("[pipeline] requirement %s paused: %s", story.ReqID, reason)
 	log.Printf("[pipeline] resolve the issue and run 'nxd resume %s' to continue", story.ReqID)
+}
+
+// handleReviewFailure implements retry-with-feedback and senior escalation
+// for code review rejections. On the first failure, the story is reset to
+// draft so the same agent can retry with feedback attached. On the second
+// failure, the story is escalated to a senior agent. On the third failure
+// (senior also fails), the requirement is paused for human intervention.
+//
+// Note: by the time this method is called, the Reviewer has already emitted
+// one STORY_REVIEW_FAILED event (agent_id="reviewer") for this rejection.
+func (m *Monitor) handleReviewFailure(storyID string, result ReviewResult) {
+	// Count review-specific failures (emitted by the Reviewer, agent_id="reviewer").
+	reviewFailCount, err := m.eventStore.Count(state.EventFilter{
+		Type:    state.EventStoryReviewFailed,
+		AgentID: "reviewer",
+		StoryID: storyID,
+	})
+	if err != nil {
+		log.Printf("[pipeline] failed to count review failures for %s: %v", storyID, err)
+		reviewFailCount = 1 // assume first failure on error
+	}
+
+	// Marshal review comments for the event payload.
+	commentsJSON := marshalReviewComments(result.Comments)
+
+	switch {
+	case reviewFailCount <= 1:
+		// First failure: reset to draft with feedback so the dispatcher
+		// re-dispatches the same agent with review comments attached.
+		log.Printf("[pipeline] review rejected %s (attempt 1), will retry with feedback", storyID)
+		evt := state.NewEvent(state.EventStoryReviewFailed, "monitor", storyID, map[string]any{
+			"reason":   "review rejected",
+			"feedback": result.Summary,
+			"comments": commentsJSON,
+		})
+		m.eventStore.Append(evt)
+		m.projStore.Project(evt)
+
+	case reviewFailCount == 2:
+		// Second failure: retry also failed — escalate to senior agent.
+		log.Printf("[pipeline] review rejected %s (attempt 2), escalating to senior", storyID)
+
+		// Emit escalation event.
+		escEvt := state.NewEvent(state.EventEscalationCreated, "monitor", storyID, map[string]any{
+			"reason":   "review failed twice",
+			"feedback": result.Summary,
+			"comments": commentsJSON,
+		})
+		m.eventStore.Append(escEvt)
+		m.projStore.Project(escEvt)
+
+		// Reset to draft so the dispatcher picks it up and routes to senior.
+		resetEvt := state.NewEvent(state.EventStoryReviewFailed, "monitor", storyID, map[string]any{
+			"reason":   "review rejected, escalating to senior",
+			"feedback": result.Summary,
+			"comments": commentsJSON,
+		})
+		m.eventStore.Append(resetEvt)
+		m.projStore.Project(resetEvt)
+
+	default:
+		// Third+ failure (senior also failed): pause the requirement.
+		log.Printf("[pipeline] review rejected %s (attempt 3+), pausing requirement", storyID)
+		m.pauseRequirement(storyID, fmt.Sprintf(
+			"review failed %d times (including senior escalation): %s",
+			reviewFailCount, result.Summary,
+		))
+	}
+}
+
+// marshalReviewComments serializes review comments to a JSON string for
+// storage in event payloads.
+func marshalReviewComments(comments []ReviewComment) string {
+	if len(comments) == 0 {
+		return "[]"
+	}
+	data, err := json.Marshal(comments)
+	if err != nil {
+		return "[]"
+	}
+	return string(data)
+}
+
+// dispatchNextWave determines which stories are now ready (dependencies met)
+// and dispatches a new wave of agents. Returns the newly spawned ActiveAgents.
+func (m *Monitor) dispatchNextWave(ctx context.Context, rc *RunContext, repoDir string) []ActiveAgent {
+	// Bail out immediately if the requirement has been paused (e.g. by
+	// billing exhaustion in a prior pipeline). Without this check, the
+	// monitor would re-dispatch the same story in an infinite loop.
+	if req, err := m.projStore.GetRequirement(rc.ReqID); err == nil && req.Status == "paused" {
+		log.Printf("[auto-resume] requirement %s is paused, stopping auto-resume", rc.ReqID)
+		return nil
+	}
+
+	// Build completed set from the projection store.
+	stories, err := m.projStore.ListStories(state.StoryFilter{ReqID: rc.ReqID})
+	if err != nil {
+		log.Printf("[auto-resume] failed to list stories: %v", err)
+		return nil
+	}
+
+	completed := make(map[string]bool)
+	allDone := true
+	for _, s := range stories {
+		if s.Status == "merged" || s.Status == "pr_submitted" {
+			completed[s.ID] = true
+		} else {
+			allDone = false
+		}
+	}
+
+	if allDone {
+		log.Printf("[auto-resume] all %d stories complete for requirement %s", len(stories), rc.ReqID)
+		// Mark requirement complete.
+		compEvt := state.NewEvent(state.EventReqCompleted, "monitor", "", map[string]any{"id": rc.ReqID})
+		m.eventStore.Append(compEvt)
+		m.projStore.Project(compEvt)
+		return nil
+	}
+
+	assignments, err := m.dispatcher.DispatchWave(rc.DAG, completed, rc.ReqID, rc.PlannedStories)
+	if err != nil {
+		log.Printf("[auto-resume] dispatch error: %v", err)
+		return nil
+	}
+	if len(assignments) == 0 {
+		log.Printf("[auto-resume] no stories ready for next wave (dependencies not met)")
+		return nil
+	}
+
+	log.Printf("[auto-resume] dispatching %d stories in next wave", len(assignments))
+
+	storyMap := make(map[string]PlannedStory, len(rc.PlannedStories))
+	for _, ps := range rc.PlannedStories {
+		storyMap[ps.ID] = ps
+	}
+
+	results := m.executor.SpawnAll(repoDir, assignments, storyMap)
+
+	var active []ActiveAgent
+	for _, r := range results {
+		if r.Error != nil {
+			log.Printf("[auto-resume] spawn error for %s: %v", r.Assignment.StoryID, r.Error)
+			continue
+		}
+		log.Printf("[auto-resume] spawned %s -> %s (session: %s)",
+			r.Assignment.StoryID, r.RuntimeName, r.Assignment.SessionName)
+		active = append(active, ActiveAgent{
+			Assignment:   r.Assignment,
+			WorktreePath: r.WorktreePath,
+			RuntimeName:  r.RuntimeName,
+		})
+	}
+
+	return active
 }
 
 // autoCommit stages and commits any uncommitted changes in the worktree.

@@ -64,6 +64,7 @@ func (p *Planner) Plan(ctx context.Context, reqID, requirement, repoPath string)
 		"id":          reqID,
 		"title":       requirement,
 		"description": requirement,
+		"repo_path":   repoPath,
 	}
 	if err := p.emitAndProject(state.EventReqSubmitted, "system", "", reqPayload); err != nil {
 		return PlanResult{}, fmt.Errorf("emit req submitted: %w", err)
