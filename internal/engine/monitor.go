@@ -254,6 +254,11 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 		m.mergeMu.Unlock()
 
 		if err != nil {
+			if llm.IsFatalAPIError(err) {
+				log.Printf("[pipeline] FATAL: non-retryable API error during merge for %s: %v", storyID, err)
+				m.pauseRequirement(storyID, fmt.Sprintf("fatal API error during merge: %v", err))
+				return
+			}
 			log.Printf("[pipeline] merge error for %s: %v", storyID, err)
 			m.resetStoryToDraft(storyID, "merger", fmt.Sprintf("merge/rebase error: %v", err))
 			return

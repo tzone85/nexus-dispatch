@@ -86,6 +86,9 @@ func (cr *ConflictResolver) RebaseWithResolution(ctx context.Context, storyID, w
 			resolved, rErr := cr.resolveFile(ctx, file, string(content))
 			if rErr != nil {
 				nxdgit.RebaseAbort(worktreePath)
+				if llm.IsFatalAPIError(rErr) {
+					log.Printf("[conflict-resolver] FATAL: API error during conflict resolution for %s: %v", storyID, rErr)
+				}
 				return fmt.Errorf("LLM resolve %s: %w", file, rErr)
 			}
 
@@ -150,6 +153,9 @@ File: %s
 		Temperature: 0.0,
 	})
 	if err != nil {
+		if llm.IsFatalAPIError(err) {
+			return "", fmt.Errorf("fatal API error (credits exhausted or auth failure): %w", err)
+		}
 		return "", err
 	}
 
