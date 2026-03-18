@@ -157,6 +157,22 @@ runtimes:
     args: ["--dangerously-skip-permissions"]
 ```
 
+### Godmode (Autonomous Execution)
+
+The `--godmode` flag skips permission prompts on agent runtimes that support it (Claude Code's `--dangerously-skip-permissions`, Codex's `--approval-mode full-auto`). Since NXD primarily uses Aider with Ollama, godmode has no effect on the default runtime but is available for users who configure Claude Code or Codex runtimes.
+
+```bash
+# One-off: enable via CLI flag
+nxd req --godmode "Build a REST API for user management"
+nxd resume --godmode 01JABCDEF
+
+# Persistent: enable in nxd.yaml
+planning:
+  godmode: true
+```
+
+The CLI flag takes precedence over the config file. When neither is set, godmode defaults to `false`.
+
 ## Architecture
 
 ```

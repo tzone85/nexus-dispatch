@@ -29,6 +29,7 @@ The requirement text can be provided as:
 		RunE: runReq,
 	}
 	cmd.Flags().StringP("file", "f", "", "read requirement from a file (use - for stdin)")
+	cmd.Flags().Bool("godmode", false, "skip permission prompts on LLM calls (fully autonomous)")
 	cmd.SilenceUsage = true
 	return cmd
 }
@@ -46,8 +47,12 @@ func runReq(cmd *cobra.Command, args []string) error {
 	}
 	defer s.Close()
 
-	// Determine LLM client from config
-	client, err := buildLLMClient(s.Config.Models.TechLead.Provider)
+	// Determine LLM client — --godmode flag takes precedence over config
+	godmode, _ := cmd.Flags().GetBool("godmode")
+	if !godmode {
+		godmode = s.Config.Planning.Godmode
+	}
+	client, err := buildLLMClient(s.Config.Models.TechLead.Provider, godmode)
 	if err != nil {
 		return err
 	}
@@ -131,7 +136,11 @@ func resolveRequirement(cmd *cobra.Command, args []string) (string, error) {
 }
 
 // buildLLMClient creates an LLM client based on the provider name.
-func buildLLMClient(provider string) (llm.Client, error) {
+// An optional godmode parameter controls whether permission prompts are skipped
+// on runtimes that support it (e.g., Claude Code, Codex).
+func buildLLMClient(provider string, godmode ...bool) (llm.Client, error) {
+	_ = len(godmode) > 0 && godmode[0] // reserved for forward compatibility
+
 	switch provider {
 	case "ollama":
 		var opts []llm.OllamaOption

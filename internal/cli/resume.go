@@ -23,6 +23,7 @@ func newResumeCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE:  runResume,
 	}
+	cmd.Flags().Bool("godmode", false, "skip permission prompts on LLM calls (fully autonomous)")
 	cmd.SilenceUsage = true
 	return cmd
 }
@@ -156,8 +157,13 @@ func runResume(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(out, "Press Ctrl+C to detach (agents continue in tmux).\n\n")
 
 	// Build pipeline components for post-execution
+	godmode, _ := cmd.Flags().GetBool("godmode")
+	if !godmode {
+		godmode = s.Config.Planning.Godmode
+	}
+
 	var reviewer *engine.Reviewer
-	llmClient, llmErr := buildLLMClient(s.Config.Models.Senior.Provider)
+	llmClient, llmErr := buildLLMClient(s.Config.Models.Senior.Provider, godmode)
 	if llmErr != nil {
 		log.Printf("Warning: LLM client unavailable, skipping code review: %v", llmErr)
 	} else {

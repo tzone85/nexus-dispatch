@@ -54,6 +54,7 @@ planning:
     - "*.config.*"
     - "src/core/*"
   max_story_complexity: 5
+  godmode: false  # Set to true to skip permission prompts on agent runtimes that support it
 
 merge:
   auto_merge: true

@@ -21,6 +21,7 @@ type Config struct {
 type PlanningConfig struct {
 	SequentialFilePatterns []string `yaml:"sequential_file_patterns"`
 	MaxStoryComplexity     int      `yaml:"max_story_complexity"`
+	Godmode                bool     `yaml:"godmode"`
 }
 
 // WorkspaceConfig holds workspace-level settings.
