@@ -157,8 +157,6 @@ runtimes:
     args: ["--dangerously-skip-permissions"]
 ```
 
-> **Cost model note:** When `provider: anthropic` is configured and the [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) is installed, NXD automatically routes completions through the CLI. This uses your Claude subscription (Max or Pro plan) instead of per-token API credits, eliminating API costs entirely. If the CLI is not installed, NXD falls back to direct API calls using `ANTHROPIC_API_KEY`. You can also set `provider: cli` to require the Claude CLI explicitly.
-
 ## Architecture
 
 ```
@@ -226,7 +224,7 @@ internal/
     reaper.go         Tiered cleanup and GC
   git/                Branch, worktree, local merge, and GitHub PR operations
   graph/              Dependency DAG with topological sort
-  llm/                Ollama, Anthropic, OpenAI, and Claude CLI clients + model registry
+  llm/                Ollama, Anthropic, and OpenAI clients + model registry
   runtime/            Pluggable runtime registry (Aider, Claude Code, Codex)
   state/              Event store (file-based) + SQLite projections
   tmux/               Session management (create, capture, send-keys)
