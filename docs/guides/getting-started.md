@@ -130,14 +130,6 @@ Verify: `nxd --version` should show `0.1.0`.
 
 ## Configuration
 
-NXD requires a `nxd.yaml` config file in your project root. You can either let `nxd init` create it for you (see below), or copy it manually:
-
-```bash
-cp nxd.config.example.yaml nxd.yaml
-```
-
-Customize it as needed — see [Configuration](configuration.md) for all available options.
-
 ## First Run
 
 ### Step 1: Initialize Workspace

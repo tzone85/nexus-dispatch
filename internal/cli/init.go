@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/tzone85/nexus-dispatch/internal/config"
 	"github.com/tzone85/nexus-dispatch/internal/state"
 )
 
@@ -15,7 +16,7 @@ func newInitCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "init",
 		Short: "Initialize the NXD workspace",
-		Long:  "Creates the ~/.nxd/ directory structure, copies the default config, and initializes stores.",
+		Long:  "Creates the ~/.nxd/ directory structure, generates a default nxd.yaml config, and initializes stores.",
 		RunE:  runInit,
 	}
 	cmd.SilenceUsage = true
@@ -44,19 +45,17 @@ func runInit(cmd *cobra.Command, _ []string) error {
 
 	out := cmd.OutOrStdout()
 
-	// Copy example config to nxd.yaml if not present
+	// Generate nxd.yaml from defaults if not present
 	localCfg := "nxd.yaml"
 	if _, err := os.Stat(localCfg); os.IsNotExist(err) {
-		exampleCfg := "nxd.config.example.yaml"
-		data, readErr := os.ReadFile(exampleCfg)
-		if readErr != nil {
-			fmt.Fprintf(out, "Warning: could not read %s, skipping config copy: %v\n", exampleCfg, readErr)
-		} else {
-			if writeErr := os.WriteFile(localCfg, data, 0644); writeErr != nil {
-				return fmt.Errorf("write %s: %w", localCfg, writeErr)
-			}
-			fmt.Fprintf(out, "Created %s from example config\n", localCfg)
+		data, genErr := config.DefaultYAML()
+		if genErr != nil {
+			return fmt.Errorf("generate default config: %w", genErr)
 		}
+		if writeErr := os.WriteFile(localCfg, data, 0644); writeErr != nil {
+			return fmt.Errorf("write %s: %w", localCfg, writeErr)
+		}
+		fmt.Fprintf(out, "Created %s with default configuration\n", localCfg)
 	} else {
 		fmt.Fprintf(out, "Config %s already exists, skipping\n", localCfg)
 	}

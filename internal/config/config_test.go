@@ -180,3 +180,91 @@ func TestValidation_ValidMergeModes(t *testing.T) {
 		}
 	}
 }
+
+func TestDefaultConfig_IncludesModels(t *testing.T) {
+	cfg := config.DefaultConfig()
+
+	if cfg.Models.TechLead.Provider != "ollama" {
+		t.Fatalf("expected tech_lead provider 'ollama', got %s", cfg.Models.TechLead.Provider)
+	}
+	if cfg.Models.Junior.Provider != "ollama" {
+		t.Fatalf("expected junior provider 'ollama', got %s", cfg.Models.Junior.Provider)
+	}
+	if cfg.Models.TechLead.MaxTokens != 16000 {
+		t.Fatalf("expected tech_lead max_tokens 16000, got %d", cfg.Models.TechLead.MaxTokens)
+	}
+}
+
+func TestDefaultConfig_IncludesRuntimes(t *testing.T) {
+	cfg := config.DefaultConfig()
+
+	if len(cfg.Runtimes) != 3 {
+		t.Fatalf("expected 3 runtimes, got %d", len(cfg.Runtimes))
+	}
+	rt, ok := cfg.Runtimes["aider"]
+	if !ok {
+		t.Fatal("expected aider runtime in defaults")
+	}
+	if rt.Command != "aider" {
+		t.Fatalf("expected command 'aider', got %s", rt.Command)
+	}
+}
+
+func TestDefaultConfig_IncludesPRTemplate(t *testing.T) {
+	cfg := config.DefaultConfig()
+
+	if cfg.Merge.PRTemplate == "" {
+		t.Fatal("expected non-empty PR template in defaults")
+	}
+}
+
+func TestDefaultYAML_RoundTrip(t *testing.T) {
+	data, err := config.DefaultYAML()
+	if err != nil {
+		t.Fatalf("DefaultYAML: %v", err)
+	}
+
+	// Write to a temp file and load it back — should produce a valid config
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nxd.yaml")
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	cfg, err := config.LoadFromFile(path)
+	if err != nil {
+		t.Fatalf("LoadFromFile on generated YAML: %v", err)
+	}
+
+	// Verify key fields survived the roundtrip
+	if cfg.Version != "1.0" {
+		t.Fatalf("expected version '1.0', got %s", cfg.Version)
+	}
+	if cfg.Workspace.Backend != "sqlite" {
+		t.Fatalf("expected backend 'sqlite', got %s", cfg.Workspace.Backend)
+	}
+	if cfg.Models.TechLead.Provider != "ollama" {
+		t.Fatalf("expected tech_lead provider 'ollama', got %s", cfg.Models.TechLead.Provider)
+	}
+	if len(cfg.Runtimes) != 3 {
+		t.Fatalf("expected 3 runtimes, got %d", len(cfg.Runtimes))
+	}
+	if cfg.Merge.PRTemplate == "" {
+		t.Fatal("expected non-empty PR template after roundtrip")
+	}
+	if cfg.Merge.Mode != "local" {
+		t.Fatalf("expected merge mode 'local', got %s", cfg.Merge.Mode)
+	}
+}
+
+func TestDefaultYAML_HasHeader(t *testing.T) {
+	data, err := config.DefaultYAML()
+	if err != nil {
+		t.Fatalf("DefaultYAML: %v", err)
+	}
+
+	header := "# NXD configuration"
+	if len(data) < len(header) || string(data[:len(header)]) != header {
+		t.Fatalf("expected YAML to start with %q, got %q", header, string(data[:40]))
+	}
+}

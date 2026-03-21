@@ -94,7 +94,7 @@ func runResume(cmd *cobra.Command, args []string) error {
 
 	// Dispatch next wave
 	dispatcher := engine.NewDispatcher(s.Config, s.Events, s.Proj)
-	assignments, err := dispatcher.DispatchWave(dag, completed, reqID, plannedStories)
+	assignments, err := dispatcher.DispatchWave(dag, completed, reqID, plannedStories, 1)
 	if err != nil {
 		return fmt.Errorf("dispatch wave: %w", err)
 	}

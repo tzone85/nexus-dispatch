@@ -123,7 +123,7 @@ See the [full getting started guide](docs/guides/getting-started.md) for a step-
 
 ## Configuration
 
-Copy `nxd.config.example.yaml` to `nxd.yaml` (or run `nxd init`) and customize:
+Run `nxd init` to generate `nxd.yaml` with sensible defaults, then customize:
 
 | Section | Purpose |
 |---------|---------|
@@ -292,17 +292,7 @@ export PATH="$HOME/go/bin:$PATH"
 source ~/.zshrc
 ```
 
-**4. Set up the config file**
-
-NXD requires a `nxd.yaml` config file in the project root. You can either let `nxd init` create it for you, or copy it manually:
-
-```bash
-cp nxd.config.example.yaml nxd.yaml
-```
-
-Then customize it as needed (see [Configuration](docs/guides/configuration.md) for details).
-
-**5. Build and install**
+**4. Build and install**
 
 ```bash
 make install
