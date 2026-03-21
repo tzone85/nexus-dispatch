@@ -86,6 +86,7 @@ type RunContext struct {
 	ReqID          string
 	PlannedStories []PlannedStory
 	DAG            *graph.DAG
+	WaveNumber     int
 }
 
 // Run polls active agents at the configured interval until all are done
@@ -569,7 +570,8 @@ func (m *Monitor) dispatchNextWave(ctx context.Context, rc *RunContext, repoDir 
 		return nil
 	}
 
-	assignments, err := m.dispatcher.DispatchWave(rc.DAG, completed, rc.ReqID, rc.PlannedStories)
+	rc.WaveNumber++
+	assignments, err := m.dispatcher.DispatchWave(rc.DAG, completed, rc.ReqID, rc.PlannedStories, rc.WaveNumber)
 	if err != nil {
 		log.Printf("[auto-resume] dispatch error: %v", err)
 		return nil

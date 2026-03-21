@@ -104,6 +104,10 @@ func NewSQLiteStore(dsn string) (*SQLiteStore, error) {
 	// Migrate existing databases: add repo_path column to requirements if missing.
 	db.Exec(`ALTER TABLE requirements ADD COLUMN repo_path TEXT NOT NULL DEFAULT ''`)
 
+	// Migrate existing databases: add wave and pr_number columns if missing.
+	db.Exec(`ALTER TABLE stories ADD COLUMN wave INTEGER NOT NULL DEFAULT 0`)
+	db.Exec(`ALTER TABLE stories ADD COLUMN pr_number INTEGER NOT NULL DEFAULT 0`)
+
 	return &SQLiteStore{db: db}, nil
 }
 
@@ -156,7 +160,7 @@ func (s *SQLiteStore) Project(evt Event) error {
 	case EventStoryQAFailed:
 		return s.updateStoryStatus(evt.StoryID, "qa_failed")
 	case EventStoryPRCreated:
-		return s.updateStoryStatus(evt.StoryID, "pr_submitted")
+		return s.projectStoryPRCreated(evt.StoryID, payload)
 	case EventStoryMerged:
 		return s.updateStoryStatus(evt.StoryID, "merged")
 
@@ -185,13 +189,13 @@ func (s *SQLiteStore) GetStory(id string) (Story, error) {
 	var story Story
 	var ownedFilesJSON string
 	err := s.db.QueryRow(
-		`SELECT id, req_id, title, description, acceptance_criteria, complexity, status, agent_id, branch, pr_url, owned_files, wave_hint, created_at
+		`SELECT id, req_id, title, description, acceptance_criteria, complexity, status, agent_id, branch, pr_url, pr_number, owned_files, wave_hint, wave, created_at
 		 FROM stories WHERE id = ?`,
 		id,
 	).Scan(
 		&story.ID, &story.ReqID, &story.Title, &story.Description,
 		&story.AcceptanceCriteria, &story.Complexity, &story.Status, &story.AgentID, &story.Branch,
-		&story.PRUrl, &ownedFilesJSON, &story.WaveHint, &story.CreatedAt,
+		&story.PRUrl, &story.PRNumber, &ownedFilesJSON, &story.WaveHint, &story.Wave, &story.CreatedAt,
 	)
 	if err != nil {
 		return Story{}, fmt.Errorf("get story %s: %w", id, err)
@@ -207,7 +211,7 @@ func (s *SQLiteStore) GetStory(id string) (Story, error) {
 
 // ListStories returns stories matching the given filter.
 func (s *SQLiteStore) ListStories(filter StoryFilter) ([]Story, error) {
-	query := `SELECT id, req_id, title, description, acceptance_criteria, complexity, status, agent_id, branch, pr_url, owned_files, wave_hint, created_at FROM stories`
+	query := `SELECT id, req_id, title, description, acceptance_criteria, complexity, status, agent_id, branch, pr_url, pr_number, owned_files, wave_hint, wave, created_at FROM stories`
 	var conditions []string
 	var args []any
 
@@ -238,7 +242,7 @@ func (s *SQLiteStore) ListStories(filter StoryFilter) ([]Story, error) {
 		if err := rows.Scan(
 			&story.ID, &story.ReqID, &story.Title, &story.Description,
 			&story.AcceptanceCriteria, &story.Complexity, &story.Status, &story.AgentID, &story.Branch,
-			&story.PRUrl, &ownedFilesJSON, &story.WaveHint, &story.CreatedAt,
+			&story.PRUrl, &story.PRNumber, &ownedFilesJSON, &story.WaveHint, &story.Wave, &story.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan story: %w", err)
 		}
@@ -483,9 +487,20 @@ func (s *SQLiteStore) projectStoryCreated(payload map[string]any) error {
 
 func (s *SQLiteStore) projectStoryAssigned(storyID string, payload map[string]any) error {
 	agentID := payloadStr(payload, "agent_id")
+	wave := payloadInt(payload, "wave")
 	_, err := s.db.Exec(
-		`UPDATE stories SET status = 'assigned', agent_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-		agentID, storyID,
+		`UPDATE stories SET status = 'assigned', agent_id = ?, wave = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+		agentID, wave, storyID,
+	)
+	return err
+}
+
+func (s *SQLiteStore) projectStoryPRCreated(storyID string, payload map[string]any) error {
+	prNumber := payloadInt(payload, "pr_number")
+	prURL := payloadStr(payload, "pr_url")
+	_, err := s.db.Exec(
+		`UPDATE stories SET status = 'pr_submitted', pr_url = ?, pr_number = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+		prURL, prNumber, storyID,
 	)
 	return err
 }

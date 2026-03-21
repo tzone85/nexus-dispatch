@@ -30,8 +30,10 @@ type Story struct {
 	AgentID            string
 	Branch             string
 	PRUrl              string
+	PRNumber           int
 	OwnedFiles         []string
 	WaveHint           string
+	Wave               int
 	CreatedAt          time.Time
 }
 

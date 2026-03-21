@@ -42,12 +42,13 @@ func NewDispatcher(cfg config.Config, es state.EventStore, ps state.ProjectionSt
 // DispatchWave identifies stories ready for execution (all dependencies
 // satisfied) and assigns each to an agent role based on complexity. It returns
 // assignments for all dispatchable stories and emits AGENT_SPAWNED and
-// STORY_ASSIGNED events.
+// STORY_ASSIGNED events. waveNumber is recorded on the STORY_ASSIGNED event
+// so that the completion summary can group stories by wave.
 //
 // Sequential-first ordering: if any ready stories have WaveHint=="sequential",
 // only one sequential story is dispatched. Otherwise, parallel stories are
 // dispatched with overlap filtering to prevent file conflicts.
-func (d *Dispatcher) DispatchWave(dag *graph.DAG, completed map[string]bool, reqID string, stories []PlannedStory) ([]Assignment, error) {
+func (d *Dispatcher) DispatchWave(dag *graph.DAG, completed map[string]bool, reqID string, stories []PlannedStory, waveNumber int) ([]Assignment, error) {
 	readyIDs := dag.ReadyNodes(completed)
 	if len(readyIDs) == 0 {
 		return nil, nil
@@ -101,6 +102,7 @@ func (d *Dispatcher) DispatchWave(dag *graph.DAG, completed map[string]bool, req
 		// Emit assignment event
 		assignEvt := state.NewEvent(state.EventStoryAssigned, agentID, story.ID, map[string]any{
 			"agent_id": agentID,
+			"wave":     waveNumber,
 		})
 		if err := d.eventStore.Append(assignEvt); err != nil {
 			return nil, fmt.Errorf("emit story assigned: %w", err)

@@ -26,7 +26,7 @@ func (m *mockGitHubOps) PushBranch(_, _ string) error {
 	return m.pushErr
 }
 
-func (m *mockGitHubOps) CreatePR(_, _, _, _ string) (engine.PRCreationResult, error) {
+func (m *mockGitHubOps) CreatePR(_, _, _, _, _ string) (engine.PRCreationResult, error) {
 	return m.createPR, m.createErr
 }
 
@@ -178,7 +178,7 @@ func TestE2E_FullPipeline(t *testing.T) {
 
 	// Process waves until all stories are done.
 	for wave := 0; wave < 10; wave++ { // safety limit
-		assignments, err := dispatcher.DispatchWave(planResult.Graph, completed, reqID, planResult.Stories)
+		assignments, err := dispatcher.DispatchWave(planResult.Graph, completed, reqID, planResult.Stories, wave)
 		if err != nil {
 			t.Fatalf("dispatch wave %d: %v", wave, err)
 		}
@@ -397,7 +397,7 @@ func TestE2E_SingleStoryFastPath(t *testing.T) {
 
 	// Dispatch.
 	dispatcher := engine.NewDispatcher(cfg, es, ps)
-	assignments, err := dispatcher.DispatchWave(planResult.Graph, map[string]bool{}, "r-fast", planResult.Stories)
+	assignments, err := dispatcher.DispatchWave(planResult.Graph, map[string]bool{}, "r-fast", planResult.Stories, 0)
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}

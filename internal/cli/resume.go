@@ -78,11 +78,15 @@ func runResume(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("rebuild dependency graph: %w", err)
 	}
 
-	// Determine completed stories
+	// Determine completed stories and max wave number.
 	completed := make(map[string]bool)
+	maxWave := 0
 	for _, story := range stories {
 		if story.Status == "merged" || story.Status == "pr_submitted" {
 			completed[story.ID] = true
+		}
+		if story.Wave > maxWave {
+			maxWave = story.Wave
 		}
 	}
 	fmt.Fprintf(out, "Stories: %d total, %d completed\n", len(stories), len(completed))
@@ -94,7 +98,8 @@ func runResume(cmd *cobra.Command, args []string) error {
 
 	// Dispatch next wave
 	dispatcher := engine.NewDispatcher(s.Config, s.Events, s.Proj)
-	assignments, err := dispatcher.DispatchWave(dag, completed, reqID, plannedStories, 1)
+	waveNumber := maxWave + 1
+	assignments, err := dispatcher.DispatchWave(dag, completed, reqID, plannedStories, waveNumber)
 	if err != nil {
 		return fmt.Errorf("dispatch wave: %w", err)
 	}
@@ -195,7 +200,31 @@ func runResume(cmd *cobra.Command, args []string) error {
 		monitor.SetConflictResolver(conflictResolver)
 	}
 
-	return monitor.Run(ctx, activeAgents, repoDir)
+	// Enable auto-resume: when a wave completes, the monitor automatically
+	// dispatches the next wave of ready stories instead of exiting.
+	monitor.SetAutoResume(dispatcher, executor)
+
+	rc := &engine.RunContext{
+		ReqID:          reqID,
+		PlannedStories: plannedStories,
+		DAG:            dag,
+		WaveNumber:     maxWave + 1,
+	}
+
+	if err := monitor.RunWithContext(ctx, activeAgents, repoDir, rc); err != nil {
+		return err
+	}
+
+	// Print completion summary if the requirement finished.
+	req, reqErr := s.Proj.GetRequirement(reqID)
+	if reqErr == nil && req.Status == "completed" {
+		summary, sumErr := engine.GenerateSummary(s.Events, s.Proj, reqID)
+		if sumErr == nil {
+			fmt.Fprint(out, summary)
+		}
+	}
+
+	return nil
 }
 
 // rebuildDAG reconstructs the dependency graph from the story_deps table
