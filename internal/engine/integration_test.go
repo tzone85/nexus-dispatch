@@ -106,7 +106,7 @@ func TestIntegration_PlannerToDispatcher(t *testing.T) {
 	dispatcher := engine.NewDispatcher(cfg, es, ps)
 	completed := make(map[string]bool)
 
-	assignments, err := dispatcher.DispatchWave(planResult.Graph, completed, "r-integ-1", planResult.Stories)
+	assignments, err := dispatcher.DispatchWave(planResult.Graph, completed, "r-integ-1", planResult.Stories, 1)
 	if err != nil {
 		t.Fatalf("dispatch wave 1: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestIntegration_PlannerToDispatcher(t *testing.T) {
 
 	// --- Phase 3: Dispatch Wave 2 ---
 	completed["r-integ--s-001"] = true
-	assignments2, err := dispatcher.DispatchWave(planResult.Graph, completed, "r-integ-1", planResult.Stories)
+	assignments2, err := dispatcher.DispatchWave(planResult.Graph, completed, "r-integ-1", planResult.Stories, 2)
 	if err != nil {
 		t.Fatalf("dispatch wave 2: %v", err)
 	}
@@ -222,7 +222,7 @@ func TestIntegration_FullPipeline_PlanDispatchReviewQAMerge(t *testing.T) {
 
 	// --- Step 2: Dispatch ---
 	dispatcher := engine.NewDispatcher(cfg, es, ps)
-	assignments, err := dispatcher.DispatchWave(planResult.Graph, map[string]bool{}, "r-pipe-1", planResult.Stories)
+	assignments, err := dispatcher.DispatchWave(planResult.Graph, map[string]bool{}, "r-pipe-1", planResult.Stories, 1)
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
@@ -404,7 +404,7 @@ func TestIntegration_MultiStoryPipeline(t *testing.T) {
 
 	// Dispatch wave 1: only s-m1 (no deps).
 	dispatcher := engine.NewDispatcher(cfg, es, ps)
-	wave1, err := dispatcher.DispatchWave(planResult.Graph, map[string]bool{}, "r-multi", planResult.Stories)
+	wave1, err := dispatcher.DispatchWave(planResult.Graph, map[string]bool{}, "r-multi", planResult.Stories, 1)
 	if err != nil {
 		t.Fatalf("dispatch wave 1: %v", err)
 	}
@@ -436,7 +436,7 @@ func TestIntegration_MultiStoryPipeline(t *testing.T) {
 	}
 
 	// Dispatch wave 2: r-multi-s-m2 depends on r-multi-s-m1 which is now completed.
-	wave2, err := dispatcher.DispatchWave(planResult.Graph, map[string]bool{"r-multi-s-m1": true}, "r-multi", planResult.Stories)
+	wave2, err := dispatcher.DispatchWave(planResult.Graph, map[string]bool{"r-multi-s-m1": true}, "r-multi", planResult.Stories, 2)
 	if err != nil {
 		t.Fatalf("dispatch wave 2: %v", err)
 	}
@@ -457,7 +457,7 @@ func TestIntegration_MultiStoryPipeline(t *testing.T) {
 
 	// No more waves should be dispatchable.
 	completed := map[string]bool{"r-multi-s-m1": true, "r-multi-s-m2": true}
-	wave3, err := dispatcher.DispatchWave(planResult.Graph, completed, "r-multi", planResult.Stories)
+	wave3, err := dispatcher.DispatchWave(planResult.Graph, completed, "r-multi", planResult.Stories, 3)
 	if err != nil {
 		t.Fatalf("dispatch wave 3: %v", err)
 	}

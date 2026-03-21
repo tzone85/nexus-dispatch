@@ -69,7 +69,7 @@ func TestDispatcher_DispatchWave(t *testing.T) {
 	dag.AddEdge("s-002", "s-001")
 
 	// Wave 1: s-001 and s-003 are ready (no deps or deps satisfied)
-	assignments, err := dispatcher.DispatchWave(dag, map[string]bool{}, "r-001", stories)
+	assignments, err := dispatcher.DispatchWave(dag, map[string]bool{}, "r-001", stories, 1)
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestDispatcher_DispatchWave(t *testing.T) {
 
 	// Wave 2: after s-001 and s-003 complete, s-002 becomes ready
 	completed := map[string]bool{"s-001": true, "s-003": true}
-	assignments2, err := dispatcher.DispatchWave(dag, completed, "r-001", stories)
+	assignments2, err := dispatcher.DispatchWave(dag, completed, "r-001", stories, 2)
 	if err != nil {
 		t.Fatalf("dispatch wave 2: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestDispatcher_EmptyWave(t *testing.T) {
 	dag := graph.New()
 	dag.AddNode("s-001")
 
-	assignments, err := dispatcher.DispatchWave(dag, map[string]bool{"s-001": true}, "r-001", nil)
+	assignments, err := dispatcher.DispatchWave(dag, map[string]bool{"s-001": true}, "r-001", nil, 1)
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestDispatcher_EventEmission(t *testing.T) {
 	dag := graph.New()
 	dag.AddNode("s-001")
 
-	_, err := dispatcher.DispatchWave(dag, map[string]bool{}, "r-001", stories)
+	_, err := dispatcher.DispatchWave(dag, map[string]bool{}, "r-001", stories, 1)
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
@@ -214,7 +214,7 @@ func TestDispatchWave_SequentialFirst(t *testing.T) {
 	}
 
 	// All 3 stories are ready, but s-001 is sequential — only it should dispatch
-	assignments, err := dispatcher.DispatchWave(dag, map[string]bool{}, "r-001", stories)
+	assignments, err := dispatcher.DispatchWave(dag, map[string]bool{}, "r-001", stories, 1)
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
@@ -258,7 +258,7 @@ func TestDispatchWave_RejectsOverlap(t *testing.T) {
 	}
 
 	// Both are ready and parallel, but they share src/shared.go — only 1 should dispatch
-	assignments, err := dispatcher.DispatchWave(dag, map[string]bool{}, "r-001", stories)
+	assignments, err := dispatcher.DispatchWave(dag, map[string]bool{}, "r-001", stories, 1)
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
