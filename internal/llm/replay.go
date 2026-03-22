@@ -54,3 +54,19 @@ func (r *ReplayClient) CallAt(index int) CompletionRequest {
 	defer r.mu.Unlock()
 	return r.calls[index]
 }
+
+// ErrorClient always returns the same error on every Complete call. Useful
+// for testing error handling paths (e.g., fatal API errors, transient failures).
+type ErrorClient struct {
+	err error
+}
+
+// NewErrorClient creates an ErrorClient that always returns the given error.
+func NewErrorClient(err error) *ErrorClient {
+	return &ErrorClient{err: err}
+}
+
+// Complete always returns the configured error.
+func (e *ErrorClient) Complete(_ context.Context, _ CompletionRequest) (CompletionResponse, error) {
+	return CompletionResponse{}, e.err
+}

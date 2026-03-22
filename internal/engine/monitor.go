@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -31,6 +32,12 @@ type Monitor struct {
 	config           config.Config
 	eventStore       state.EventStore
 	projStore        state.ProjectionStore
+	escalation       *EscalationMachine
+	manager          *Manager
+
+	// planner enables tier-3 (tech lead) re-planning. When set, the
+	// monitor can decompose failing stories into smaller replacements.
+	planner *Planner
 
 	// dispatcher + executor allow the monitor to automatically spawn the
 	// next wave of stories after merges complete, removing the need for
@@ -42,6 +49,10 @@ type Monitor struct {
 	// rebases onto the latest main before merging, preventing conflicts
 	// when parallel agents touch the same files.
 	mergeMu sync.Mutex
+
+	// dagMu serializes DAG mutations (e.g. story splits) so that
+	// concurrent pipelines don't corrupt the graph.
+	dagMu sync.Mutex
 }
 
 // NewMonitor creates a Monitor wired to all pipeline components.
@@ -64,6 +75,7 @@ func NewMonitor(
 		config:     cfg,
 		eventStore: es,
 		projStore:  ps,
+		escalation: NewEscalationMachine(es, cfg.Routing),
 	}
 }
 
@@ -79,6 +91,20 @@ func (m *Monitor) SetConflictResolver(cr *ConflictResolver) {
 func (m *Monitor) SetAutoResume(d *Dispatcher, e *Executor) {
 	m.dispatcher = d
 	m.executor = e
+}
+
+// SetManager enables tier-2 (manager) escalation handling. When set, the
+// monitor intercepts tier-2 stories before dispatch and routes them through
+// the Manager for LLM-powered failure diagnosis and corrective actions.
+func (m *Monitor) SetManager(mgr *Manager) {
+	m.manager = mgr
+}
+
+// SetPlanner enables tier-3 (tech lead) re-planning. When set, the monitor
+// can decompose failing stories into smaller replacement stories via the
+// Planner's RePlan method.
+func (m *Monitor) SetPlanner(p *Planner) {
+	m.planner = p
 }
 
 // RunContext carries the state needed for auto-resume across waves.
@@ -249,10 +275,10 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 		result, err := m.reviewer.Review(ctx, storyID, storyTitle, storyAC, diff)
 		if err != nil {
 			// Fatal API errors (auth failures, billing exhaustion,
-			// permission denied) will never succeed on retry — pause
+			// permission denied) will never succeed on retry -- pause
 			// the entire requirement to stop the infinite loop.
 			if llm.IsFatalAPIError(err) {
-				log.Printf("[pipeline] FATAL: non-retryable API error — pausing requirement for %s: %v", storyID, err)
+				log.Printf("[pipeline] FATAL: non-retryable API error -- pausing requirement for %s: %v", storyID, err)
 				m.pauseRequirement(storyID, fmt.Sprintf("fatal API error: %v", err))
 				return
 			}
@@ -261,7 +287,7 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 			return
 		}
 		if !result.Passed {
-			m.handleReviewFailure(storyID, result)
+			m.resetStoryToDraft(storyID, "reviewer", fmt.Sprintf("review rejected: %s", result.Summary))
 			return
 		}
 		log.Printf("[pipeline] review passed for %s", storyID)
@@ -277,11 +303,7 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 		}
 		if !result.Passed {
 			log.Printf("[pipeline] QA failed for %s", storyID)
-			failEvt := state.NewEvent(state.EventStoryReviewFailed, "qa", storyID, map[string]any{
-				"reason": "QA checks failed",
-			})
-			m.eventStore.Append(failEvt)
-			m.projStore.Project(failEvt)
+			m.resetStoryToDraft(storyID, "qa", "QA checks failed")
 			return
 		}
 		log.Printf("[pipeline] QA passed for %s", storyID)
@@ -290,10 +312,12 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 	// 3. Merge (serialized: rebase onto latest main, then push + merge)
 	if m.merger != nil {
 		m.mergeMu.Lock()
+		defer m.mergeMu.Unlock()
 		result, err := m.rebaseAndMerge(ctx, storyID, branch, repoDir, ag.WorktreePath)
-		m.mergeMu.Unlock()
 
 		if err != nil {
+			// Fatal API errors during conflict resolution (credits exhausted,
+			// auth failure) must pause the requirement immediately.
 			if llm.IsFatalAPIError(err) {
 				log.Printf("[pipeline] FATAL: non-retryable API error during merge for %s: %v", storyID, err)
 				m.pauseRequirement(storyID, fmt.Sprintf("fatal API error during merge: %v", err))
@@ -382,51 +406,6 @@ func (m *Monitor) isRequirementPaused(storyID string) bool {
 	return req.Status == "paused"
 }
 
-// resetStoryToDraft emits a STORY_REVIEW_FAILED event to move a story back
-// to "draft" so it can be re-dispatched. This handles error paths (review
-// errors, QA errors, rebase conflicts) that would otherwise leave the story
-// stuck in an intermediate status.
-//
-// Before resetting, it checks how many times this story has already been
-// reset. If the count exceeds the configured max_retries_before_escalation,
-// the entire requirement is paused instead of resetting — preventing infinite
-// retry loops that drain credits.
-func (m *Monitor) resetStoryToDraft(storyID, fromAgent, reason string) {
-	// Count existing STORY_REVIEW_FAILED events for this story to detect
-	// infinite retry loops (e.g. persistent merge conflicts, repeated QA
-	// failures, credit exhaustion).
-	maxRetries := m.config.Routing.MaxRetriesBeforeEscalation
-	if maxRetries <= 0 {
-		maxRetries = 3
-	}
-
-	resetCount, err := m.eventStore.Count(state.EventFilter{
-		Type:    state.EventStoryReviewFailed,
-		StoryID: storyID,
-	})
-	if err != nil {
-		log.Printf("[pipeline] failed to count reset events for %s: %v", storyID, err)
-		// On error, proceed with reset rather than silently pausing.
-	} else if resetCount >= maxRetries {
-		log.Printf("[pipeline] story %s exceeded max retries (%d), pausing requirement", storyID, maxRetries)
-		m.pauseRequirement(storyID, fmt.Sprintf(
-			"story exceeded max retries (%d/%d): %s", resetCount, maxRetries, reason,
-		))
-		return
-	}
-
-	evt := state.NewEvent(state.EventStoryReviewFailed, fromAgent, storyID, map[string]any{
-		"reason": reason,
-	})
-	if err := m.eventStore.Append(evt); err != nil {
-		log.Printf("[pipeline] failed to append reset event for %s: %v", storyID, err)
-	}
-	if err := m.projStore.Project(evt); err != nil {
-		log.Printf("[pipeline] failed to project reset event for %s: %v", storyID, err)
-	}
-	log.Printf("[pipeline] reset %s to draft (attempt %d/%d): %s", storyID, resetCount+1, maxRetries, reason)
-}
-
 // pauseRequirement pauses the entire requirement that owns the given story.
 // This is used when a fatal, non-retryable error (e.g. billing exhaustion)
 // makes further progress impossible. The user must resolve the issue and
@@ -452,85 +431,53 @@ func (m *Monitor) pauseRequirement(storyID, reason string) {
 	log.Printf("[pipeline] resolve the issue and run 'nxd resume %s' to continue", story.ReqID)
 }
 
-// handleReviewFailure implements retry-with-feedback and senior escalation
-// for code review rejections. On the first failure, the story is reset to
-// draft so the same agent can retry with feedback attached. On the second
-// failure, the story is escalated to a senior agent. On the third failure
-// (senior also fails), the requirement is paused for human intervention.
-//
-// Note: by the time this method is called, the Reviewer has already emitted
-// one STORY_REVIEW_FAILED event (agent_id="reviewer") for this rejection.
-func (m *Monitor) handleReviewFailure(storyID string, result ReviewResult) {
-	// Count review-specific failures (emitted by the Reviewer, agent_id="reviewer").
-	reviewFailCount, err := m.eventStore.Count(state.EventFilter{
-		Type:    state.EventStoryReviewFailed,
-		AgentID: "reviewer",
-		StoryID: storyID,
-	})
+// resetStoryToDraft uses the EscalationMachine to decide whether the story
+// should be retried at the current tier, escalated to the next tier, or
+// paused (all tiers exhausted). It emits the appropriate events so the
+// dispatcher picks the story back up with the correct routing.
+func (m *Monitor) resetStoryToDraft(storyID, fromAgent, reason string) {
+	shouldEsc, nextTier, err := m.escalation.ShouldEscalate(storyID)
 	if err != nil {
-		log.Printf("[pipeline] failed to count review failures for %s: %v", storyID, err)
-		reviewFailCount = 1 // assume first failure on error
+		log.Printf("[pipeline] escalation check error for %s: %v", storyID, err)
 	}
 
-	// Marshal review comments for the event payload.
-	commentsJSON := marshalReviewComments(result.Comments)
-
-	switch {
-	case reviewFailCount <= 1:
-		// First failure: reset to draft with feedback so the dispatcher
-		// re-dispatches the same agent with review comments attached.
-		log.Printf("[pipeline] review rejected %s (attempt 1), will retry with feedback", storyID)
-		evt := state.NewEvent(state.EventStoryReviewFailed, "monitor", storyID, map[string]any{
-			"reason":   "review rejected",
-			"feedback": result.Summary,
-			"comments": commentsJSON,
-		})
-		m.eventStore.Append(evt)
-		m.projStore.Project(evt)
-
-	case reviewFailCount == 2:
-		// Second failure: retry also failed — escalate to senior agent.
-		log.Printf("[pipeline] review rejected %s (attempt 2), escalating to senior", storyID)
-
-		// Emit escalation event.
-		escEvt := state.NewEvent(state.EventEscalationCreated, "monitor", storyID, map[string]any{
-			"reason":   "review failed twice",
-			"feedback": result.Summary,
-			"comments": commentsJSON,
+	if shouldEsc {
+		currentTier, _ := m.escalation.CurrentTier(storyID)
+		if nextTier >= 4 {
+			m.pauseRequirement(storyID, fmt.Sprintf(
+				"story exhausted all escalation tiers (%d): %s", currentTier, reason,
+			))
+			return
+		}
+		log.Printf("[pipeline] escalating %s from tier %d to tier %d: %s", storyID, currentTier, nextTier, reason)
+		escEvt := state.NewEvent(state.EventStoryEscalated, fromAgent, storyID, map[string]any{
+			"from_tier": currentTier,
+			"to_tier":   nextTier,
+			"reason":    reason,
 		})
 		m.eventStore.Append(escEvt)
 		m.projStore.Project(escEvt)
-
-		// Reset to draft so the dispatcher picks it up and routes to senior.
-		resetEvt := state.NewEvent(state.EventStoryReviewFailed, "monitor", storyID, map[string]any{
-			"reason":   "review rejected, escalating to senior",
-			"feedback": result.Summary,
-			"comments": commentsJSON,
+		// Also reset to draft so the dispatcher picks it up at the new tier.
+		resetEvt := state.NewEvent(state.EventStoryReviewFailed, fromAgent, storyID, map[string]any{
+			"reason": fmt.Sprintf("escalated to tier %d: %s", nextTier, reason),
 		})
 		m.eventStore.Append(resetEvt)
 		m.projStore.Project(resetEvt)
+		return
+	}
 
-	default:
-		// Third+ failure (senior also failed): pause the requirement.
-		log.Printf("[pipeline] review rejected %s (attempt 3+), pausing requirement", storyID)
-		m.pauseRequirement(storyID, fmt.Sprintf(
-			"review failed %d times (including senior escalation): %s",
-			reviewFailCount, result.Summary,
-		))
-	}
-}
+	// Normal reset within current tier.
+	retryCount, _ := m.escalation.RetryCountAtCurrentTier(storyID)
+	currentTier, _ := m.escalation.CurrentTier(storyID)
+	maxRetries := m.escalation.MaxRetriesForTier(currentTier)
+	log.Printf("[pipeline] reset %s to draft (attempt %d/%d at tier %d): %s",
+		storyID, retryCount+1, maxRetries, currentTier, reason)
 
-// marshalReviewComments serializes review comments to a JSON string for
-// storage in event payloads.
-func marshalReviewComments(comments []ReviewComment) string {
-	if len(comments) == 0 {
-		return "[]"
-	}
-	data, err := json.Marshal(comments)
-	if err != nil {
-		return "[]"
-	}
-	return string(data)
+	evt := state.NewEvent(state.EventStoryReviewFailed, fromAgent, storyID, map[string]any{
+		"reason": reason,
+	})
+	m.eventStore.Append(evt)
+	m.projStore.Project(evt)
 }
 
 // dispatchNextWave determines which stories are now ready (dependencies met)
@@ -554,7 +501,7 @@ func (m *Monitor) dispatchNextWave(ctx context.Context, rc *RunContext, repoDir 
 	completed := make(map[string]bool)
 	allDone := true
 	for _, s := range stories {
-		if s.Status == "merged" || s.Status == "pr_submitted" {
+		if s.Status == "merged" || s.Status == "pr_submitted" || s.Status == "split" {
 			completed[s.ID] = true
 		} else {
 			allDone = false
@@ -568,6 +515,49 @@ func (m *Monitor) dispatchNextWave(ctx context.Context, rc *RunContext, repoDir 
 		m.eventStore.Append(compEvt)
 		m.projStore.Project(compEvt)
 		return nil
+	}
+
+	// Pre-dispatch interception: handle tier 2+ stories inline before
+	// they reach the dispatcher. Tier 2 goes to the Manager for LLM
+	// diagnosis; tier 3 goes to the tech-lead re-plan path.
+	if m.manager != nil {
+		readyIDs := rc.DAG.ReadyNodes(completed)
+		storyLookup := make(map[string]PlannedStory, len(rc.PlannedStories))
+		for _, ps := range rc.PlannedStories {
+			storyLookup[ps.ID] = ps
+		}
+
+		for _, id := range readyIDs {
+			if completed[id] {
+				continue
+			}
+			tier, err := m.escalation.CurrentTier(id)
+			if err != nil {
+				log.Printf("[auto-resume] tier lookup error for %s: %v", id, err)
+				continue
+			}
+			if tier < 2 {
+				continue
+			}
+
+			story, ok := storyLookup[id]
+			if !ok {
+				log.Printf("[auto-resume] story %s not found in planned stories", id)
+				continue
+			}
+
+			// Mark as completed so DispatchWave skips this story.
+			completed[id] = true
+
+			switch tier {
+			case 2:
+				log.Printf("[auto-resume] intercepting tier-2 story %s for manager diagnosis", id)
+				m.handleManagerEscalation(ctx, story, repoDir, rc)
+			default: // tier 3+
+				log.Printf("[auto-resume] intercepting tier-%d story %s for tech-lead escalation", tier, id)
+				m.handleTechLeadEscalation(ctx, story, repoDir, rc)
+			}
+		}
 	}
 
 	rc.WaveNumber++
@@ -606,6 +596,330 @@ func (m *Monitor) dispatchNextWave(ctx context.Context, rc *RunContext, repoDir 
 	}
 
 	return active
+}
+
+// handleManagerEscalation runs the Manager LLM to diagnose a tier-2 story
+// and executes the recommended corrective action (retry, rewrite, split,
+// or escalate to tech lead).
+func (m *Monitor) handleManagerEscalation(ctx context.Context, story PlannedStory, repoDir string, rc *RunContext) {
+	storyID := story.ID
+	stateDir := execExpandHome(m.config.Workspace.StateDir)
+	worktreePath := filepath.Join(stateDir, "worktrees", storyID)
+	logDir := filepath.Join(stateDir, "logs")
+
+	dc, err := m.manager.BuildDiagnosticContext(storyID, worktreePath, logDir)
+	if err != nil {
+		log.Printf("[manager] context build error for %s: %v", storyID, err)
+		m.resetStoryToDraft(storyID, "manager", fmt.Sprintf("context build error: %v", err))
+		return
+	}
+
+	action, err := m.manager.Diagnose(ctx, dc)
+	if err != nil {
+		log.Printf("[manager] diagnosis failed for %s: %v", storyID, err)
+		if llm.IsFatalAPIError(err) {
+			m.pauseRequirement(storyID, fmt.Sprintf("fatal API error in manager: %v", err))
+			return
+		}
+		m.resetStoryToDraft(storyID, "manager", fmt.Sprintf("diagnosis error: %v", err))
+		return
+	}
+
+	log.Printf("[manager] %s: diagnosis=%q action=%s", storyID, action.Diagnosis, action.Action)
+
+	// Persist the diagnosis for post-mortem review.
+	logPath := filepath.Join(logDir, storyID+"-manager.log")
+	os.WriteFile(logPath, []byte(fmt.Sprintf("Diagnosis: %s\nCategory: %s\nAction: %s\n",
+		action.Diagnosis, action.Category, action.Action)), 0o644)
+
+	switch action.Action {
+	case "retry":
+		m.executeRetryAction(storyID, action, worktreePath)
+	case "rewrite":
+		m.executeRewriteAction(storyID, action)
+	case "split":
+		m.executeSplitAction(ctx, storyID, action, rc, story)
+	case "escalate_to_techlead":
+		m.escalateToTier(storyID, 3, "manager escalated: "+action.Diagnosis)
+	default:
+		m.resetStoryToDraft(storyID, "manager", "unknown action: "+action.Action)
+	}
+}
+
+// executeRetryAction resets a story to a lower tier for re-dispatch,
+// optionally removing the worktree for a clean start.
+func (m *Monitor) executeRetryAction(storyID string, action ManagerAction, worktreePath string) {
+	if action.RetryConfig != nil && action.RetryConfig.WorktreeReset {
+		os.RemoveAll(worktreePath)
+	}
+
+	resetTier := 0
+	if action.RetryConfig != nil {
+		resetTier = action.RetryConfig.ResetTier
+	}
+
+	evt := state.NewEvent(state.EventStoryEscalated, "manager", storyID, map[string]any{
+		"from_tier": 2,
+		"to_tier":   resetTier,
+		"reason":    "manager retry: " + action.Diagnosis,
+	})
+	m.eventStore.Append(evt)
+	m.projStore.Project(evt)
+
+	resetEvt := state.NewEvent(state.EventStoryReviewFailed, "manager", storyID, map[string]any{
+		"reason": "manager retry with fixes",
+	})
+	m.eventStore.Append(resetEvt)
+	m.projStore.Project(resetEvt)
+}
+
+// executeRewriteAction emits a STORY_REWRITTEN event to update the story
+// definition with the Manager's revised title, description, acceptance
+// criteria, and/or complexity.
+func (m *Monitor) executeRewriteAction(storyID string, action ManagerAction) {
+	if action.RewriteConfig == nil {
+		m.resetStoryToDraft(storyID, "manager", "rewrite action with no config")
+		return
+	}
+
+	changes := map[string]any{}
+	if action.RewriteConfig.Title != "" {
+		changes["title"] = action.RewriteConfig.Title
+	}
+	if action.RewriteConfig.Description != "" {
+		changes["description"] = action.RewriteConfig.Description
+	}
+	if action.RewriteConfig.AcceptanceCriteria != "" {
+		changes["acceptance_criteria"] = action.RewriteConfig.AcceptanceCriteria
+	}
+	if action.RewriteConfig.Complexity > 0 {
+		changes["complexity"] = action.RewriteConfig.Complexity
+	}
+
+	evt := state.NewEvent(state.EventStoryRewritten, "manager", storyID, map[string]any{
+		"changes": changes,
+		"reason":  action.Diagnosis,
+	})
+	m.eventStore.Append(evt)
+	m.projStore.Project(evt)
+}
+
+// executeSplitAction validates and applies a split, creating child stories
+// in the event store and mutating the DAG.
+func (m *Monitor) executeSplitAction(ctx context.Context, storyID string, action ManagerAction, rc *RunContext, story PlannedStory) {
+	if action.SplitConfig == nil || len(action.SplitConfig.Children) == 0 {
+		m.resetStoryToDraft(storyID, "manager", "split with no children")
+		return
+	}
+
+	storyData, err := m.projStore.GetStory(storyID)
+	if err != nil {
+		m.resetStoryToDraft(storyID, "manager", fmt.Sprintf("cannot look up story for split: %v", err))
+		return
+	}
+
+	children := make([]SplitChild, 0, len(action.SplitConfig.Children))
+	for _, c := range action.SplitConfig.Children {
+		children = append(children, SplitChild{
+			ID:                 storyID + "-" + c.Suffix,
+			Suffix:             c.Suffix,
+			Title:              c.Title,
+			Description:        c.Description,
+			AcceptanceCriteria: c.AcceptanceCriteria,
+			Complexity:         c.Complexity,
+			OwnedFiles:         c.OwnedFiles,
+		})
+	}
+
+	if err := m.escalation.ValidateSplit(storyData.SplitDepth, children, m.config.Planning.MaxStoryComplexity); err != nil {
+		log.Printf("[manager] split validation failed for %s: %v", storyID, err)
+		m.resetStoryToDraft(storyID, "manager", fmt.Sprintf("invalid split: %v", err))
+		return
+	}
+
+	m.dagMu.Lock()
+	defer m.dagMu.Unlock()
+
+	// Create child stories in the event store.
+	for _, child := range children {
+		childEvt := state.NewEvent(state.EventStoryCreated, "manager", child.ID, map[string]any{
+			"id":                  child.ID,
+			"req_id":              rc.ReqID,
+			"title":               child.Title,
+			"description":         child.Description,
+			"acceptance_criteria": child.AcceptanceCriteria,
+			"complexity":          child.Complexity,
+			"owned_files":         child.OwnedFiles,
+			"split_depth":         storyData.SplitDepth + 1,
+		})
+		m.eventStore.Append(childEvt)
+		m.projStore.Project(childEvt)
+	}
+
+	// Emit STORY_SPLIT for the parent.
+	childIDs := make([]string, len(children))
+	for i, c := range children {
+		childIDs[i] = c.ID
+	}
+	splitEvt := state.NewEvent(state.EventStorySplit, "manager", storyID, map[string]any{
+		"child_story_ids": childIDs,
+		"reason":          action.Diagnosis,
+	})
+	m.eventStore.Append(splitEvt)
+	m.projStore.Project(splitEvt)
+
+	// Mutate the DAG to replace the parent with children.
+	m.escalation.ApplySplit(
+		rc.DAG, rc, storyID, children,
+		action.SplitConfig.DependencyEdges,
+		story.DependsOn,
+		FindDependents(rc.PlannedStories, storyID),
+	)
+}
+
+// escalateToTier emits a STORY_ESCALATED event moving the story to the
+// specified tier.
+func (m *Monitor) escalateToTier(storyID string, tier int, reason string) {
+	currentTier, _ := m.escalation.CurrentTier(storyID)
+	evt := state.NewEvent(state.EventStoryEscalated, "monitor", storyID, map[string]any{
+		"from_tier": currentTier,
+		"to_tier":   tier,
+		"reason":    reason,
+	})
+	m.eventStore.Append(evt)
+	m.projStore.Project(evt)
+}
+
+// handleTechLeadEscalation handles tier-3 stories by calling the Planner's
+// RePlan method to decompose the failing story into smaller replacements,
+// then emitting STORY_SPLIT and mutating the DAG via ApplySplit.
+func (m *Monitor) handleTechLeadEscalation(ctx context.Context, story PlannedStory, repoDir string, rc *RunContext) {
+	storyID := story.ID
+	stateDir := execExpandHome(m.config.Workspace.StateDir)
+	logDir := filepath.Join(stateDir, "logs")
+
+	// Build failure context from events and logs.
+	events, _ := m.eventStore.List(state.EventFilter{StoryID: storyID})
+	var failureContext strings.Builder
+	for _, evt := range events {
+		fmt.Fprintf(&failureContext, "%s %s (agent: %s)\n", evt.Type, evt.Timestamp.Format("15:04:05"), evt.AgentID)
+	}
+	logPath := filepath.Join(logDir, storyID+".log")
+	if data, err := os.ReadFile(logPath); err == nil {
+		failureContext.WriteString("\nAgent log:\n")
+		failureContext.Write(data)
+	}
+
+	// Check if planner is available.
+	if m.planner == nil {
+		log.Printf("[tech-lead] no planner available for %s, pausing", storyID)
+		m.pauseRequirement(storyID, "tech lead escalation: no planner configured")
+		return
+	}
+
+	// Call RePlan to get replacement stories.
+	replacements, err := m.planner.RePlan(ctx, storyID, rc.ReqID, failureContext.String())
+	if err != nil {
+		log.Printf("[tech-lead] re-plan failed for %s: %v", storyID, err)
+		m.pauseRequirement(storyID, fmt.Sprintf("tech lead re-plan failed: %v", err))
+		return
+	}
+
+	if len(replacements) == 0 {
+		log.Printf("[tech-lead] re-plan produced no stories for %s", storyID)
+		m.pauseRequirement(storyID, "tech lead re-plan produced no replacement stories")
+		return
+	}
+
+	// Build SplitChild list from replacements.
+	storyData, _ := m.projStore.GetStory(storyID)
+	children := make([]SplitChild, 0, len(replacements))
+	for _, r := range replacements {
+		children = append(children, SplitChild{
+			ID:                 r.ID,
+			Title:              r.Title,
+			Description:        r.Description,
+			AcceptanceCriteria: string(r.AcceptanceCriteria),
+			Complexity:         r.Complexity,
+			OwnedFiles:         r.OwnedFiles,
+		})
+	}
+
+	// Validate split constraints before mutating.
+	if err := m.escalation.ValidateSplit(storyData.SplitDepth, children, m.config.Planning.MaxStoryComplexity); err != nil {
+		log.Printf("[tech-lead] split validation failed for %s: %v", storyID, err)
+		m.pauseRequirement(storyID, fmt.Sprintf("tech lead split invalid: %v", err))
+		return
+	}
+
+	// Emit STORY_SPLIT + mutate DAG (same pattern as executeSplitAction).
+	m.dagMu.Lock()
+	defer m.dagMu.Unlock()
+
+	// Create child stories in the event store (with split_depth).
+	for _, child := range children {
+		childEvt := state.NewEvent(state.EventStoryCreated, "tech_lead", child.ID, map[string]any{
+			"id":                  child.ID,
+			"req_id":              rc.ReqID,
+			"title":               child.Title,
+			"description":         child.Description,
+			"acceptance_criteria": child.AcceptanceCriteria,
+			"complexity":          child.Complexity,
+			"owned_files":         child.OwnedFiles,
+			"split_depth":         storyData.SplitDepth + 1,
+		})
+		m.eventStore.Append(childEvt)
+		m.projStore.Project(childEvt)
+	}
+
+	childIDs := make([]string, len(children))
+	for i, c := range children {
+		childIDs[i] = c.ID
+	}
+	splitEvt := state.NewEvent(state.EventStorySplit, "tech_lead", storyID, map[string]any{
+		"child_story_ids": childIDs,
+		"reason":          "tech lead re-plan",
+	})
+	m.eventStore.Append(splitEvt)
+	m.projStore.Project(splitEvt)
+
+	// Build sequential dependency edges for re-planned stories.
+	var depEdges [][]string
+	for i := 1; i < len(children); i++ {
+		depEdges = append(depEdges, []string{children[i].ID, children[i-1].ID})
+	}
+
+	m.escalation.ApplySplit(rc.DAG, rc, storyID, children, depEdges,
+		story.DependsOn, FindDependents(rc.PlannedStories, storyID))
+
+	log.Printf("[tech-lead] re-planned %s into %d replacement stories", storyID, len(children))
+}
+
+// FindDependents returns the IDs of stories that depend on the given storyID.
+func FindDependents(stories []PlannedStory, storyID string) []string {
+	var deps []string
+	for _, s := range stories {
+		for _, d := range s.DependsOn {
+			if d == storyID {
+				deps = append(deps, s.ID)
+				break
+			}
+		}
+	}
+	return deps
+}
+
+// marshalReviewComments serializes review comments to a JSON string for
+// storage in event payloads.
+func marshalReviewComments(comments []ReviewComment) string {
+	if len(comments) == 0 {
+		return "[]"
+	}
+	data, err := json.Marshal(comments)
+	if err != nil {
+		return "[]"
+	}
+	return string(data)
 }
 
 // autoCommit stages and commits any uncommitted changes in the worktree.
@@ -690,7 +1004,7 @@ func gitDiff(worktreePath string) (string, error) {
 		}
 	}
 	if mbErr != nil {
-		// No merge-base found — fall back to the root commit of the
+		// No merge-base found -- fall back to the root commit of the
 		// current branch so we diff all changes since the initial commit.
 		rootCmd := exec.Command("git", "rev-list", "--max-parents=0", "HEAD")
 		rootCmd.Dir = worktreePath
@@ -730,7 +1044,7 @@ func isGitignoreOnlyDiff(worktreePath, mergeBase string) bool {
 	}
 	files := strings.TrimSpace(string(out))
 	if files == "" {
-		return false // no files changed — caller already handles empty diff
+		return false // no files changed -- caller already handles empty diff
 	}
 	for _, f := range strings.Split(files, "\n") {
 		if strings.TrimSpace(f) != ".gitignore" {

@@ -209,6 +209,46 @@ Respond ONLY with the JSON array, no other text.`, requirement, p.config.Plannin
 	}, nil
 }
 
+// RePlan takes a single failing story and its failure context, calls the LLM
+// to decompose it into smaller replacement stories, emits STORY_CREATED
+// events for each replacement, and returns them. Unlike Plan, it does NOT
+// emit REQ_SUBMITTED or REQ_PLANNED events -- the caller is responsible for
+// emitting STORY_SPLIT and mutating the DAG.
+func (p *Planner) RePlan(ctx context.Context, storyID, reqID, failureContext string) ([]PlannedStory, error) {
+	prompt := fmt.Sprintf(`A story has failed multiple times and needs re-planning.
+
+Story ID: %s
+Requirement ID: %s
+Failure Context:
+%s
+
+Decompose this into smaller, more focused replacement stories.
+Return a JSON array of story objects with fields: id, title, description, acceptance_criteria, complexity, owned_files.
+Each story ID should use the parent ID as prefix with a letter suffix (e.g., "%s-a", "%s-b").
+Keep complexity at or below 5.
+
+Respond ONLY with the JSON array, no other text.`, storyID, reqID, failureContext, storyID, storyID)
+
+	model := p.config.Models.TechLead
+	resp, err := p.llmClient.Complete(ctx, llm.CompletionRequest{
+		Model:     model.Model,
+		MaxTokens: model.MaxTokens,
+		System:    "You are a technical lead re-planning a failed story. Break it into smaller, more focused sub-stories that are easier to implement correctly.",
+		Messages:  []llm.Message{{Role: llm.RoleUser, Content: prompt}},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("replan LLM call: %w", err)
+	}
+
+	var stories []PlannedStory
+	cleaned := extractJSON(resp.Content)
+	if err := json.Unmarshal([]byte(cleaned), &stories); err != nil {
+		return nil, fmt.Errorf("parse replan stories: %w (response: %s)", err, resp.Content)
+	}
+
+	return stories, nil
+}
+
 // emitAndProject appends an event to the event store and projects it.
 func (p *Planner) emitAndProject(eventType state.EventType, agentID, storyID string, payload map[string]any) error {
 	evt := state.NewEvent(eventType, agentID, storyID, payload)

@@ -110,7 +110,7 @@ func (q *QA) Run(ctx context.Context, storyID, worktreePath string) (QAResult, e
 	// Emit result event
 	eventType := state.EventStoryQAPassed
 	if !result.Passed {
-		eventType = state.EventStoryQAFailed
+		eventType = state.EventStoryReviewFailed
 	}
 
 	failedChecks := make([]string, 0)
