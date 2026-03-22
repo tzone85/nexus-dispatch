@@ -185,17 +185,82 @@ func TestSQLiteStore_StoryOwnedFiles(t *testing.T) {
 	}
 }
 
-func TestSQLiteStore_QAFailedReturnsToDev(t *testing.T) {
+func TestSQLiteStore_StoryEscalation(t *testing.T) {
 	db, _ := state.NewSQLiteStore(":memory:")
 	defer db.Close()
 
 	db.Project(state.NewEvent(state.EventStoryCreated, "tl", "s-001", map[string]any{
 		"id": "s-001", "req_id": "r-001", "title": "task", "description": "d", "complexity": 3,
 	}))
-	db.Project(state.NewEvent(state.EventStoryQAFailed, "qa-1", "s-001", nil))
+	db.Project(state.NewEvent(state.EventStoryEscalated, "monitor", "s-001", map[string]any{
+		"from_tier": 0, "to_tier": 1, "reason": "review failed twice",
+	}))
 
 	story, _ := db.GetStory("s-001")
-	if story.Status != "qa_failed" {
-		t.Fatalf("expected 'qa_failed', got %s", story.Status)
+	if story.EscalationTier != 1 {
+		t.Fatalf("expected escalation_tier 1, got %d", story.EscalationTier)
+	}
+
+	escalations, _ := db.ListEscalations()
+	if len(escalations) != 1 {
+		t.Fatalf("expected 1 escalation, got %d", len(escalations))
+	}
+	if escalations[0].FromTier != 0 || escalations[0].ToTier != 1 {
+		t.Fatalf("expected tier 0->1, got %d->%d", escalations[0].FromTier, escalations[0].ToTier)
+	}
+}
+
+func TestSQLiteStore_StoryRewritten(t *testing.T) {
+	db, _ := state.NewSQLiteStore(":memory:")
+	defer db.Close()
+
+	db.Project(state.NewEvent(state.EventStoryCreated, "tl", "s-001", map[string]any{
+		"id": "s-001", "req_id": "r-001", "title": "old title", "description": "old desc", "complexity": 3,
+	}))
+	db.Project(state.NewEvent(state.EventStoryRewritten, "manager", "s-001", map[string]any{
+		"changes": map[string]any{"title": "new title", "description": "new desc"},
+	}))
+
+	story, _ := db.GetStory("s-001")
+	if story.Title != "new title" {
+		t.Fatalf("expected 'new title', got %s", story.Title)
+	}
+	if story.Status != "draft" {
+		t.Fatalf("expected 'draft' after rewrite, got %s", story.Status)
+	}
+	if story.EscalationTier != 0 {
+		t.Fatalf("expected escalation_tier 0 after rewrite, got %d", story.EscalationTier)
+	}
+}
+
+func TestSQLiteStore_StorySplit(t *testing.T) {
+	db, _ := state.NewSQLiteStore(":memory:")
+	defer db.Close()
+
+	db.Project(state.NewEvent(state.EventStoryCreated, "tl", "s-001", map[string]any{
+		"id": "s-001", "req_id": "r-001", "title": "task", "description": "d", "complexity": 8,
+	}))
+	db.Project(state.NewEvent(state.EventStorySplit, "manager", "s-001", map[string]any{
+		"child_story_ids": []string{"s-001-a", "s-001-b"},
+	}))
+
+	story, _ := db.GetStory("s-001")
+	if story.Status != "split" {
+		t.Fatalf("expected 'split', got %s", story.Status)
+	}
+}
+
+func TestSQLiteStore_SplitDepth(t *testing.T) {
+	db, _ := state.NewSQLiteStore(":memory:")
+	defer db.Close()
+
+	db.Project(state.NewEvent(state.EventStoryCreated, "tl", "s-001", map[string]any{
+		"id": "s-001", "req_id": "r-001", "title": "task", "description": "d",
+		"complexity": 3, "split_depth": 1,
+	}))
+
+	story, _ := db.GetStory("s-001")
+	if story.SplitDepth != 1 {
+		t.Fatalf("expected split_depth 1, got %d", story.SplitDepth)
 	}
 }

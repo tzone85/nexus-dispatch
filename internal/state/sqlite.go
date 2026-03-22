@@ -1,12 +1,14 @@
 package state
 
 import (
+	"crypto/rand"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strings"
 
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/oklog/ulid/v2"
 )
 
 // initSQL is the schema migration applied on store creation.
@@ -108,6 +110,17 @@ func NewSQLiteStore(dsn string) (*SQLiteStore, error) {
 	db.Exec(`ALTER TABLE stories ADD COLUMN wave INTEGER NOT NULL DEFAULT 0`)
 	db.Exec(`ALTER TABLE stories ADD COLUMN pr_number INTEGER NOT NULL DEFAULT 0`)
 
+	// Migrate existing databases: add escalation columns if missing.
+	escalationMigrations := []string{
+		"ALTER TABLE stories ADD COLUMN escalation_tier INTEGER DEFAULT 0",
+		"ALTER TABLE stories ADD COLUMN split_depth INTEGER DEFAULT 0",
+		"ALTER TABLE escalations ADD COLUMN from_tier INTEGER DEFAULT 0",
+		"ALTER TABLE escalations ADD COLUMN to_tier INTEGER DEFAULT 0",
+	}
+	for _, m := range escalationMigrations {
+		db.Exec(m) // errors ignored for idempotency
+	}
+
 	return &SQLiteStore{db: db}, nil
 }
 
@@ -157,12 +170,17 @@ func (s *SQLiteStore) Project(evt Event) error {
 		return s.updateStoryStatus(evt.StoryID, "qa")
 	case EventStoryQAPassed:
 		return s.updateStoryStatus(evt.StoryID, "pr_submitted")
-	case EventStoryQAFailed:
-		return s.updateStoryStatus(evt.StoryID, "qa_failed")
 	case EventStoryPRCreated:
 		return s.projectStoryPRCreated(evt.StoryID, payload)
 	case EventStoryMerged:
 		return s.updateStoryStatus(evt.StoryID, "merged")
+
+	case EventStoryEscalated:
+		return s.projectStoryEscalated(evt, payload)
+	case EventStoryRewritten:
+		return s.projectStoryRewritten(evt.StoryID, payload)
+	case EventStorySplit:
+		return s.updateStoryStatus(evt.StoryID, "split")
 
 	default:
 		// Unhandled event types are silently ignored to allow forward
@@ -189,13 +207,14 @@ func (s *SQLiteStore) GetStory(id string) (Story, error) {
 	var story Story
 	var ownedFilesJSON string
 	err := s.db.QueryRow(
-		`SELECT id, req_id, title, description, acceptance_criteria, complexity, status, agent_id, branch, pr_url, pr_number, owned_files, wave_hint, wave, created_at
+		`SELECT id, req_id, title, description, acceptance_criteria, complexity, status, agent_id, branch, pr_url, pr_number, owned_files, wave_hint, wave, escalation_tier, split_depth, created_at
 		 FROM stories WHERE id = ?`,
 		id,
 	).Scan(
 		&story.ID, &story.ReqID, &story.Title, &story.Description,
 		&story.AcceptanceCriteria, &story.Complexity, &story.Status, &story.AgentID, &story.Branch,
-		&story.PRUrl, &story.PRNumber, &ownedFilesJSON, &story.WaveHint, &story.Wave, &story.CreatedAt,
+		&story.PRUrl, &story.PRNumber, &ownedFilesJSON, &story.WaveHint, &story.Wave,
+		&story.EscalationTier, &story.SplitDepth, &story.CreatedAt,
 	)
 	if err != nil {
 		return Story{}, fmt.Errorf("get story %s: %w", id, err)
@@ -211,7 +230,7 @@ func (s *SQLiteStore) GetStory(id string) (Story, error) {
 
 // ListStories returns stories matching the given filter.
 func (s *SQLiteStore) ListStories(filter StoryFilter) ([]Story, error) {
-	query := `SELECT id, req_id, title, description, acceptance_criteria, complexity, status, agent_id, branch, pr_url, pr_number, owned_files, wave_hint, wave, created_at FROM stories`
+	query := `SELECT id, req_id, title, description, acceptance_criteria, complexity, status, agent_id, branch, pr_url, pr_number, owned_files, wave_hint, wave, escalation_tier, split_depth, created_at FROM stories`
 	var conditions []string
 	var args []any
 
@@ -242,7 +261,8 @@ func (s *SQLiteStore) ListStories(filter StoryFilter) ([]Story, error) {
 		if err := rows.Scan(
 			&story.ID, &story.ReqID, &story.Title, &story.Description,
 			&story.AcceptanceCriteria, &story.Complexity, &story.Status, &story.AgentID, &story.Branch,
-			&story.PRUrl, &story.PRNumber, &ownedFilesJSON, &story.WaveHint, &story.Wave, &story.CreatedAt,
+			&story.PRUrl, &story.PRNumber, &ownedFilesJSON, &story.WaveHint, &story.Wave,
+			&story.EscalationTier, &story.SplitDepth, &story.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan story: %w", err)
 		}
@@ -343,13 +363,15 @@ type Escalation struct {
 	Reason     string
 	Status     string
 	Resolution string
+	FromTier   int
+	ToTier     int
 	CreatedAt  string
 }
 
 // ListEscalations returns all escalations ordered by creation time descending.
 func (s *SQLiteStore) ListEscalations() ([]Escalation, error) {
 	rows, err := s.db.Query(
-		`SELECT id, story_id, from_agent, reason, status, resolution, created_at
+		`SELECT id, story_id, from_agent, reason, status, resolution, from_tier, to_tier, created_at
 		 FROM escalations ORDER BY created_at DESC`,
 	)
 	if err != nil {
@@ -362,7 +384,7 @@ func (s *SQLiteStore) ListEscalations() ([]Escalation, error) {
 		var e Escalation
 		if err := rows.Scan(
 			&e.ID, &e.StoryID, &e.FromAgent, &e.Reason,
-			&e.Status, &e.Resolution, &e.CreatedAt,
+			&e.Status, &e.Resolution, &e.FromTier, &e.ToTier, &e.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan escalation: %w", err)
 		}
@@ -450,9 +472,11 @@ func (s *SQLiteStore) projectStoryCreated(payload map[string]any) error {
 		waveHint = "parallel"
 	}
 
+	splitDepth := payloadInt(payload, "split_depth")
+
 	_, err := s.db.Exec(
-		`INSERT INTO stories (id, req_id, title, description, acceptance_criteria, complexity, status, owned_files, wave_hint)
-		 VALUES (?, ?, ?, ?, ?, ?, 'draft', ?, ?)`,
+		`INSERT INTO stories (id, req_id, title, description, acceptance_criteria, complexity, status, owned_files, wave_hint, split_depth)
+		 VALUES (?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?)`,
 		storyID,
 		payloadStr(payload, "req_id"),
 		payloadStr(payload, "title"),
@@ -461,6 +485,7 @@ func (s *SQLiteStore) projectStoryCreated(payload map[string]any) error {
 		complexity,
 		ownedFilesJSON,
 		waveHint,
+		splitDepth,
 	)
 	if err != nil {
 		return err
@@ -551,6 +576,54 @@ func (s *SQLiteStore) ArchiveStoriesByReq(reqID string) error {
 	return err
 }
 
+func (s *SQLiteStore) projectStoryEscalated(evt Event, payload map[string]any) error {
+	fromTier := payloadInt(payload, "from_tier")
+	toTier := payloadInt(payload, "to_tier")
+	reason := payloadStr(payload, "reason")
+
+	if _, err := s.db.Exec(
+		`UPDATE stories SET escalation_tier = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+		toTier, evt.StoryID,
+	); err != nil {
+		return fmt.Errorf("update story escalation_tier: %w", err)
+	}
+
+	id := ulid.MustNew(ulid.Timestamp(evt.Timestamp), rand.Reader)
+	_, err := s.db.Exec(
+		`INSERT INTO escalations (id, story_id, from_agent, reason, status, from_tier, to_tier, created_at)
+		 VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)`,
+		id.String(), evt.StoryID, evt.AgentID, reason, fromTier, toTier, evt.Timestamp,
+	)
+	return err
+}
+
+func (s *SQLiteStore) projectStoryRewritten(storyID string, payload map[string]any) error {
+	changes := payloadMap(payload, "changes")
+
+	if title, ok := changes["title"].(string); ok && title != "" {
+		s.db.Exec(`UPDATE stories SET title = ? WHERE id = ?`, title, storyID)
+	}
+	if desc, ok := changes["description"].(string); ok && desc != "" {
+		s.db.Exec(`UPDATE stories SET description = ? WHERE id = ?`, desc, storyID)
+	}
+	if ac, ok := changes["acceptance_criteria"].(string); ok && ac != "" {
+		s.db.Exec(`UPDATE stories SET acceptance_criteria = ? WHERE id = ?`, ac, storyID)
+	}
+	if complexity, ok := changes["complexity"]; ok {
+		if c, ok := complexity.(float64); ok {
+			s.db.Exec(`UPDATE stories SET complexity = ? WHERE id = ?`, int(c), storyID)
+		} else if c, ok := complexity.(int); ok {
+			s.db.Exec(`UPDATE stories SET complexity = ? WHERE id = ?`, c, storyID)
+		}
+	}
+
+	_, err := s.db.Exec(
+		`UPDATE stories SET escalation_tier = 0, status = 'draft', updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+		storyID,
+	)
+	return err
+}
+
 // --- payload extraction helpers ---
 
 func payloadStr(m map[string]any, key string) string {
@@ -578,4 +651,16 @@ func payloadInt(m map[string]any, key string) int {
 	default:
 		return 0
 	}
+}
+
+func payloadMap(m map[string]any, key string) map[string]any {
+	v, ok := m[key]
+	if !ok {
+		return map[string]any{}
+	}
+	sub, ok := v.(map[string]any)
+	if !ok {
+		return map[string]any{}
+	}
+	return sub
 }

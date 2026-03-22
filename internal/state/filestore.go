@@ -81,6 +81,9 @@ func (fs *FileStore) readAndFilter(filter EventFilter) ([]Event, error) {
 		if filter.StoryID != "" && evt.StoryID != filter.StoryID {
 			continue
 		}
+		if !filter.After.IsZero() && !evt.Timestamp.After(filter.After) {
+			continue
+		}
 		events = append(events, evt)
 		if filter.Limit > 0 && len(events) >= filter.Limit {
 			break

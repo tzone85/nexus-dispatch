@@ -34,6 +34,8 @@ type Story struct {
 	OwnedFiles         []string
 	WaveHint           string
 	Wave               int
+	EscalationTier     int
+	SplitDepth         int
 	CreatedAt          time.Time
 }
 

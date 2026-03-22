@@ -32,9 +32,11 @@ const (
 	EventStoryReviewFailed    EventType = "STORY_REVIEW_FAILED"
 	EventStoryQAStarted       EventType = "STORY_QA_STARTED"
 	EventStoryQAPassed        EventType = "STORY_QA_PASSED"
-	EventStoryQAFailed        EventType = "STORY_QA_FAILED"
 	EventStoryPRCreated       EventType = "STORY_PR_CREATED"
 	EventStoryMerged          EventType = "STORY_MERGED"
+	EventStoryEscalated       EventType = "STORY_ESCALATED"
+	EventStoryRewritten       EventType = "STORY_REWRITTEN"
+	EventStorySplit           EventType = "STORY_SPLIT"
 
 	// Agent lifecycle events.
 	EventAgentSpawned    EventType = "AGENT_SPAWNED"
@@ -42,10 +44,6 @@ const (
 	EventAgentResumed    EventType = "AGENT_RESUMED"
 	EventAgentStuck      EventType = "AGENT_STUCK"
 	EventAgentTerminated EventType = "AGENT_TERMINATED"
-
-	// Escalation events.
-	EventEscalationCreated  EventType = "ESCALATION_CREATED"
-	EventEscalationResolved EventType = "ESCALATION_RESOLVED"
 
 	// Supervisor events.
 	EventSupervisorCheck         EventType = "SUPERVISOR_CHECK"
@@ -66,6 +64,19 @@ type Event struct {
 	AgentID   string    `json:"agent_id"`
 	StoryID   string    `json:"story_id,omitempty"`
 	Payload   []byte    `json:"payload,omitempty"`
+}
+
+// DecodePayload unmarshals a JSON-encoded event payload into a map.
+// Returns an empty map if the payload is nil or cannot be decoded.
+func DecodePayload(payload []byte) map[string]any {
+	if len(payload) == 0 {
+		return map[string]any{}
+	}
+	var m map[string]any
+	if err := json.Unmarshal(payload, &m); err != nil {
+		return map[string]any{}
+	}
+	return m
 }
 
 // NewEvent creates a new Event with a ULID identifier and current timestamp.
