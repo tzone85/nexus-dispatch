@@ -8,11 +8,12 @@ import (
 	"github.com/tzone85/nexus-dispatch/internal/state"
 )
 
-// renderAgents renders Panel 2: agent status list with summary.
-func renderAgents(agents []state.Agent, width, height int) string {
-	summary := renderAgentSummary(agents)
-	table := renderAgentTable(agents, width, height-4)
-	return lipgloss.JoinVertical(lipgloss.Left, summary, "", table)
+// renderAgents renders the agent status list with summary.
+func (m Model) renderAgents(width, maxRows int) string {
+	heading := headingStyle.Render("Agents")
+	summary := renderAgentSummary(m.agents)
+	table := renderAgentTable(m.agents, width, maxRows-4)
+	return lipgloss.JoinVertical(lipgloss.Left, heading, summary, "", table)
 }
 
 // renderAgentSummary renders a one-line count of agents by status.

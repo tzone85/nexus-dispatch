@@ -10,26 +10,7 @@ import (
 	"github.com/tzone85/nexus-dispatch/internal/state"
 )
 
-const (
-	refreshInterval = 2 * time.Second
-	panelCount      = 4
-)
-
-// Panel index constants.
-const (
-	panelPipeline    = 0
-	panelAgents      = 1
-	panelActivity    = 2
-	panelEscalations = 3
-)
-
-// panelNames maps panel index to display name.
-var panelNames = []string{
-	"Pipeline",
-	"Agents",
-	"Activity",
-	"Escalations",
-}
+const refreshInterval = 2 * time.Second
 
 // tickMsg triggers periodic data refresh.
 type tickMsg time.Time
@@ -51,9 +32,9 @@ type Model struct {
 	version    string
 	reqFilter  state.ReqFilter
 
-	activePanel int
-	width       int
-	height      int
+	storyScrollOffset int
+	width             int
+	height            int
 
 	// Cached data from last refresh.
 	requirements []state.Requirement
@@ -69,11 +50,10 @@ type Model struct {
 // and requirement filter for workspace scoping.
 func New(es state.EventStore, ps *state.SQLiteStore, version string, filter state.ReqFilter) Model {
 	return Model{
-		eventStore:  es,
-		projStore:   ps,
-		version:     version,
-		reqFilter:   filter,
-		activePanel: panelPipeline,
+		eventStore: es,
+		projStore:  ps,
+		version:    version,
+		reqFilter:  filter,
 	}
 }
 
@@ -106,38 +86,94 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// View implements tea.Model. It renders the complete dashboard UI.
+// View implements tea.Model. It renders the complete dashboard UI with all sections stacked.
 func (m Model) View() string {
-	if m.width == 0 || m.height == 0 {
-		return "Loading dashboard..."
+	if m.width == 0 {
+		return "Loading..."
 	}
 
-	tabs := m.renderTabs()
-	statusBar := m.renderStatusBar()
+	availHeight := m.height - 2 // status bar + top border
 
-	// Available height for the panel content.
-	panelHeight := m.height - 4 // tabs (1) + status bar (1) + margins (2)
-	panelWidth := m.width - 2   // small margin
-
-	var content string
-	switch m.activePanel {
-	case panelPipeline:
-		content = renderPipeline(m.stories, m.requirements, panelWidth, panelHeight)
-	case panelAgents:
-		content = renderAgents(m.agents, panelWidth, panelHeight)
-	case panelActivity:
-		content = renderActivity(m.events, panelWidth, panelHeight)
-	case panelEscalations:
-		content = renderEscalations(m.escalations, panelWidth, panelHeight)
+	// Fixed-height sections
+	agentRows := len(m.agents) + 2 // header + rows + border
+	pipelineRows := 3               // summary + progress bar + border
+	escalationRows := 2             // summary line + border (or more if pending)
+	if m.pendingEscalations() > 0 {
+		escalationRows = min(m.pendingEscalations()+2, 5)
 	}
 
-	// Wrap content in the panel style, sized to fill available space.
-	panel := panelStyle.
-		Width(panelWidth).
-		Height(panelHeight).
-		Render(content)
+	fixedRows := agentRows + pipelineRows + escalationRows
+	remainingRows := availHeight - fixedRows
+	storyRows := remainingRows * 2 / 3
+	activityRows := remainingRows - storyRows
 
-	return lipgloss.JoinVertical(lipgloss.Left, tabs, panel, statusBar)
+	sections := []string{
+		m.renderHeader(),
+		m.renderAgents(m.width, agentRows),
+		m.renderPipeline(m.width),
+		m.renderStories(m.width, storyRows),
+		m.renderActivity(m.width, activityRows),
+		m.renderEscalations(m.width, escalationRows),
+	}
+
+	return lipgloss.JoinVertical(lipgloss.Left, sections...) + "\n" + m.renderStatusBar()
+}
+
+// renderHeader renders the dashboard title bar.
+func (m Model) renderHeader() string {
+	title := headerStyle.Render("NXD DASHBOARD " + m.version)
+	return title
+}
+
+// renderStories renders the stories table section with a scrollable list.
+func (m Model) renderStories(width, maxRows int) string {
+	header := headingStyle.Render("─ Stories ")
+	colHeader := fmt.Sprintf("  %-20s %-16s %-4s %-4s %s",
+		columnHeaderStyle.Render("ID"),
+		columnHeaderStyle.Render("STATUS"),
+		columnHeaderStyle.Render("C"),
+		columnHeaderStyle.Render("T"),
+		columnHeaderStyle.Render("TITLE"))
+
+	var rows []string
+	start := m.storyScrollOffset
+	end := min(start+maxRows-3, len(m.stories))
+	if end < start {
+		end = start
+	}
+	for i := start; i < end; i++ {
+		s := m.stories[i]
+		statusStr := storyStatusStyle(s.Status).Render(s.Status)
+		if s.EscalationTier > 0 {
+			statusStr += fmt.Sprintf("|T%d", s.EscalationTier)
+		}
+		row := fmt.Sprintf("  %-20s %-16s [C%d] %-4d %s",
+			truncateStr(s.ID, 20), statusStr, s.Complexity, s.EscalationTier,
+			truncateStr(s.Title, width-60))
+		rows = append(rows, row)
+	}
+
+	if len(m.stories) == 0 {
+		rows = append(rows, lipgloss.NewStyle().Foreground(colorGray).Render("  No stories — run 'nxd plan' to create a requirement"))
+	}
+
+	scrollInfo := ""
+	if len(m.stories) > maxRows-3 {
+		scrollInfo = fmt.Sprintf(" (%d-%d of %d)", start+1, end, len(m.stories))
+	}
+
+	return lipgloss.JoinVertical(lipgloss.Left, append([]string{header + scrollInfo, colHeader}, rows...)...)
+}
+
+// pendingEscalations returns the count of escalations with status "pending".
+func (m Model) pendingEscalations() int {
+	count := 0
+	for _, e := range m.escalations {
+		if e.Status == "pending" {
+			count++
+		}
+	}
+	return count
 }
 
 // handleKey processes keyboard input for navigation and quitting.
@@ -146,10 +182,6 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyCtrlC:
 		return m, tea.Quit
 
-	case tea.KeyTab:
-		m.activePanel = (m.activePanel + 1) % panelCount
-		return m, nil
-
 	case tea.KeyRunes:
 		if len(msg.Runes) == 0 {
 			return m, nil
@@ -157,33 +189,23 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch msg.Runes[0] {
 		case 'q':
 			return m, tea.Quit
-		case '1':
-			m.activePanel = panelPipeline
-		case '2':
-			m.activePanel = panelAgents
-		case '3':
-			m.activePanel = panelActivity
-		case '4':
-			m.activePanel = panelEscalations
+		case 'j':
+			m.storyScrollOffset++
+			return m, nil
+		case 'k':
+			if m.storyScrollOffset > 0 {
+				m.storyScrollOffset--
+			}
+			return m, nil
+		case 'w':
+			// Open browser — handled by caller via tea.ExecProcess or similar.
+			// No-op in TUI mode; web mode is launched via --web flag.
+			return m, nil
 		}
 		return m, nil
 	}
 
 	return m, nil
-}
-
-// renderTabs renders the tab bar showing all panels with the active one highlighted.
-func (m Model) renderTabs() string {
-	var tabs []string
-	for i, name := range panelNames {
-		label := fmt.Sprintf(" %d:%s ", i+1, name)
-		if i == m.activePanel {
-			tabs = append(tabs, activeTabStyle.Render(label))
-		} else {
-			tabs = append(tabs, tabStyle.Render(label))
-		}
-	}
-	return lipgloss.JoinHorizontal(lipgloss.Top, tabs...)
 }
 
 // renderStatusBar renders the bottom status bar with version and key hints.
@@ -200,7 +222,7 @@ func (m Model) renderStatusBar() string {
 		errInfo = fmt.Sprintf("  ERR: %s", m.err.Error())
 	}
 
-	right := "1-4:panels  Tab:next  q:quit "
+	right := "j/k:scroll  w:web  q:quit "
 
 	// Fill the status bar to full width.
 	middle := refreshInfo + errInfo
@@ -278,23 +300,23 @@ func (m Model) fetchData() tea.Cmd {
 	}
 }
 
-// applyData updates the model with freshly fetched data.
+// applyData updates the model with freshly fetched data using immutable update.
 func (m Model) applyData(d dataMsg) Model {
 	return Model{
-		eventStore:   m.eventStore,
-		projStore:    m.projStore,
-		version:      m.version,
-		reqFilter:    m.reqFilter,
-		activePanel:  m.activePanel,
-		width:        m.width,
-		height:       m.height,
-		requirements: d.requirements,
-		stories:      d.stories,
-		agents:       d.agents,
-		events:       d.events,
-		escalations:  d.escalations,
-		lastRefresh:  time.Now(),
-		err:          d.err,
+		eventStore:        m.eventStore,
+		projStore:         m.projStore,
+		version:           m.version,
+		reqFilter:         m.reqFilter,
+		storyScrollOffset: m.storyScrollOffset,
+		width:             m.width,
+		height:            m.height,
+		requirements:      d.requirements,
+		stories:           d.stories,
+		agents:            d.agents,
+		events:            d.events,
+		escalations:       d.escalations,
+		lastRefresh:       time.Now(),
+		err:               d.err,
 	}
 }
 
@@ -315,4 +337,3 @@ func truncateStr(s string, maxLen int) string {
 	}
 	return s[:maxLen-3] + "..."
 }
-

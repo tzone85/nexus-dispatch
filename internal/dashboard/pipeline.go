@@ -8,62 +8,67 @@ import (
 	"github.com/tzone85/nexus-dispatch/internal/state"
 )
 
-// pipelineStatuses defines the ordered columns in the story pipeline view.
-var pipelineStatuses = []string{
-	"planned", "assigned", "in_progress", "review", "qa", "merged",
-}
+// renderPipeline renders the pipeline summary bar with counts and a progress bar.
+func (m Model) renderPipeline(width int) string {
+	buckets := m.countByStatus()
+	total := 0
+	completed := 0
+	for status, count := range buckets {
+		if status != "split" {
+			total += count
+		}
+		if status == "merged" || status == "pr_submitted" {
+			completed += count
+		}
+	}
 
-// pipelineLabels maps status keys to display labels.
-var pipelineLabels = map[string]string{
-	"planned":     "PLANNED",
-	"assigned":    "ASSIGNED",
-	"in_progress": "IN PROGRESS",
-	"review":      "REVIEW",
-	"qa":          "QA",
-	"merged":      "MERGED",
-}
+	pct := 0
+	if total > 0 {
+		pct = completed * 100 / total
+	}
 
-// renderPipeline renders Panel 1: the story pipeline grouped by status.
-// If any requirements are paused, a banner is shown at the top.
-func renderPipeline(stories []state.Story, reqs []state.Requirement, width, height int) string {
-	var rows []string
+	// Summary line
+	summary := fmt.Sprintf(
+		"Planned: %d  In Prog: %d  Review: %d  QA: %d  PR: %d  Merged: %d",
+		buckets["planned"], buckets["in_progress"], buckets["review"],
+		buckets["qa"], buckets["pr_submitted"], buckets["merged"],
+	)
 
-	// Show paused requirement banners
-	pausedBanner := renderPausedBanner(reqs, width)
+	// Progress bar
+	barWidth := width - 20
+	if barWidth < 10 {
+		barWidth = 10
+	}
+	filled := barWidth * pct / 100
+	bar := strings.Repeat("█", filled) + strings.Repeat("░", barWidth-filled)
+	progressLine := fmt.Sprintf("%s %d%% complete", bar, pct)
+
+	header := headingStyle.Render("─ Pipeline ")
+
+	// Include paused banner if any requirements are paused.
+	pausedBanner := m.renderPausedBanner(width)
 	if pausedBanner != "" {
-		rows = append(rows, pausedBanner)
-		height -= 2 // account for banner line + spacing
+		return lipgloss.JoinVertical(lipgloss.Left, header, pausedBanner, "  "+summary, "  "+progressLine)
 	}
 
-	grouped := groupStoriesByStatus(stories)
+	return lipgloss.JoinVertical(lipgloss.Left, header, "  "+summary, "  "+progressLine)
+}
 
-	columnCount := len(pipelineStatuses)
-	if columnCount == 0 {
-		return strings.Join(rows, "\n")
+// countByStatus returns a map of pipeline bucket names to story counts.
+func (m Model) countByStatus() map[string]int {
+	buckets := make(map[string]int)
+	for _, s := range m.stories {
+		bucket := mapStatusToBucket(s.Status)
+		buckets[bucket]++
 	}
-
-	// Reserve space for borders and padding between columns.
-	availableWidth := width - 4 // panel padding
-	colWidth := availableWidth / columnCount
-	if colWidth < 14 {
-		colWidth = 14
-	}
-
-	var columns []string
-	for _, status := range pipelineStatuses {
-		col := renderPipelineColumn(status, grouped[status], colWidth, height-6)
-		columns = append(columns, col)
-	}
-
-	rows = append(rows, lipgloss.JoinHorizontal(lipgloss.Top, columns...))
-	return lipgloss.JoinVertical(lipgloss.Left, rows...)
+	return buckets
 }
 
 // renderPausedBanner returns a warning banner for any paused requirements,
 // or an empty string if none are paused.
-func renderPausedBanner(reqs []state.Requirement, width int) string {
+func (m Model) renderPausedBanner(width int) string {
 	var paused []state.Requirement
-	for _, r := range reqs {
+	for _, r := range m.requirements {
 		if r.Status == "paused" {
 			paused = append(paused, r)
 		}
@@ -86,83 +91,23 @@ func renderPausedBanner(reqs []state.Requirement, width int) string {
 	return statusPausedStyle.Width(width).Align(lipgloss.Center).Render(banner)
 }
 
-// renderPipelineColumn renders a single status column in the pipeline.
-func renderPipelineColumn(status string, stories []state.Story, width, maxHeight int) string {
-	label := pipelineLabels[status]
-	style := storyStatusStyle(status)
-
-	header := style.Copy().Bold(true).Width(width).Align(lipgloss.Center).Render(
-		fmt.Sprintf("%s (%d)", label, len(stories)),
-	)
-
-	var rows []string
-	rows = append(rows, header)
-	rows = append(rows, strings.Repeat("─", width))
-
-	for _, s := range stories {
-		card := renderStoryCard(s, width-2)
-		rows = append(rows, card)
-	}
-
-	content := lipgloss.JoinVertical(lipgloss.Left, rows...)
-
-	// Truncate if exceeding max height.
-	lines := strings.Split(content, "\n")
-	if maxHeight > 0 && len(lines) > maxHeight {
-		lines = lines[:maxHeight]
-		lines = append(lines, style.Render("  ..."))
-	}
-
-	return lipgloss.NewStyle().Width(width).Render(strings.Join(lines, "\n"))
-}
-
-// renderStoryCard renders a single story as a compact card.
-func renderStoryCard(s state.Story, width int) string {
-	style := storyStatusStyle(s.Status)
-
-	id := truncateStr(s.ID, 20)
-	title := truncateStr(s.Title, width-4)
-	badge := complexityStyle.Render(fmt.Sprintf("[C%d]", s.Complexity))
-
-	line1 := style.Render(id) + " " + badge
-	if s.EscalationTier > 0 {
-		tierBadge := lipgloss.NewStyle().Foreground(colorGray).Render(fmt.Sprintf("[T%d]", s.EscalationTier))
-		line1 = line1 + " " + tierBadge
-	}
-	line2 := lipgloss.NewStyle().Foreground(colorWhite).Width(width).Render(title)
-
-	return lipgloss.JoinVertical(lipgloss.Left, line1, line2, "")
-}
-
-// groupStoriesByStatus groups stories into a map keyed by status.
-// Stories with statuses not in pipelineStatuses are mapped to the closest match:
-//   - "draft", "estimated" -> "planned"
-//   - "pr_submitted" -> "merged"
-//   - "qa_failed" -> "qa"
-func groupStoriesByStatus(stories []state.Story) map[string][]state.Story {
-	groups := make(map[string][]state.Story, len(pipelineStatuses))
-	for _, s := range stories {
-		bucket := mapStatusToBucket(s.Status)
-		groups[bucket] = append(groups[bucket], s)
-	}
-	return groups
-}
-
-// mapStatusToBucket maps a story status to one of the pipeline columns.
+// mapStatusToBucket maps a story status to one of the pipeline summary buckets.
 func mapStatusToBucket(status string) string {
 	switch status {
-	case "draft", "estimated", "planned":
+	case "draft", "estimated", "planned", "assigned":
 		return "planned"
-	case "assigned":
-		return "assigned"
 	case "in_progress":
 		return "in_progress"
 	case "review":
 		return "review"
-	case "qa", "qa_failed":
+	case "qa", "qa_started", "qa_failed":
 		return "qa"
-	case "pr_submitted", "merged":
+	case "pr_submitted":
+		return "pr_submitted"
+	case "merged":
 		return "merged"
+	case "split":
+		return "split"
 	default:
 		return "planned"
 	}

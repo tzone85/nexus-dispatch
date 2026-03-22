@@ -20,28 +20,15 @@ const (
 	colorOrange  = lipgloss.Color("#FF9933")
 
 	colorBgDark      = lipgloss.Color("#1A1A2E")
-	colorBgPanel     = lipgloss.Color("#16213E")
-	colorBgActiveTab = lipgloss.Color("#0F3460")
 	colorBgStatusBar = lipgloss.Color("#0A0A1A")
 )
 
 var (
-	// Tab styles.
-	tabStyle = lipgloss.NewStyle().
-			Padding(0, 2).
-			Foreground(colorGray)
-
-	activeTabStyle = lipgloss.NewStyle().
-			Padding(0, 2).
-			Foreground(colorWhite).
-			Background(colorBgActiveTab).
-			Bold(true)
-
-	// Panel container with a border.
-	panelStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(colorDimGray).
-			Padding(1, 2)
+	// Header style for the dashboard title bar.
+	headerStyle = lipgloss.NewStyle().
+			Foreground(colorCyan).
+			Bold(true).
+			Padding(0, 1)
 
 	// Status bar at the bottom.
 	statusBarStyle = lipgloss.NewStyle().
@@ -61,14 +48,14 @@ var (
 				Bold(true)
 
 	// Story status colors.
-	statusPlannedStyle    = lipgloss.NewStyle().Foreground(colorGray)
-	statusAssignedStyle   = lipgloss.NewStyle().Foreground(colorMagenta)
-	statusProgressStyle   = lipgloss.NewStyle().Foreground(colorYellow)
-	statusReviewStyle     = lipgloss.NewStyle().Foreground(colorBlue)
-	statusQAStyle         = lipgloss.NewStyle().Foreground(colorCyan)
-	statusMergedStyle     = lipgloss.NewStyle().Foreground(colorGreen)
-	statusPausedStyle     = lipgloss.NewStyle().Foreground(colorOrange).Bold(true)
-	statusDefaultStyle    = lipgloss.NewStyle().Foreground(colorWhite)
+	statusPlannedStyle  = lipgloss.NewStyle().Foreground(colorGray)
+	statusAssignedStyle = lipgloss.NewStyle().Foreground(colorMagenta)
+	statusProgressStyle = lipgloss.NewStyle().Foreground(colorYellow)
+	statusReviewStyle   = lipgloss.NewStyle().Foreground(colorBlue)
+	statusQAStyle       = lipgloss.NewStyle().Foreground(colorCyan)
+	statusMergedStyle   = lipgloss.NewStyle().Foreground(colorGreen)
+	statusPausedStyle   = lipgloss.NewStyle().Foreground(colorOrange).Bold(true)
+	statusDefaultStyle  = lipgloss.NewStyle().Foreground(colorWhite)
 
 	// Agent status colors.
 	agentActiveStyle = lipgloss.NewStyle().Foreground(colorGreen)

@@ -10,10 +10,15 @@ import (
 
 const maxActivityEvents = 30
 
-// renderActivity renders Panel 3: recent event activity feed.
-func renderActivity(events []state.Event, width, height int) string {
+// renderActivity renders the recent event activity feed.
+func (m Model) renderActivity(width, maxRows int) string {
+	heading := headingStyle.Render("─ Activity ")
+	events := m.events
 	if len(events) == 0 {
-		return lipgloss.NewStyle().Foreground(colorGray).Render("  No events recorded yet.")
+		return lipgloss.JoinVertical(lipgloss.Left,
+			heading,
+			lipgloss.NewStyle().Foreground(colorGray).Render("  No events recorded yet."),
+		)
 	}
 
 	// Show events in reverse chronological order (newest first).
@@ -43,14 +48,14 @@ func renderActivity(events []state.Event, width, height int) string {
 	lines = append(lines, columnHeaderStyle.Render(header))
 	lines = append(lines, lipgloss.NewStyle().Foreground(colorDimGray).Render(separator))
 
-	maxRows := height - 4
-	if maxRows < 1 {
-		maxRows = 10
+	rowLimit := maxRows - 4
+	if rowLimit < 1 {
+		rowLimit = 10
 	}
 
 	for i, evt := range reversed {
-		if i >= maxRows {
-			remaining := len(reversed) - maxRows
+		if i >= rowLimit {
+			remaining := len(reversed) - rowLimit
 			if remaining > 0 {
 				lines = append(lines, lipgloss.NewStyle().Foreground(colorGray).Render(
 					fmt.Sprintf("  ... and %d more events", remaining),
@@ -82,7 +87,7 @@ func renderActivity(events []state.Event, width, height int) string {
 		lines = append(lines, row)
 	}
 
-	return strings.Join(lines, "\n")
+	return lipgloss.JoinVertical(lipgloss.Left, heading, strings.Join(lines, "\n"))
 }
 
 // reverseEvents returns a new slice with events in reverse order.

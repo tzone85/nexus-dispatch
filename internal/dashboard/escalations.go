@@ -2,80 +2,41 @@ package dashboard
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/tzone85/nexus-dispatch/internal/state"
 )
 
-// renderEscalations renders Panel 4: active and recent escalations.
-func renderEscalations(escalations []state.Escalation, width, height int) string {
+// renderEscalations renders active and recent escalations in a compact,
+// fixed-height layout. When empty it collapses to a single line. When pending
+// escalations exist it renders up to maxRows rows without column headers.
+func (m Model) renderEscalations(width, maxRows int) string {
+	escalations := m.escalations
 	if len(escalations) == 0 {
-		return lipgloss.NewStyle().Foreground(colorGray).Render("  No escalations recorded.")
+		return headingStyle.Render("─ Escalations ") +
+			lipgloss.NewStyle().Foreground(colorGray).Render(" No escalations")
 	}
 
-	// Summary counts.
 	pending := 0
-	resolved := 0
 	for _, e := range escalations {
-		switch e.Status {
-		case "pending":
+		if e.Status == "pending" {
 			pending++
-		case "resolved":
-			resolved++
 		}
 	}
 
-	summary := fmt.Sprintf("Pending: %s  |  Resolved: %s",
-		escalationPendingStyle.Render(fmt.Sprintf("%d", pending)),
-		escalationResolvedStyle.Render(fmt.Sprintf("%d", resolved)),
-	)
+	header := headingStyle.Render("─ Escalations ")
+	if pending > 0 {
+		header += escalationPendingStyle.Render(fmt.Sprintf("[%d pending]", pending))
+	}
 
-	// Column widths.
-	colStory := 20
-	colFrom := 16
-	colStatus := 10
-	colTier := 10
-	colTime := 20
-	colReason := max(width-colStory-colFrom-colStatus-colTier-colTime-14, 10)
-
-	header := fmt.Sprintf("  %-*s %-*s %-*s %-*s %-*s %-*s",
-		colStory, "STORY",
-		colFrom, "FROM",
-		colStatus, "STATUS",
-		colTier, "TIER",
-		colTime, "CREATED",
-		colReason, "REASON",
-	)
-
-	separator := fmt.Sprintf("  %-*s %-*s %-*s %-*s %-*s %-*s",
-		colStory, strings.Repeat("─", colStory-1),
-		colFrom, strings.Repeat("─", colFrom-1),
-		colStatus, strings.Repeat("─", colStatus-1),
-		colTier, strings.Repeat("─", colTier-1),
-		colTime, strings.Repeat("─", colTime-1),
-		colReason, strings.Repeat("─", colReason-1),
-	)
-
-	var lines []string
-	lines = append(lines, headingStyle.Render(summary))
-	lines = append(lines, "")
-	lines = append(lines, columnHeaderStyle.Render(header))
-	lines = append(lines, lipgloss.NewStyle().Foreground(colorDimGray).Render(separator))
-
-	maxRows := height - 6
-	if maxRows < 1 {
-		maxRows = 10
+	// Compact rows — no column headers, just data.
+	var rows []string
+	rowLimit := maxRows - 1 // 1 row for header
+	if rowLimit < 1 {
+		rowLimit = 1
 	}
 
 	for i, e := range escalations {
-		if i >= maxRows {
-			remaining := len(escalations) - maxRows
-			if remaining > 0 {
-				lines = append(lines, lipgloss.NewStyle().Foreground(colorGray).Render(
-					fmt.Sprintf("  ... and %d more", remaining),
-				))
-			}
+		if i >= rowLimit {
 			break
 		}
 
@@ -83,6 +44,7 @@ func renderEscalations(escalations []state.Escalation, width, height int) string
 		if storyID == "" {
 			storyID = "-"
 		}
+		tier := fmt.Sprintf("T%d→%d", e.FromTier, e.ToTier)
 
 		var statusStyle lipgloss.Style
 		if e.Status == "pending" {
@@ -91,18 +53,20 @@ func renderEscalations(escalations []state.Escalation, width, height int) string
 			statusStyle = escalationResolvedStyle
 		}
 
-		tier := fmt.Sprintf("Tier %d→%d", e.FromTier, e.ToTier)
-		row := fmt.Sprintf("  %-*s %-*s %s %-*s %-*s %-*s",
-			colStory, truncateStr(storyID, colStory-1),
-			colFrom, truncateStr(e.FromAgent, colFrom-1),
-			statusStyle.Render(fmt.Sprintf("%-*s", colStatus, e.Status)),
-			colTier, truncateStr(tier, colTier-1),
-			colTime, truncateStr(e.CreatedAt, colTime-1),
-			colReason, truncateStr(e.Reason, colReason-1),
-		)
+		reasonWidth := width - 70
+		if reasonWidth < 10 {
+			reasonWidth = 10
+		}
 
-		lines = append(lines, row)
+		row := fmt.Sprintf("  %s  %s  %s  %s  %s",
+			truncateStr(storyID, 20),
+			truncateStr(e.FromAgent, 12),
+			tier,
+			statusStyle.Render(e.Status),
+			truncateStr(e.Reason, reasonWidth),
+		)
+		rows = append(rows, row)
 	}
 
-	return strings.Join(lines, "\n")
+	return lipgloss.JoinVertical(lipgloss.Left, append([]string{header}, rows...)...)
 }
