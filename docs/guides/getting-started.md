@@ -207,15 +207,14 @@ nxd status
 
 # Live TUI dashboard
 nxd dashboard
+
+# Browser-based web dashboard
+nxd dashboard --web
 ```
 
-The dashboard shows four panels:
-- **Pipeline** — stories flowing through stages
-- **Agents** — active agents with their roles and sessions
-- **Activity** — real-time event feed
-- **Escalations** — stuck or escalated stories
+The TUI dashboard shows all sections at once in a single pane: agents, a pipeline summary bar with progress, a scrollable stories table, the activity log, and collapsible escalations. Use `j`/`k` to scroll stories, `w` to open the web dashboard, and `q` to quit.
 
-Navigate with keys `1-4` or `Tab`. Press `q` to exit.
+The web dashboard opens at `http://localhost:8787` (change port with `--port`). It updates in real time via WebSocket and provides a full control panel: pause/resume requirements, retry/reassign/escalate stories, kill agents, and edit story details.
 
 ### Step 4: Check Events
 

@@ -101,7 +101,8 @@ See the [full getting started guide](docs/guides/getting-started.md) for a step-
 - **Automated QA pipeline** — lint, build, and test execution per story
 - **Fatal error detection** — non-retryable API errors (401, 403, billing exhaustion) pause the requirement instead of retrying forever
 - **Tiered cleanup** — worktree pruning, branch garbage collection with configurable retention
-- **TUI dashboard** — 4-panel Bubbletea interface (pipeline, agents, activity, escalations)
+- **TUI dashboard** — single-pane Bubbletea interface with agents, pipeline, stories, activity, and escalations visible at once
+- **Web dashboard** — browser-based dashboard (`nxd dashboard --web`) with real-time WebSocket updates and full control panel
 - **Reputation scoring** — per-agent performance tracking across assignments
 - **Optional cloud mode** — swap to Anthropic/OpenAI APIs and GitHub PRs when online
 
@@ -119,7 +120,8 @@ See the [full getting started guide](docs/guides/getting-started.md) for a step-
 | `nxd config show` | Pretty-print the current configuration as YAML |
 | `nxd config validate` | Load and validate the configuration file |
 | `nxd events [--type T] [--story S] [--limit N]` | List events from the event store, newest first |
-| `nxd dashboard` | Launch the live TUI dashboard |
+| `nxd dashboard` | Launch the live TUI dashboard (single-pane) |
+| `nxd dashboard --web [--port 8787]` | Launch the web dashboard in your browser |
 
 ## Configuration
 

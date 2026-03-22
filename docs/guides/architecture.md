@@ -180,6 +180,46 @@ graph.AddEdge("story-02", "story-01")  // story-02 depends on story-01
 
 Cycle detection is built-in — if the Tech Lead creates circular dependencies, the Planner rejects the plan.
 
+## Dashboard
+
+### TUI (Bubbletea)
+
+The TUI is a single-pane interface that renders all sections simultaneously — no tabs or panel switching. Sections rendered top to bottom:
+
+1. **Agents** — active agents with role, model, and current story
+2. **Pipeline summary bar** — per-status story counts with a progress indicator
+3. **Stories table** — all stories with status; scrollable with `j`/`k`
+4. **Activity log** — last N events in real-time
+5. **Escalations** — collapsible; shows pending and resolved escalations
+
+The TUI reads from the SQLite projection store and refreshes every 2 seconds.
+
+### Web Dashboard
+
+`nxd dashboard --web` starts an embedded HTTP server (default port 8787). A WebSocket hub broadcasts projection snapshots to all connected browsers every 2 seconds.
+
+```
+nxd dashboard --web
+  |
+  +-> HTTP server (port 8787)
+  |     GET /        -> embedded HTML/CSS/JS (no external dependencies)
+  |     GET /ws      -> WebSocket upgrade
+  |
+  +-> WebSocket hub
+        every 2s: read nxd.db -> marshal snapshot -> broadcast to all clients
+```
+
+The web dashboard provides a full control panel:
+
+| Action | Target |
+|--------|--------|
+| Pause / Resume | Requirement |
+| Retry / Reassign / Escalate | Story |
+| Kill | Agent |
+| Edit | Story details |
+
+Destructive actions (kill, reassign, edit) require a confirmation dialog. Command results are shown as toast notifications. The client reconnects automatically on disconnect.
+
 ## Monitoring Systems
 
 ### Watchdog (Deterministic)
@@ -333,5 +373,6 @@ Reaper.Reap()
 
 All events append to events.jsonl
 All events project to nxd.db
-Dashboard reads from nxd.db
+TUI dashboard reads from nxd.db (2s refresh)
+Web dashboard reads from nxd.db, broadcasts over WebSocket (2s refresh)
 ```

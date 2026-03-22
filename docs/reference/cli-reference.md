@@ -201,25 +201,59 @@ WORKTREE_PRUNED, BRANCH_DELETED, GC_COMPLETED
 
 ### nxd dashboard
 
-Launch the interactive TUI dashboard.
+Launch the dashboard. Defaults to the TUI; use `--web` for the browser-based dashboard.
 
 ```bash
-nxd dashboard
+nxd dashboard [--web] [--port <port>]
 ```
 
-**Panels:**
-| Key | Panel | Description |
-|-----|-------|-------------|
-| `1` | Pipeline | Stories grouped by status in columns |
-| `2` | Agents | Active agents with role, model, status |
-| `3` | Activity | Real-time event feed (last 30 events) |
-| `4` | Escalations | Pending and resolved escalations |
+**Flags:**
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--web` | false | Start the web dashboard instead of the TUI |
+| `--port <port>` | `8787` | Port for the web dashboard (only used with `--web`) |
 
-**Controls:**
+**Examples:**
+```bash
+nxd dashboard                        # TUI dashboard
+nxd dashboard --web                  # Web dashboard at localhost:8787
+nxd dashboard --web --port 9090      # Web dashboard on a custom port
+```
+
+#### TUI Dashboard
+
+Single-pane layout — all sections visible at once, no tabs:
+
+| Section | Description |
+|---------|-------------|
+| Agents | Active agents with role, model, and current story |
+| Pipeline | Per-status story counts with a progress bar |
+| Stories | Full story table, scrollable |
+| Activity | Real-time event feed (last N events) |
+| Escalations | Pending and resolved escalations (collapsible) |
+
+**TUI controls:**
 | Key | Action |
 |-----|--------|
-| `1-4` | Switch to panel |
-| `Tab` | Next panel |
+| `j` / `k` | Scroll stories table down / up |
+| `w` | Open the web dashboard in the browser |
 | `q` / `Ctrl+C` | Quit |
 
 Data refreshes every 2 seconds automatically.
+
+#### Web Dashboard
+
+Opens at `http://localhost:<port>`. Updates in real time via WebSocket.
+
+**Available actions:**
+
+| Action | Target | Notes |
+|--------|--------|-------|
+| Pause / Resume | Requirement | Halts or restarts story dispatch |
+| Retry | Story | Re-dispatches a failed story to the same agent |
+| Reassign | Story | Reassigns story to a different agent |
+| Escalate | Story | Manually escalates to the next tier |
+| Kill | Agent | Terminates an agent's tmux session |
+| Edit | Story | Edits story title or description |
+
+Destructive actions (kill, reassign, edit) show a confirmation dialog before executing. Results are shown as toast notifications. The browser reconnects automatically if the WebSocket drops.
