@@ -32,24 +32,27 @@ func renderEscalations(escalations []state.Escalation, width, height int) string
 	)
 
 	// Column widths.
-	colStory := 14
+	colStory := 20
 	colFrom := 16
 	colStatus := 10
+	colTier := 10
 	colTime := 20
-	colReason := max(width-colStory-colFrom-colStatus-colTime-12, 10)
+	colReason := max(width-colStory-colFrom-colStatus-colTier-colTime-14, 10)
 
-	header := fmt.Sprintf("  %-*s %-*s %-*s %-*s %-*s",
+	header := fmt.Sprintf("  %-*s %-*s %-*s %-*s %-*s %-*s",
 		colStory, "STORY",
 		colFrom, "FROM",
 		colStatus, "STATUS",
+		colTier, "TIER",
 		colTime, "CREATED",
 		colReason, "REASON",
 	)
 
-	separator := fmt.Sprintf("  %-*s %-*s %-*s %-*s %-*s",
+	separator := fmt.Sprintf("  %-*s %-*s %-*s %-*s %-*s %-*s",
 		colStory, strings.Repeat("─", colStory-1),
 		colFrom, strings.Repeat("─", colFrom-1),
 		colStatus, strings.Repeat("─", colStatus-1),
+		colTier, strings.Repeat("─", colTier-1),
 		colTime, strings.Repeat("─", colTime-1),
 		colReason, strings.Repeat("─", colReason-1),
 	)
@@ -88,10 +91,12 @@ func renderEscalations(escalations []state.Escalation, width, height int) string
 			statusStyle = escalationResolvedStyle
 		}
 
-		row := fmt.Sprintf("  %-*s %-*s %s %-*s %-*s",
+		tier := fmt.Sprintf("Tier %d→%d", e.FromTier, e.ToTier)
+		row := fmt.Sprintf("  %-*s %-*s %s %-*s %-*s %-*s",
 			colStory, truncateStr(storyID, colStory-1),
 			colFrom, truncateStr(e.FromAgent, colFrom-1),
 			statusStyle.Render(fmt.Sprintf("%-*s", colStatus, e.Status)),
+			colTier, truncateStr(tier, colTier-1),
 			colTime, truncateStr(e.CreatedAt, colTime-1),
 			colReason, truncateStr(e.Reason, colReason-1),
 		)

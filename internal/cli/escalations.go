@@ -39,16 +39,17 @@ func runEscalations(cmd *cobra.Command, _ []string) error {
 	}
 
 	fmt.Fprintf(out, "Escalations (%d):\n\n", len(escalations))
-	fmt.Fprintf(out, "  %-12s %-20s %-10s %s\n", "STORY", "FROM", "STATUS", "REASON")
-	fmt.Fprintf(out, "  %-12s %-20s %-10s %s\n", "-----", "----", "------", "------")
+	fmt.Fprintf(out, "  %-20s %-20s %-10s %-10s %s\n", "STORY", "FROM", "STATUS", "TIER", "REASON")
+	fmt.Fprintf(out, "  %-20s %-20s %-10s %-10s %s\n", "-----", "----", "------", "----", "------")
 
 	for _, e := range escalations {
 		storyID := e.StoryID
 		if storyID == "" {
 			storyID = "-"
 		}
-		fmt.Fprintf(out, "  %-12s %-20s %-10s %s\n",
-			truncate(storyID, 12), truncate(e.FromAgent, 20), e.Status, e.Reason)
+		tier := fmt.Sprintf("Tier %d→%d", e.FromTier, e.ToTier)
+		fmt.Fprintf(out, "  %-20s %-20s %-10s %-10s %s\n",
+			truncate(storyID, 20), truncate(e.FromAgent, 20), e.Status, tier, e.Reason)
 	}
 
 	return nil

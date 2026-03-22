@@ -116,7 +116,11 @@ func showRequirementStatus(cmd *cobra.Command, s stores, reqID string) error {
 		if agent == "" {
 			agent = "unassigned"
 		}
-		fmt.Fprintf(out, "  %d. [%s] %s\n", i+1, story.Status, story.Title)
+		statusLabel := story.Status
+		if story.EscalationTier > 0 {
+			statusLabel = fmt.Sprintf("%s|tier:%d", story.Status, story.EscalationTier)
+		}
+		fmt.Fprintf(out, "  %d. [%s] %s\n", i+1, statusLabel, story.Title)
 		fmt.Fprintf(out, "     ID: %s | Complexity: %d | Wave: %d | Agent: %s\n", story.ID, story.Complexity, story.Wave, agent)
 		if story.Branch != "" {
 			fmt.Fprintf(out, "     Branch: %s\n", story.Branch)

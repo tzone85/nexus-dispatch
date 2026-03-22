@@ -120,11 +120,15 @@ func renderPipelineColumn(status string, stories []state.Story, width, maxHeight
 func renderStoryCard(s state.Story, width int) string {
 	style := storyStatusStyle(s.Status)
 
-	id := truncateStr(s.ID, 12)
+	id := truncateStr(s.ID, 20)
 	title := truncateStr(s.Title, width-4)
 	badge := complexityStyle.Render(fmt.Sprintf("[C%d]", s.Complexity))
 
 	line1 := style.Render(id) + " " + badge
+	if s.EscalationTier > 0 {
+		tierBadge := lipgloss.NewStyle().Foreground(colorGray).Render(fmt.Sprintf("[T%d]", s.EscalationTier))
+		line1 = line1 + " " + tierBadge
+	}
 	line2 := lipgloss.NewStyle().Foreground(colorWhite).Width(width).Render(title)
 
 	return lipgloss.JoinVertical(lipgloss.Left, line1, line2, "")
