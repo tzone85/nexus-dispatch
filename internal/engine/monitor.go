@@ -220,19 +220,19 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 	// the work before checking the diff.
 	autoCommit(ag.WorktreePath, storyID)
 
-	// Check if agent produced any changes
+	// Check if agent produced any changes.
+	// Distinguish between git infrastructure errors (which count toward
+	// the retry limit) and genuinely empty diffs so that broken worktrees
+	// don't loop forever.
 	diff, err := gitDiff(ag.WorktreePath)
 	if err != nil {
 		log.Printf("[pipeline] git diff error for %s: %v", storyID, err)
+		m.resetStoryToDraft(storyID, "monitor", fmt.Sprintf("git diff error: %v", err))
+		return
 	}
 	if diff == "" {
 		log.Printf("[pipeline] no changes produced for %s, resetting to draft for re-dispatch", storyID)
-		// Reset story status so it can be re-dispatched in a future wave.
-		resetEvt := state.NewEvent(state.EventStoryReviewFailed, "monitor", storyID, map[string]any{
-			"reason": "agent produced no code changes",
-		})
-		m.eventStore.Append(resetEvt)
-		m.projStore.Project(resetEvt)
+		m.resetStoryToDraft(storyID, "monitor", "agent produced no code changes")
 		return
 	}
 
@@ -674,20 +674,68 @@ func ensureGitignorePatterns(worktreePath string) {
 }
 
 // gitDiff returns the git diff for committed changes in a worktree.
+// It tries multiple merge-base candidates so it works with local-only
+// repos that have no "origin/main".
 func gitDiff(worktreePath string) (string, error) {
-	cmd := exec.Command("git", "diff", "HEAD~1")
-	cmd.Dir = worktreePath
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		// If HEAD~1 fails (single commit), diff against empty tree
-		emptyTree := "4b825dc642cb6eb9a060e54bf899d69f7cb46a0"
-		cmd2 := exec.Command("git", "diff", emptyTree, "HEAD")
-		cmd2.Dir = worktreePath
-		out2, err2 := cmd2.CombinedOutput()
-		if err2 != nil {
-			return "", fmt.Errorf("git diff fallback: %w", err2)
+	// Try merge-base candidates in order of preference.
+	candidates := []string{"origin/main", "main"}
+	var mbOut []byte
+	var mbErr error
+	for _, ref := range candidates {
+		mbCmd := exec.Command("git", "merge-base", "HEAD", ref)
+		mbCmd.Dir = worktreePath
+		mbOut, mbErr = mbCmd.Output()
+		if mbErr == nil {
+			break
 		}
-		return string(out2), nil
 	}
+	if mbErr != nil {
+		// No merge-base found — fall back to the root commit of the
+		// current branch so we diff all changes since the initial commit.
+		rootCmd := exec.Command("git", "rev-list", "--max-parents=0", "HEAD")
+		rootCmd.Dir = worktreePath
+		rootOut, rootErr := rootCmd.Output()
+		if rootErr != nil {
+			return "", fmt.Errorf("git diff: cannot find merge-base or root commit: %w", rootErr)
+		}
+		mbOut = rootOut
+	}
+
+	mergeBase := strings.TrimSpace(string(mbOut))
+	cmd := exec.Command("git", "diff", mergeBase, "HEAD")
+	cmd.Dir = worktreePath
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("git diff: %w", err)
+	}
+
+	// Filter out diffs that only touch .gitignore (written by
+	// ensureGitignorePatterns before this check). A diff limited to
+	// .gitignore means the agent produced no real code changes.
+	if isGitignoreOnlyDiff(worktreePath, mergeBase) {
+		return "", nil
+	}
+
 	return string(out), nil
+}
+
+// isGitignoreOnlyDiff returns true when the only file changed between
+// mergeBase and HEAD is .gitignore.
+func isGitignoreOnlyDiff(worktreePath, mergeBase string) bool {
+	cmd := exec.Command("git", "diff", "--name-only", mergeBase, "HEAD")
+	cmd.Dir = worktreePath
+	out, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	files := strings.TrimSpace(string(out))
+	if files == "" {
+		return false // no files changed — caller already handles empty diff
+	}
+	for _, f := range strings.Split(files, "\n") {
+		if strings.TrimSpace(f) != ".gitignore" {
+			return false
+		}
+	}
+	return true
 }
