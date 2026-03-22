@@ -25,12 +25,15 @@ func DefaultConfig() Config {
 			Junior:       ModelConfig{Provider: "ollama", Model: "qwen2.5-coder:7b", MaxTokens: 4000},
 			QA:           ModelConfig{Provider: "ollama", Model: "qwen2.5-coder:14b", MaxTokens: 8000},
 			Supervisor:   ModelConfig{Provider: "ollama", Model: "deepseek-coder-v2:latest", MaxTokens: 4000},
+			Manager:      ModelConfig{Provider: "ollama", Model: "qwen2.5-coder:14b", MaxTokens: 8000},
 		},
 		Routing: RoutingConfig{
 			JuniorMaxComplexity:           3,
 			IntermediateMaxComplexity:     5,
 			MaxRetriesBeforeEscalation:    2,
 			MaxQAFailuresBeforeEscalation: 3,
+			MaxSeniorRetries:              2,
+			MaxManagerAttempts:            2,
 		},
 		Monitor: MonitorConfig{
 			PollIntervalMs:         10000,

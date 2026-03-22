@@ -47,6 +47,7 @@ type ModelsConfig struct {
 	Junior       ModelConfig `yaml:"junior"`
 	QA           ModelConfig `yaml:"qa"`
 	Supervisor   ModelConfig `yaml:"supervisor"`
+	Manager      ModelConfig `yaml:"manager"`
 }
 
 // RoutingConfig controls how tasks are assigned to agent tiers.
@@ -55,6 +56,8 @@ type RoutingConfig struct {
 	IntermediateMaxComplexity     int `yaml:"intermediate_max_complexity"`
 	MaxRetriesBeforeEscalation    int `yaml:"max_retries_before_escalation"`
 	MaxQAFailuresBeforeEscalation int `yaml:"max_qa_failures_before_escalation"`
+	MaxSeniorRetries              int `yaml:"max_senior_retries"`
+	MaxManagerAttempts            int `yaml:"max_manager_attempts"`
 }
 
 // MonitorConfig controls the supervisor monitoring loop.
