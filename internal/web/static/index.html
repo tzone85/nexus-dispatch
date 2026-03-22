@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>NXD Dashboard</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header id="header">
+    <h1>NXD Dashboard</h1>
+    <span id="connection-status">Connecting...</span>
+  </header>
+  <div id="banner" class="hidden"></div>
+
+  <section id="agents">
+    <h2>─ Agents</h2>
+    <table id="agents-table">
+      <thead>
+        <tr><th>ID</th><th>Role</th><th>Model</th><th>Status</th><th>Story</th><th>Session</th><th></th></tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section id="pipeline">
+    <h2>─ Pipeline</h2>
+    <div id="pipeline-counts"></div>
+    <div id="progress-bar-container">
+      <div id="progress-bar"></div>
+      <span id="progress-text"></span>
+    </div>
+  </section>
+
+  <section id="stories">
+    <h2>─ Stories</h2>
+    <table id="stories-table">
+      <thead>
+        <tr>
+          <th data-sort="id">ID</th>
+          <th data-sort="status">Status</th>
+          <th data-sort="complexity">C</th>
+          <th data-sort="tier">T</th>
+          <th data-sort="title">Title</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section id="activity">
+    <h2>─ Activity</h2>
+    <div id="activity-filters">
+      <button class="filter-btn active" data-filter="all">All</button>
+      <button class="filter-btn" data-filter="REQ">REQ</button>
+      <button class="filter-btn" data-filter="STORY">STORY</button>
+      <button class="filter-btn" data-filter="AGENT">AGENT</button>
+      <button class="filter-btn" data-filter="ESCALATION">ESCALATION</button>
+    </div>
+    <div id="activity-log"></div>
+  </section>
+
+  <section id="escalations">
+    <h2>─ Escalations</h2>
+    <div id="escalations-list"></div>
+  </section>
+
+  <div id="toast" class="hidden"></div>
+
+  <!-- Confirm dialog -->
+  <div id="confirm-overlay" class="hidden">
+    <div id="confirm-dialog">
+      <p id="confirm-message"></p>
+      <div class="confirm-buttons">
+        <button id="confirm-yes">Confirm</button>
+        <button id="confirm-no">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
