@@ -23,7 +23,7 @@ func TestReviewer_Review_Passed(t *testing.T) {
 		Content: `{"passed": true, "comments": [{"file": "main.go", "line": 10, "severity": "info", "comment": "Consider adding a comment"}], "summary": "Looks good overall"}`,
 	})
 
-	reviewer := engine.NewReviewer(client, "sonnet", 4000, es, ps)
+	reviewer := engine.NewReviewer(client, "ollama", "sonnet", 4000, es, ps)
 	result, err := reviewer.Review(
 		context.Background(),
 		"s-001",
@@ -66,7 +66,7 @@ func TestReviewer_Review_Failed(t *testing.T) {
 		Content: `{"passed": false, "comments": [{"file": "auth.go", "line": 5, "severity": "critical", "comment": "SQL injection vulnerability"}], "summary": "Security issues found"}`,
 	})
 
-	reviewer := engine.NewReviewer(client, "sonnet", 4000, es, ps)
+	reviewer := engine.NewReviewer(client, "ollama", "sonnet", 4000, es, ps)
 	result, err := reviewer.Review(
 		context.Background(),
 		"s-001",
@@ -96,7 +96,7 @@ func TestReviewer_Review_EmptyDiff(t *testing.T) {
 	defer cleanup()
 
 	client := llm.NewReplayClient()
-	reviewer := engine.NewReviewer(client, "sonnet", 4000, es, ps)
+	reviewer := engine.NewReviewer(client, "ollama", "sonnet", 4000, es, ps)
 
 	_, err := reviewer.Review(context.Background(), "s-001", "Task", "AC", "")
 	if err == nil {
@@ -119,7 +119,7 @@ func TestReviewer_Review_LLMError(t *testing.T) {
 	defer ps.Close()
 
 	client := llm.NewReplayClient() // no responses
-	reviewer := engine.NewReviewer(client, "sonnet", 4000, es, ps)
+	reviewer := engine.NewReviewer(client, "ollama", "sonnet", 4000, es, ps)
 
 	_, err = reviewer.Review(context.Background(), "s-001", "Task", "AC", "some diff")
 	if err == nil {

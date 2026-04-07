@@ -162,7 +162,7 @@ func TestE2E_FullPipeline(t *testing.T) {
 	// Phase 2: Dispatch and process all waves
 	// ==========================================
 	dispatcher := engine.NewDispatcher(cfg, es, ps)
-	reviewer := engine.NewReviewer(replayClient, cfg.Models.Senior.Model, cfg.Models.Senior.MaxTokens, es, ps)
+	reviewer := engine.NewReviewer(replayClient, cfg.Models.Senior.Provider, cfg.Models.Senior.Model, cfg.Models.Senior.MaxTokens, es, ps)
 	runner := &mockRunner{}
 	qa := engine.NewQA(engine.QAConfig{
 		BuildCommand: "go build ./...",
@@ -419,7 +419,7 @@ func TestE2E_SingleStoryFastPath(t *testing.T) {
 	}
 
 	// Review.
-	reviewer := engine.NewReviewer(replayClient, cfg.Models.Senior.Model, cfg.Models.Senior.MaxTokens, es, ps)
+	reviewer := engine.NewReviewer(replayClient, cfg.Models.Senior.Provider, cfg.Models.Senior.Model, cfg.Models.Senior.MaxTokens, es, ps)
 	_, err = reviewer.Review(context.Background(), storyID, "Quick fix", "Bug is fixed", "diff\n+fix")
 	if err != nil {
 		t.Fatalf("review: %v", err)
