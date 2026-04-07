@@ -79,3 +79,19 @@ func RetryAfterSeconds(err error) int {
 	}
 	return apiErr.RetryAfter
 }
+
+// QuotaError indicates the API free tier quota or rate limit was exhausted.
+type QuotaError struct {
+	StatusCode int
+	Message    string
+}
+
+func (e *QuotaError) Error() string {
+	return fmt.Sprintf("quota exhausted (HTTP %d): %s", e.StatusCode, e.Message)
+}
+
+// IsQuotaError returns true if the error is a quota/rate-limit error.
+func IsQuotaError(err error) bool {
+	var qe *QuotaError
+	return errors.As(err, &qe)
+}
