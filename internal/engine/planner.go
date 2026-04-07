@@ -104,22 +104,49 @@ IMPORTANT:
 
 Respond ONLY with the JSON array, no other text.`, requirement, p.config.Planning.MaxStoryComplexity)
 
-	// Call Tech Lead
-	resp, err := p.llmClient.Complete(ctx, llm.CompletionRequest{
+	// Build the LLM request. If the provider supports native tool calling,
+	// attach planner tool definitions so the model uses structured output.
+	req := llm.CompletionRequest{
 		Model:     p.config.Models.TechLead.Model,
 		MaxTokens: p.config.Models.TechLead.MaxTokens,
 		System:    systemPrompt,
 		Messages:  []llm.Message{{Role: llm.RoleUser, Content: userMessage}},
-	})
+	}
+
+	useTools := llm.HasToolSupport(
+		p.config.Models.TechLead.Provider,
+		p.config.Models.TechLead.Model,
+	)
+	if useTools {
+		req.Tools = PlannerTools()
+		req.ToolChoice = "required"
+	}
+
+	// Call Tech Lead
+	resp, err := p.llmClient.Complete(ctx, req)
 	if err != nil {
 		return PlanResult{}, fmt.Errorf("tech lead planning: %w", err)
 	}
 
-	// Parse stories from response (strip markdown fences if present)
+	// Parse stories from the response. Prefer structured tool calls when
+	// available; fall back to JSON text parsing otherwise.
 	var stories []PlannedStory
-	cleaned := extractJSON(resp.Content)
-	if err := json.Unmarshal([]byte(cleaned), &stories); err != nil {
-		return PlanResult{}, fmt.Errorf("parse stories: %w (response: %s)", err, resp.Content)
+	if useTools && len(resp.ToolCalls) > 0 {
+		toolResult, toolErr := ProcessPlannerToolCalls(resp.ToolCalls)
+		if toolErr == nil && len(toolResult.Stories) > 0 {
+			stories = mapToolStories(toolResult.Stories)
+		} else {
+			// Tool processing failed — fall back to text parsing
+			stories, err = parseStoriesFromText(resp.Content)
+			if err != nil {
+				return PlanResult{}, err
+			}
+		}
+	} else {
+		stories, err = parseStoriesFromText(resp.Content)
+		if err != nil {
+			return PlanResult{}, err
+		}
 	}
 
 	// Make story IDs globally unique by prefixing with short req ID.
@@ -247,6 +274,35 @@ Respond ONLY with the JSON array, no other text.`, storyID, reqID, failureContex
 	}
 
 	return stories, nil
+}
+
+// parseStoriesFromText extracts PlannedStory values from a plain-text JSON
+// response. This is the fallback path for models that do not support native
+// tool calling.
+func parseStoriesFromText(content string) ([]PlannedStory, error) {
+	var stories []PlannedStory
+	cleaned := extractJSON(content)
+	if err := json.Unmarshal([]byte(cleaned), &stories); err != nil {
+		return nil, fmt.Errorf("parse stories: %w (response: %s)", err, content)
+	}
+	return stories, nil
+}
+
+// mapToolStories converts ToolStory values (produced by ProcessPlannerToolCalls)
+// into the canonical PlannedStory type used throughout the engine.
+func mapToolStories(toolStories []ToolStory) []PlannedStory {
+	stories := make([]PlannedStory, len(toolStories))
+	for i, ts := range toolStories {
+		stories[i] = PlannedStory{
+			ID:                 ts.ID,
+			Title:              ts.Title,
+			Description:        ts.Description,
+			AcceptanceCriteria: FlexibleString(ts.AcceptanceCriteria),
+			Complexity:         ts.Complexity,
+			DependsOn:          ts.DependsOn,
+		}
+	}
+	return stories
 }
 
 // emitAndProject appends an event to the event store and projects it.
