@@ -251,7 +251,7 @@ func TestDiagnose_RetryAction(t *testing.T) {
 		Content: `{"diagnosis": "missing env var", "category": "environment", "action": "retry", "retry_config": {"target_role": "junior", "reset_tier": 0, "worktree_reset": true, "env_fixes": ["export FOO=bar"]}}`,
 	})
 
-	mgr := NewManager(client, "qwen2.5-coder:14b", 4000, es, ps)
+	mgr := NewManager(client, "ollama", "qwen2.5-coder:14b", 4000, es, ps)
 	action, err := mgr.Diagnose(context.Background(), DiagnosticContext{
 		StoryID:    "s-001",
 		StoryTitle: "Test story",
@@ -289,7 +289,7 @@ func TestDiagnose_MarkdownFences(t *testing.T) {
 		Content: "```json\n{\"diagnosis\": \"wrapped\", \"category\": \"transient\", \"action\": \"escalate_to_techlead\"}\n```",
 	})
 
-	mgr := NewManager(client, "qwen2.5-coder:14b", 4000, es, ps)
+	mgr := NewManager(client, "ollama", "qwen2.5-coder:14b", 4000, es, ps)
 	action, err := mgr.Diagnose(context.Background(), DiagnosticContext{
 		StoryID:    "s-002",
 		StoryTitle: "Fenced response",
@@ -307,7 +307,7 @@ func TestDiagnose_LLMError(t *testing.T) {
 	defer cleanup()
 
 	client := llm.NewReplayClient() // no responses -- will error
-	mgr := NewManager(client, "qwen2.5-coder:14b", 4000, es, ps)
+	mgr := NewManager(client, "ollama", "qwen2.5-coder:14b", 4000, es, ps)
 
 	_, err := mgr.Diagnose(context.Background(), DiagnosticContext{
 		StoryID:    "s-003",
@@ -329,7 +329,7 @@ func TestDiagnose_InvalidLLMResponse(t *testing.T) {
 		Content: "I cannot help with that",
 	})
 
-	mgr := NewManager(client, "qwen2.5-coder:14b", 4000, es, ps)
+	mgr := NewManager(client, "ollama", "qwen2.5-coder:14b", 4000, es, ps)
 	_, err := mgr.Diagnose(context.Background(), DiagnosticContext{
 		StoryID:    "s-004",
 		StoryTitle: "Bad response",

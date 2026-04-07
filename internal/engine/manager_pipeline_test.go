@@ -68,7 +68,7 @@ func buildManagerMonitorWithAutoResume(
 	wd := engine.NewWatchdog(engine.WatchdogConfig{StuckThresholdS: 120}, es)
 
 	mon := engine.NewMonitor(reg, wd, nil, nil, nil, cfg, es, ps)
-	mgr := engine.NewManager(llmClient, "test-model", 4000, es, ps)
+	mgr := engine.NewManager(llmClient, "ollama", "test-model", 4000, es, ps)
 	mon.SetManager(mgr)
 
 	dispatcher := engine.NewDispatcher(cfg, es, ps)
