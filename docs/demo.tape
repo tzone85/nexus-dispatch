@@ -4,83 +4,67 @@
 # Prerequisites:
 #   brew install vhs ffmpeg ttyd
 #
-# Usage:
+# Usage (from repo root):
 #   vhs docs/demo.tape
 #
 # This produces docs/demo.gif.
+#
+# Notes:
+#   - The binary is built in a hidden preamble so the viewer only sees CLI usage.
+#   - The demo runs in a temp directory so nxd init produces fresh output.
+#   - If Ollama is running locally, init will show "Ollama detected".
 
 # --- Configuration ---
 Output docs/demo.gif
 Set FontSize 14
 Set Width 1200
-Set Height 600
+Set Height 700
 Set Theme "Dracula"
 Set Padding 20
-Set TypingSpeed 50ms
+Set TypingSpeed 40ms
 Set Shell "zsh"
 
-# --- Scene 1: Show available commands ---
-Type "echo '--- Step 1: Explore the NXD CLI ---'"
+# --- Hidden preamble: build binary, prepare clean workspace ---
+Hide
+Type "go build -o /tmp/nxd ./cmd/nxd/"
 Enter
-Sleep 1s
-
-Type "nxd --help"
+Sleep 8s
+Type "rm -rf /tmp/nxd-demo && mkdir -p /tmp/nxd-demo"
 Enter
-Sleep 3s
-
-# --- Scene 2: Initialize NXD ---
-Type "echo '--- Step 2: Initialize NXD in your project ---'"
+Sleep 500ms
+Type "cp /tmp/nxd /tmp/nxd-demo/ && cd /tmp/nxd-demo"
 Enter
-Sleep 1s
+Sleep 500ms
+Type "PROMPT='> '"
+Enter
+Sleep 500ms
+Type "clear"
+Enter
+Sleep 500ms
+Show
 
-Type "nxd init"
+# --- Scene 1: Explore the CLI ---
+Sleep 500ms
+Type "./nxd --help"
+Enter
+Sleep 4s
+
+# --- Scene 2: Initialize the workspace ---
+Type "./nxd init"
 Enter
 Sleep 3s
 
 # --- Scene 3: Validate configuration ---
-Type "echo '--- Step 3: Validate configuration ---'"
-Enter
-Sleep 1s
-
-Type "nxd config validate"
+Type "./nxd config validate"
 Enter
 Sleep 2s
 
-Type "nxd config show"
+# --- Scene 4: Check pipeline status ---
+Type "./nxd status"
 Enter
 Sleep 3s
 
-# --- Scene 4: Check status ---
-Type "echo '--- Step 4: Check the pipeline status ---'"
+# --- Closing ---
+Type "echo 'Done! NXD orchestrates AI agents offline -- no API keys needed.'"
 Enter
-Sleep 1s
-
-Type "nxd status"
-Enter
-Sleep 3s
-
-# --- Scene 5: View events ---
-Type "echo '--- Step 5: Review the event trail ---'"
-Enter
-Sleep 1s
-
-Type "nxd events --limit 10"
-Enter
-Sleep 3s
-
-# --- Scene 6: Launch the dashboard ---
-Type "echo '--- Step 6: Launch the live TUI dashboard ---'"
-Enter
-Sleep 1s
-
-Type "nxd dashboard"
-Enter
-Sleep 5s
-
-# Exit dashboard
-Type "q"
-Sleep 1s
-
-Type "echo 'Done! NXD orchestrates your AI agents entirely offline — no API keys needed.'"
-Enter
-Sleep 3s
+Sleep 4s
