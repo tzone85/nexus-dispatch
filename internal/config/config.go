@@ -2,7 +2,10 @@
 // validation for NXD (Nexus Dispatch).
 package config
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // Config is the top-level NXD configuration.
 type Config struct {
@@ -34,9 +37,11 @@ type WorkspaceConfig struct {
 
 // ModelConfig describes a single LLM model binding.
 type ModelConfig struct {
-	Provider  string `yaml:"provider"`
-	Model     string `yaml:"model"`
-	MaxTokens int    `yaml:"max_tokens"`
+	Provider          string `yaml:"provider"`
+	Model             string `yaml:"model"`
+	MaxTokens         int    `yaml:"max_tokens"`
+	GoogleModel       string `yaml:"google_model,omitempty"`
+	FallbackCooldownS int    `yaml:"fallback_cooldown_s,omitempty"`
 }
 
 // ModelsConfig maps agent roles to their model bindings.
@@ -48,6 +53,15 @@ type ModelsConfig struct {
 	QA           ModelConfig `yaml:"qa"`
 	Supervisor   ModelConfig `yaml:"supervisor"`
 	Manager      ModelConfig `yaml:"manager"`
+}
+
+// All returns every role→ModelConfig pair for iteration.
+func (m ModelsConfig) All() map[string]ModelConfig {
+	return map[string]ModelConfig{
+		"tech_lead": m.TechLead, "senior": m.Senior,
+		"intermediate": m.Intermediate, "junior": m.Junior,
+		"qa": m.QA, "supervisor": m.Supervisor, "manager": m.Manager,
+	}
 }
 
 // RoutingConfig controls how tasks are assigned to agent tiers.
@@ -91,10 +105,13 @@ type RuntimeDetection struct {
 
 // RuntimeConfig describes an external AI coding runtime.
 type RuntimeConfig struct {
-	Command   string           `yaml:"command"`
-	Args      []string         `yaml:"args"`
-	Models    []string         `yaml:"models"`
-	Detection RuntimeDetection `yaml:"detection"`
+	Command          string           `yaml:"command"`
+	Args             []string         `yaml:"args"`
+	Models           []string         `yaml:"models"`
+	Detection        RuntimeDetection `yaml:"detection"`
+	Native           bool             `yaml:"native,omitempty"`
+	MaxIterations    int              `yaml:"max_iterations,omitempty"`
+	CommandAllowlist []string         `yaml:"command_allowlist,omitempty"`
 }
 
 // validBackends is the set of allowed workspace backends.
@@ -128,6 +145,12 @@ var validLogArchive = map[string]bool{
 var validMergeModes = map[string]bool{
 	"local":  true,
 	"github": true,
+}
+
+// validProviders is the set of allowed model providers.
+var validProviders = map[string]bool{
+	"ollama": true, "anthropic": true, "openai": true,
+	"google": true, "google+ollama": true,
 }
 
 // Validate checks that all configuration values are within allowed ranges.
@@ -166,6 +189,28 @@ func (c Config) Validate() error {
 
 	if c.Routing.IntermediateMaxComplexity > 13 {
 		return fmt.Errorf("routing.intermediate_max_complexity must be <= 13, got %d", c.Routing.IntermediateMaxComplexity)
+	}
+
+	// Validate model providers and google_model requirement.
+	for role, mc := range c.Models.All() {
+		if mc.Provider != "" && !validProviders[mc.Provider] {
+			return fmt.Errorf("models.%s.provider %q is not a valid provider", role, mc.Provider)
+		}
+		if strings.Contains(mc.Provider, "google") && mc.GoogleModel == "" {
+			return fmt.Errorf("models.%s.google_model is required when provider contains \"google\"", role)
+		}
+	}
+
+	// Validate native runtime constraints.
+	for name, rt := range c.Runtimes {
+		if rt.Native {
+			if rt.MaxIterations <= 0 {
+				return fmt.Errorf("runtimes.%s.max_iterations must be > 0 for native runtimes", name)
+			}
+			if len(rt.CommandAllowlist) == 0 {
+				return fmt.Errorf("runtimes.%s.command_allowlist must be non-empty for native runtimes", name)
+			}
+		}
 	}
 
 	return nil

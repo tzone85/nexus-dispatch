@@ -184,11 +184,14 @@ func TestValidation_ValidMergeModes(t *testing.T) {
 func TestDefaultConfig_IncludesModels(t *testing.T) {
 	cfg := config.DefaultConfig()
 
-	if cfg.Models.TechLead.Provider != "ollama" {
-		t.Fatalf("expected tech_lead provider 'ollama', got %s", cfg.Models.TechLead.Provider)
+	if cfg.Models.TechLead.Provider != "google+ollama" {
+		t.Fatalf("expected tech_lead provider 'google+ollama', got %s", cfg.Models.TechLead.Provider)
 	}
-	if cfg.Models.Junior.Provider != "ollama" {
-		t.Fatalf("expected junior provider 'ollama', got %s", cfg.Models.Junior.Provider)
+	if cfg.Models.Junior.Provider != "google+ollama" {
+		t.Fatalf("expected junior provider 'google+ollama', got %s", cfg.Models.Junior.Provider)
+	}
+	if cfg.Models.TechLead.Model != "gemma4:26b" {
+		t.Fatalf("expected tech_lead model 'gemma4:26b', got %s", cfg.Models.TechLead.Model)
 	}
 	if cfg.Models.TechLead.MaxTokens != 16000 {
 		t.Fatalf("expected tech_lead max_tokens 16000, got %d", cfg.Models.TechLead.MaxTokens)
@@ -198,8 +201,8 @@ func TestDefaultConfig_IncludesModels(t *testing.T) {
 func TestDefaultConfig_IncludesRuntimes(t *testing.T) {
 	cfg := config.DefaultConfig()
 
-	if len(cfg.Runtimes) != 3 {
-		t.Fatalf("expected 3 runtimes, got %d", len(cfg.Runtimes))
+	if len(cfg.Runtimes) != 4 {
+		t.Fatalf("expected 4 runtimes, got %d", len(cfg.Runtimes))
 	}
 	rt, ok := cfg.Runtimes["aider"]
 	if !ok {
@@ -243,11 +246,11 @@ func TestDefaultYAML_RoundTrip(t *testing.T) {
 	if cfg.Workspace.Backend != "sqlite" {
 		t.Fatalf("expected backend 'sqlite', got %s", cfg.Workspace.Backend)
 	}
-	if cfg.Models.TechLead.Provider != "ollama" {
-		t.Fatalf("expected tech_lead provider 'ollama', got %s", cfg.Models.TechLead.Provider)
+	if cfg.Models.TechLead.Provider != "google+ollama" {
+		t.Fatalf("expected tech_lead provider 'google+ollama', got %s", cfg.Models.TechLead.Provider)
 	}
-	if len(cfg.Runtimes) != 3 {
-		t.Fatalf("expected 3 runtimes, got %d", len(cfg.Runtimes))
+	if len(cfg.Runtimes) != 4 {
+		t.Fatalf("expected 4 runtimes, got %d", len(cfg.Runtimes))
 	}
 	if cfg.Merge.PRTemplate == "" {
 		t.Fatal("expected non-empty PR template after roundtrip")
@@ -266,5 +269,40 @@ func TestDefaultYAML_HasHeader(t *testing.T) {
 	header := "# NXD configuration"
 	if len(data) < len(header) || string(data[:len(header)]) != header {
 		t.Fatalf("expected YAML to start with %q, got %q", header, string(data[:40]))
+	}
+}
+
+func TestValidation_GoogleProvider(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Models.TechLead.Provider = "google+ollama"
+	cfg.Models.TechLead.GoogleModel = "gemma-4-26b"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid google+ollama config rejected: %v", err)
+	}
+}
+
+func TestValidation_GoogleProvider_MissingGoogleModel(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Models.TechLead.Provider = "google+ollama"
+	cfg.Models.TechLead.GoogleModel = ""
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for google provider without google_model")
+	}
+}
+
+func TestValidation_NativeRuntime(t *testing.T) {
+	cfg := config.DefaultConfig()
+	gemmaRT, ok := cfg.Runtimes["gemma"]
+	if !ok {
+		t.Fatal("expected 'gemma' runtime in defaults")
+	}
+	if !gemmaRT.Native {
+		t.Error("expected gemma runtime to be native")
+	}
+	if gemmaRT.MaxIterations <= 0 {
+		t.Errorf("MaxIterations = %d, want > 0", gemmaRT.MaxIterations)
+	}
+	if len(gemmaRT.CommandAllowlist) == 0 {
+		t.Error("expected non-empty command allowlist")
 	}
 }

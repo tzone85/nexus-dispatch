@@ -7,6 +7,18 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// gemma4Default returns a ModelConfig preset for the Gemma 4 26B model
+// using the google+ollama dual provider with the given token limit.
+func gemma4Default(maxTokens int) ModelConfig {
+	return ModelConfig{
+		Provider:          "google+ollama",
+		Model:             "gemma4:26b",
+		GoogleModel:       "gemma-4-26b",
+		MaxTokens:         maxTokens,
+		FallbackCooldownS: 60,
+	}
+}
+
 // DefaultConfig returns a Config populated with sensible defaults.
 // The returned value passes Validate() without modification.
 func DefaultConfig() Config {
@@ -19,13 +31,13 @@ func DefaultConfig() Config {
 			LogRetentionDays: 30,
 		},
 		Models: ModelsConfig{
-			TechLead:     ModelConfig{Provider: "ollama", Model: "deepseek-coder-v2:latest", MaxTokens: 16000},
-			Senior:       ModelConfig{Provider: "ollama", Model: "qwen2.5-coder:32b", MaxTokens: 8000},
-			Intermediate: ModelConfig{Provider: "ollama", Model: "qwen2.5-coder:14b", MaxTokens: 4000},
-			Junior:       ModelConfig{Provider: "ollama", Model: "qwen2.5-coder:7b", MaxTokens: 4000},
-			QA:           ModelConfig{Provider: "ollama", Model: "qwen2.5-coder:14b", MaxTokens: 8000},
-			Supervisor:   ModelConfig{Provider: "ollama", Model: "deepseek-coder-v2:latest", MaxTokens: 4000},
-			Manager:      ModelConfig{Provider: "ollama", Model: "qwen2.5-coder:14b", MaxTokens: 8000},
+			TechLead:     gemma4Default(16000),
+			Senior:       gemma4Default(8000),
+			Intermediate: gemma4Default(4000),
+			Junior:       gemma4Default(4000),
+			QA:           gemma4Default(8000),
+			Supervisor:   gemma4Default(4000),
+			Manager:      gemma4Default(8000),
 		},
 		Routing: RoutingConfig{
 			JuniorMaxComplexity:           3,
@@ -83,6 +95,12 @@ func DefaultConfig() Config {
 					IdlePattern:       "Codex>",
 					PermissionPattern: "approve|deny",
 				},
+			},
+			"gemma": {
+				Native:           true,
+				MaxIterations:    20,
+				Models:           []string{"gemma4"},
+				CommandAllowlist: []string{"go build ./...", "go test ./...", "npm test", "npm run build", "make", "make test"},
 			},
 		},
 	}
