@@ -52,7 +52,7 @@ models:
   tech_lead:
     provider: google+ollama
     model: gemma4:26b
-    google_model: gemma-4-26b
+    google_model: gemma-4-26b-a4b-it
     max_tokens: 16000
     fallback_cooldown_s: 60
 ```

@@ -275,7 +275,7 @@ func TestDefaultYAML_HasHeader(t *testing.T) {
 func TestValidation_GoogleProvider(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.Models.TechLead.Provider = "google+ollama"
-	cfg.Models.TechLead.GoogleModel = "gemma-4-26b"
+	cfg.Models.TechLead.GoogleModel = "gemma-4-26b-a4b-it"
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("valid google+ollama config rejected: %v", err)
 	}

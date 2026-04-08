@@ -56,7 +56,7 @@ func TestGoogleClient_Complete_TextResponse(t *testing.T) {
 		}
 
 		// Verify URL path contains model name
-		if !strings.Contains(r.URL.Path, "gemma-4-26b") {
+		if !strings.Contains(r.URL.Path, "gemma-4-26b-a4b-it") {
 			t.Errorf("expected model in URL path, got %q", r.URL.Path)
 		}
 
@@ -85,7 +85,7 @@ func TestGoogleClient_Complete_TextResponse(t *testing.T) {
 	client := llm.NewGoogleClient("test-key", llm.WithGoogleBaseURL(server.URL))
 
 	resp, err := client.Complete(context.Background(), llm.CompletionRequest{
-		Model:     "gemma-4-26b",
+		Model:     "gemma-4-26b-a4b-it",
 		MaxTokens: 1024,
 		System:    "You are a helpful assistant",
 		Messages: []llm.Message{
@@ -98,8 +98,8 @@ func TestGoogleClient_Complete_TextResponse(t *testing.T) {
 	if resp.Content != "Hello! How can I help you?" {
 		t.Errorf("Content = %q, want %q", resp.Content, "Hello! How can I help you?")
 	}
-	if resp.Model != "gemma-4-26b" {
-		t.Errorf("Model = %q, want %q", resp.Model, "gemma-4-26b")
+	if resp.Model != "gemma-4-26b-a4b-it" {
+		t.Errorf("Model = %q, want %q", resp.Model, "gemma-4-26b-a4b-it")
 	}
 	if resp.StopReason != "STOP" {
 		t.Errorf("StopReason = %q, want %q", resp.StopReason, "STOP")
@@ -182,7 +182,7 @@ func TestGoogleClient_Complete_ToolCallResponse(t *testing.T) {
 	}
 
 	resp, err := client.Complete(context.Background(), llm.CompletionRequest{
-		Model: "gemma-4-26b",
+		Model: "gemma-4-26b-a4b-it",
 		Messages: []llm.Message{
 			{Role: llm.RoleUser, Content: "Decompose this requirement into stories"},
 		},
@@ -228,7 +228,7 @@ func TestGoogleClient_Complete_QuotaExhausted(t *testing.T) {
 	client := llm.NewGoogleClient("test-key", llm.WithGoogleBaseURL(server.URL))
 
 	_, err := client.Complete(context.Background(), llm.CompletionRequest{
-		Model: "gemma-4-26b",
+		Model: "gemma-4-26b-a4b-it",
 		Messages: []llm.Message{
 			{Role: llm.RoleUser, Content: "Hello"},
 		},
@@ -264,7 +264,7 @@ func TestGoogleClient_Complete_ForbiddenQuota(t *testing.T) {
 	client := llm.NewGoogleClient("bad-key", llm.WithGoogleBaseURL(server.URL))
 
 	_, err := client.Complete(context.Background(), llm.CompletionRequest{
-		Model:    "gemma-4-26b",
+		Model:    "gemma-4-26b-a4b-it",
 		Messages: []llm.Message{{Role: llm.RoleUser, Content: "Hello"}},
 	})
 	if err == nil {
@@ -285,7 +285,7 @@ func TestGoogleClient_Complete_ServerError(t *testing.T) {
 	client := llm.NewGoogleClient("test-key", llm.WithGoogleBaseURL(server.URL))
 
 	_, err := client.Complete(context.Background(), llm.CompletionRequest{
-		Model:    "gemma-4-26b",
+		Model:    "gemma-4-26b-a4b-it",
 		Messages: []llm.Message{{Role: llm.RoleUser, Content: "Hello"}},
 	})
 	if err == nil {

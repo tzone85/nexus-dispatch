@@ -13,7 +13,7 @@ func gemma4Default(maxTokens int) ModelConfig {
 	return ModelConfig{
 		Provider:          "google+ollama",
 		Model:             "gemma4:26b",
-		GoogleModel:       "gemma-4-26b",
+		GoogleModel:       "gemma-4-26b-a4b-it",
 		MaxTokens:         maxTokens,
 		FallbackCooldownS: 60,
 	}

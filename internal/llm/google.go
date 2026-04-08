@@ -107,7 +107,7 @@ type googleUsage struct {
 func (c *GoogleClient) Complete(ctx context.Context, req CompletionRequest) (CompletionResponse, error) {
 	model := req.Model
 	if model == "" {
-		model = "gemma-4-26b"
+		model = "gemma-4-26b-a4b-it"
 	}
 
 	gReq := buildGoogleRequest(req)
