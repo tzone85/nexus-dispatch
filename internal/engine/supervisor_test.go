@@ -22,7 +22,7 @@ func TestSupervisor_Review_OnTrack(t *testing.T) {
 		Content: `{"on_track": true, "concerns": [], "reprioritize": []}`,
 	})
 
-	supervisor := engine.NewSupervisor(client, "sonnet", 4000, es)
+	supervisor := engine.NewSupervisor(client, "anthropic", "sonnet", 4000, es)
 	result, err := supervisor.Review(
 		context.Background(),
 		"Add auth",
@@ -58,7 +58,7 @@ func TestSupervisor_Review_DriftDetected(t *testing.T) {
 		Content: `{"on_track": false, "concerns": ["Story s-002 is not relevant to auth"], "reprioritize": ["s-002"]}`,
 	})
 
-	supervisor := engine.NewSupervisor(client, "sonnet", 4000, es)
+	supervisor := engine.NewSupervisor(client, "anthropic", "sonnet", 4000, es)
 	result, err := supervisor.Review(
 		context.Background(),
 		"Add auth",
@@ -100,7 +100,7 @@ func TestSupervisor_Review_LLMError(t *testing.T) {
 	defer es.Close()
 
 	client := llm.NewReplayClient() // no responses
-	supervisor := engine.NewSupervisor(client, "sonnet", 4000, es)
+	supervisor := engine.NewSupervisor(client, "anthropic", "sonnet", 4000, es)
 
 	_, err = supervisor.Review(
 		context.Background(),
@@ -122,7 +122,7 @@ func TestSupervisor_Review_InvalidJSON(t *testing.T) {
 	defer es.Close()
 
 	client := llm.NewReplayClient(llm.CompletionResponse{Content: "not json"})
-	supervisor := engine.NewSupervisor(client, "sonnet", 4000, es)
+	supervisor := engine.NewSupervisor(client, "anthropic", "sonnet", 4000, es)
 
 	_, err = supervisor.Review(
 		context.Background(),

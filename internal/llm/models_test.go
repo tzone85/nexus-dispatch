@@ -1,32 +1,27 @@
 package llm_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/tzone85/nexus-dispatch/internal/llm"
 )
 
 func TestRecommendedModels_AllRolesCovered(t *testing.T) {
-	expectedRoles := map[string]bool{
-		"tech_lead":    false,
-		"senior":       false,
-		"intermediate": false,
-		"junior":       false,
-		"qa":           false,
-		"supervisor":   false,
-	}
-
 	models := llm.RecommendedModels()
-	if len(models) != 6 {
-		t.Fatalf("expected 6 recommended models, got %d", len(models))
+	if len(models) != 8 {
+		t.Fatalf("expected 8 recommended models, got %d", len(models))
 	}
 
-	for _, m := range models {
-		if _, ok := expectedRoles[m.Role]; !ok {
-			t.Errorf("unexpected role %q in recommended models", m.Role)
+	// First 4 models must be Gemma 4 family
+	for i := 0; i < 4; i++ {
+		if !strings.HasPrefix(models[i].Name, "gemma4:") {
+			t.Errorf("model[%d] expected gemma4 prefix, got %q", i, models[i].Name)
 		}
-		expectedRoles[m.Role] = true
+	}
 
+	// Every model must have required fields populated
+	for _, m := range models {
 		if m.Name == "" {
 			t.Errorf("model for role %q has empty name", m.Role)
 		}
@@ -39,33 +34,27 @@ func TestRecommendedModels_AllRolesCovered(t *testing.T) {
 		if m.Description == "" {
 			t.Errorf("model for role %q has empty description", m.Role)
 		}
-	}
-
-	for role, found := range expectedRoles {
-		if !found {
-			t.Errorf("role %q not covered by recommended models", role)
+		if m.Role == "" {
+			t.Errorf("model %q has empty role", m.Name)
 		}
 	}
 }
 
 func TestModelForRole_KnownRoles(t *testing.T) {
-	tests := []struct {
-		role     string
-		expected string
-	}{
-		{role: "tech_lead", expected: "deepseek-coder-v2:latest"},
-		{role: "senior", expected: "qwen2.5-coder:32b"},
-		{role: "intermediate", expected: "qwen2.5-coder:14b"},
-		{role: "junior", expected: "qwen2.5-coder:7b"},
-		{role: "qa", expected: "qwen2.5-coder:14b"},
-		{role: "supervisor", expected: "deepseek-coder-v2:latest"},
+	roles := []string{
+		"tech_lead",
+		"senior",
+		"intermediate",
+		"junior",
+		"qa",
+		"supervisor",
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.role, func(t *testing.T) {
-			got := llm.ModelForRole(tt.role)
-			if got != tt.expected {
-				t.Errorf("ModelForRole(%q) = %q, want %q", tt.role, got, tt.expected)
+	for _, role := range roles {
+		t.Run(role, func(t *testing.T) {
+			got := llm.ModelForRole(role)
+			if got != "gemma4:26b" {
+				t.Errorf("ModelForRole(%q) = %q, want %q", role, got, "gemma4:26b")
 			}
 		})
 	}
@@ -73,14 +62,14 @@ func TestModelForRole_KnownRoles(t *testing.T) {
 
 func TestModelForRole_UnknownRole(t *testing.T) {
 	got := llm.ModelForRole("nonexistent_role")
-	if got != "" {
-		t.Errorf("ModelForRole('nonexistent_role') = %q, want empty string", got)
+	if got != "gemma4:26b" {
+		t.Errorf("ModelForRole('nonexistent_role') = %q, want %q", got, "gemma4:26b")
 	}
 }
 
 func TestModelForRole_EmptyRole(t *testing.T) {
 	got := llm.ModelForRole("")
-	if got != "" {
-		t.Errorf("ModelForRole('') = %q, want empty string", got)
+	if got != "gemma4:26b" {
+		t.Errorf("ModelForRole('') = %q, want %q", got, "gemma4:26b")
 	}
 }

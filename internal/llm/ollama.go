@@ -62,11 +62,34 @@ type ollamaRequest struct {
 	Messages  []ollamaMessage `json:"messages"`
 	MaxTokens int             `json:"max_tokens,omitempty"`
 	Stream    bool            `json:"stream"`
+	Tools     []ollamaTool    `json:"tools,omitempty"`
 }
 
 type ollamaMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role       string           `json:"role"`
+	Content    string           `json:"content"`
+	ToolCalls  []ollamaToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string           `json:"tool_call_id,omitempty"`
+}
+
+type ollamaTool struct {
+	Type     string         `json:"type"`
+	Function ollamaFunction `json:"function"`
+}
+
+type ollamaFunction struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	Parameters  json.RawMessage `json:"parameters,omitempty"`
+}
+
+type ollamaToolCall struct {
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
 }
 
 type ollamaResponse struct {
@@ -101,9 +124,42 @@ func (c *OllamaClient) Complete(ctx context.Context, req CompletionRequest) (Com
 	}
 
 	for _, m := range req.Messages {
-		msgs = append(msgs, ollamaMessage{
+		msg := ollamaMessage{
 			Role:    string(m.Role),
 			Content: m.Content,
+		}
+
+		// Carry tool_call_id for tool-result messages.
+		if m.Role == RoleTool && m.ToolCallID != "" {
+			msg.ToolCallID = m.ToolCallID
+		}
+
+		// Carry tool_calls for assistant messages that invoked tools.
+		if m.Role == RoleAssistant && len(m.ToolCalls) > 0 {
+			msg.ToolCalls = make([]ollamaToolCall, len(m.ToolCalls))
+			for i, tc := range m.ToolCalls {
+				msg.ToolCalls[i] = ollamaToolCall{
+					ID:   tc.ID,
+					Type: "function",
+				}
+				msg.ToolCalls[i].Function.Name = tc.Name
+				msg.ToolCalls[i].Function.Arguments = string(tc.Arguments)
+			}
+		}
+
+		msgs = append(msgs, msg)
+	}
+
+	// Map request tools to Ollama's OpenAI-compatible format.
+	var tools []ollamaTool
+	for _, td := range req.Tools {
+		tools = append(tools, ollamaTool{
+			Type: "function",
+			Function: ollamaFunction{
+				Name:        td.Name,
+				Description: td.Description,
+				Parameters:  td.Parameters,
+			},
 		})
 	}
 
@@ -112,6 +168,7 @@ func (c *OllamaClient) Complete(ctx context.Context, req CompletionRequest) (Com
 		Messages:  msgs,
 		MaxTokens: req.MaxTokens,
 		Stream:    false,
+		Tools:     tools,
 	}
 
 	jsonBody, err := json.Marshal(body)
@@ -170,10 +227,21 @@ func (c *OllamaClient) Complete(ctx context.Context, req CompletionRequest) (Com
 
 	choice := apiResp.Choices[0]
 
+	// Extract tool calls from the response.
+	var toolCalls []ToolCall
+	for _, tc := range choice.Message.ToolCalls {
+		toolCalls = append(toolCalls, ToolCall{
+			ID:        tc.ID,
+			Name:      tc.Function.Name,
+			Arguments: json.RawMessage(tc.Function.Arguments),
+		})
+	}
+
 	return CompletionResponse{
 		Content:    choice.Message.Content,
 		Model:      apiResp.Model,
 		StopReason: choice.FinishReason,
+		ToolCalls:  toolCalls,
 		Usage: Usage{
 			InputTokens:  apiResp.Usage.PromptTokens,
 			OutputTokens: apiResp.Usage.CompletionTokens,

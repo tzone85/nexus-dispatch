@@ -255,7 +255,7 @@ func TestIntegration_FullPipeline_PlanDispatchReviewQAMerge(t *testing.T) {
 	}
 
 	// --- Step 4: Review ---
-	reviewer := engine.NewReviewer(replayClient, cfg.Models.Senior.Model, cfg.Models.Senior.MaxTokens, es, ps)
+	reviewer := engine.NewReviewer(replayClient, cfg.Models.Senior.Provider, cfg.Models.Senior.Model, cfg.Models.Senior.MaxTokens, es, ps)
 	reviewResult, err := reviewer.Review(
 		context.Background(),
 		storyID,

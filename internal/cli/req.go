@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"strings"
 	"time"
@@ -160,7 +161,28 @@ func buildLLMClient(provider string, godmode ...bool) (llm.Client, error) {
 			return nil, fmt.Errorf("OPENAI_API_KEY environment variable is required")
 		}
 		return llm.NewOpenAIClient(apiKey), nil
+	case "google":
+		apiKey := os.Getenv("GOOGLE_AI_API_KEY")
+		if apiKey == "" {
+			return nil, fmt.Errorf("GOOGLE_AI_API_KEY not set")
+		}
+		return llm.NewGoogleClient(apiKey), nil
+	case "google+ollama":
+		var ollamaOpts []llm.OllamaOption
+		if host := os.Getenv("OLLAMA_HOST"); host != "" {
+			ollamaOpts = append(ollamaOpts, llm.WithOllamaBaseURL(host))
+		}
+		ollamaClient := llm.NewOllamaClient("", ollamaOpts...)
+
+		apiKey := os.Getenv("GOOGLE_AI_API_KEY")
+		if apiKey == "" {
+			// No API key — degrade to Ollama only (not an error)
+			log.Printf("[config] GOOGLE_AI_API_KEY not set, using Ollama only")
+			return ollamaClient, nil
+		}
+		googleClient := llm.NewGoogleClient(apiKey)
+		return llm.NewFallbackClient(googleClient, ollamaClient, 60*time.Second), nil
 	default:
-		return nil, fmt.Errorf("unsupported LLM provider: %s (supported: ollama, anthropic, openai)", provider)
+		return nil, fmt.Errorf("unsupported LLM provider: %s (supported: ollama, anthropic, openai, google, google+ollama)", provider)
 	}
 }

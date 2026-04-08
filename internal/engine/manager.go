@@ -110,17 +110,20 @@ type Manager struct {
 	llmClient  llm.Client
 	eventStore state.EventStore
 	projStore  state.ProjectionStore
+	provider   string
 	model      string
 	maxTokens  int
 }
 
 // NewManager creates a Manager wired to the given LLM client, model
-// configuration, event store, and projection store.
-func NewManager(client llm.Client, model string, maxTokens int, es state.EventStore, ps state.ProjectionStore) *Manager {
+// configuration, event store, and projection store. The provider parameter
+// is used to determine whether the model supports native tool calling.
+func NewManager(client llm.Client, provider, model string, maxTokens int, es state.EventStore, ps state.ProjectionStore) *Manager {
 	return &Manager{
 		llmClient:  client,
 		eventStore: es,
 		projStore:  ps,
+		provider:   provider,
 		model:      model,
 		maxTokens:  maxTokens,
 	}
@@ -153,9 +156,65 @@ Constraints:
 
 // Diagnose calls the Manager LLM to analyse the diagnostic context and
 // return a structured corrective action for the failed story.
+//
+// When the provider+model supports native tool calling, the LLM is given
+// structured manager tools. If tool processing fails but the response
+// contains parseable JSON text, the text path is attempted as a fallback.
 func (m *Manager) Diagnose(ctx context.Context, dc DiagnosticContext) (ManagerAction, error) {
 	prompt := m.buildPrompt(dc)
 
+	if llm.HasToolSupport(m.provider, m.model) {
+		return m.diagnoseWithTools(ctx, prompt)
+	}
+	return m.diagnoseWithText(ctx, prompt)
+}
+
+// diagnoseWithTools performs diagnosis using native tool calling. The LLM is
+// given the manager tool definitions. If tool processing fails but the
+// response contains parseable JSON, the text path is used as a fallback.
+func (m *Manager) diagnoseWithTools(ctx context.Context, prompt string) (ManagerAction, error) {
+	resp, err := m.llmClient.Complete(ctx, llm.CompletionRequest{
+		Model:      m.model,
+		MaxTokens:  m.maxTokens,
+		System:     managerSystemPrompt,
+		Messages:   []llm.Message{{Role: llm.RoleUser, Content: prompt}},
+		Tools:      ManagerTools(),
+		ToolChoice: "required",
+	})
+	if err != nil {
+		return ManagerAction{}, fmt.Errorf("manager LLM call: %w", err)
+	}
+
+	// Process tool calls from the response.
+	toolCalls := resp.ToolCalls
+	if len(toolCalls) == 0 {
+		// Some providers may return tool calls embedded in text.
+		parsed, parseErr := llm.ParseToolCallsFromText(resp.Content)
+		if parseErr == nil && len(parsed) > 0 {
+			toolCalls = parsed
+		}
+	}
+
+	if len(toolCalls) > 0 {
+		toolResult, toolErr := ProcessManagerToolCalls(toolCalls)
+		if toolErr == nil {
+			return convertToolResultToManagerAction(toolResult), nil
+		}
+	}
+
+	// Fallback: try parsing the response text as legacy JSON.
+	if resp.Content != "" {
+		cleaned := extractJSON(resp.Content)
+		if action, parseErr := parseManagerAction([]byte(cleaned)); parseErr == nil {
+			return action, nil
+		}
+	}
+
+	return ManagerAction{}, fmt.Errorf("manager: no tool calls and text fallback failed")
+}
+
+// diagnoseWithText performs diagnosis using the legacy JSON text parsing path.
+func (m *Manager) diagnoseWithText(ctx context.Context, prompt string) (ManagerAction, error) {
 	resp, err := m.llmClient.Complete(ctx, llm.CompletionRequest{
 		Model:     m.model,
 		MaxTokens: m.maxTokens,
@@ -168,6 +227,67 @@ func (m *Manager) Diagnose(ctx context.Context, dc DiagnosticContext) (ManagerAc
 
 	cleaned := extractJSON(resp.Content)
 	return parseManagerAction([]byte(cleaned))
+}
+
+// convertToolResultToManagerAction maps a ManagerToolResult from tool calling
+// into the existing ManagerAction type used by the rest of the pipeline.
+func convertToolResultToManagerAction(tr ManagerToolResult) ManagerAction {
+	if tr.Decision != nil {
+		action := mapEscalationActionToManagerAction(tr.Decision.Action)
+		ma := ManagerAction{
+			Diagnosis: tr.Decision.Reason,
+			Category:  "escalation",
+			Action:    action,
+		}
+		// For retry, populate a minimal RetryConfig.
+		if action == "retry" {
+			ma.RetryConfig = &RetryConfig{
+				TargetRole: tr.Decision.AssignedTo,
+				ResetTier:  0,
+			}
+		}
+		return ma
+	}
+
+	if tr.Split != nil {
+		children := make([]SplitChildConfig, len(tr.Split.NewStories))
+		for i, ns := range tr.Split.NewStories {
+			children[i] = SplitChildConfig{
+				Title:       ns.Title,
+				Description: ns.Description,
+				Complexity:  ns.Complexity,
+			}
+		}
+		return ManagerAction{
+			Diagnosis: fmt.Sprintf("splitting story %s into %d children", tr.Split.OriginalStoryID, len(tr.Split.NewStories)),
+			Category:  "complexity",
+			Action:    "split",
+			SplitConfig: &SplitConfig{
+				Children: children,
+			},
+		}
+	}
+
+	return ManagerAction{}
+}
+
+// mapEscalationActionToManagerAction converts an escalation tool action string
+// to the corresponding ManagerAction action string.
+func mapEscalationActionToManagerAction(escalationAction string) string {
+	switch escalationAction {
+	case "retry":
+		return "retry"
+	case "split_story":
+		return "split"
+	case "reassign_higher_tier":
+		return "escalate_to_techlead"
+	case "mark_blocked":
+		return "escalate_to_techlead"
+	case "abandon":
+		return "escalate_to_techlead"
+	default:
+		return "escalate_to_techlead"
+	}
 }
 
 // BuildDiagnosticContext collects all available diagnostic information for

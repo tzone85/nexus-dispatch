@@ -173,7 +173,7 @@ func runResume(cmd *cobra.Command, args []string) error {
 		log.Printf("Warning: LLM client unavailable, skipping code review: %v", llmErr)
 	} else {
 		seniorModel := s.Config.Models.Senior
-		reviewer = engine.NewReviewer(llmClient, seniorModel.Model, seniorModel.MaxTokens, s.Events, s.Proj)
+		reviewer = engine.NewReviewer(llmClient, seniorModel.Provider, seniorModel.Model, seniorModel.MaxTokens, s.Events, s.Proj)
 	}
 
 	qaRunner := engine.NewQA(engine.QAConfig{}, &engine.ExecRunner{}, s.Events, s.Proj)

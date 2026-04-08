@@ -29,18 +29,29 @@ type CLIRuntime struct {
 }
 
 // Registry maps runtime names to their CLIRuntime instances, loaded from
-// configuration at startup.
+// configuration at startup. Native runtimes (e.g. Gemma) are stored
+// separately since they don't use CLI/tmux sessions.
 type Registry struct {
-	runtimes map[string]*CLIRuntime
+	runtimes      map[string]*CLIRuntime
+	nativeConfigs map[string]config.RuntimeConfig
 }
 
 // NewRegistry builds a Registry from the provided runtime configuration map.
 // It compiles all detection regex patterns and returns an error if any are
 // invalid.
 func NewRegistry(cfg map[string]config.RuntimeConfig) (*Registry, error) {
-	reg := &Registry{runtimes: make(map[string]*CLIRuntime)}
+	reg := &Registry{
+		runtimes:      make(map[string]*CLIRuntime),
+		nativeConfigs: make(map[string]config.RuntimeConfig),
+	}
 
 	for name, rc := range cfg {
+		// Native runtimes (e.g. Gemma) bypass CLIRuntime creation entirely.
+		if rc.Native {
+			reg.nativeConfigs[name] = rc
+			continue
+		}
+
 		detection := Detection{}
 
 		if rc.Detection.IdlePattern != "" {
@@ -87,13 +98,29 @@ func (r *Registry) Get(name string) (Runtime, error) {
 	return rt, nil
 }
 
-// List returns the names of all registered runtimes.
+// List returns the names of all registered runtimes, including native ones.
 func (r *Registry) List() []string {
-	names := make([]string, 0, len(r.runtimes))
+	names := make([]string, 0, len(r.runtimes)+len(r.nativeConfigs))
 	for name := range r.runtimes {
 		names = append(names, name)
 	}
+	for name := range r.nativeConfigs {
+		names = append(names, name)
+	}
 	return names
+}
+
+// IsNative reports whether the named runtime is a native runtime (not CLI-based).
+func (r *Registry) IsNative(name string) bool {
+	_, ok := r.nativeConfigs[name]
+	return ok
+}
+
+// NativeConfig returns the configuration for a native runtime, or false if it
+// is not found.
+func (r *Registry) NativeConfig(name string) (config.RuntimeConfig, bool) {
+	cfg, ok := r.nativeConfigs[name]
+	return cfg, ok
 }
 
 // Name returns the runtime's registered name.
