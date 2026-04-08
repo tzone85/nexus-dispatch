@@ -29,10 +29,12 @@ type PlanningConfig struct {
 
 // WorkspaceConfig holds workspace-level settings.
 type WorkspaceConfig struct {
-	StateDir         string `yaml:"state_dir"`
-	Backend          string `yaml:"backend"`
-	LogLevel         string `yaml:"log_level"`
-	LogRetentionDays int    `yaml:"log_retention_days"`
+	StateDir            string `yaml:"state_dir"`
+	Backend             string `yaml:"backend"`
+	LogLevel            string `yaml:"log_level"`
+	LogRetentionDays    int    `yaml:"log_retention_days"`
+	UpdateCheck         bool   `yaml:"update_check"`
+	UpdateIntervalHours int    `yaml:"update_interval_hours"`
 }
 
 // ModelConfig describes a single LLM model binding.
@@ -199,6 +201,10 @@ func (c Config) Validate() error {
 		if strings.Contains(mc.Provider, "google") && mc.GoogleModel == "" {
 			return fmt.Errorf("models.%s.google_model is required when provider contains \"google\"", role)
 		}
+	}
+
+	if c.Workspace.UpdateIntervalHours < 0 {
+		return fmt.Errorf("workspace.update_interval_hours must be >= 0, got %d", c.Workspace.UpdateIntervalHours)
 	}
 
 	// Validate native runtime constraints.

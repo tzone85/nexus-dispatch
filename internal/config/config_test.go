@@ -306,3 +306,29 @@ func TestValidation_NativeRuntime(t *testing.T) {
 		t.Error("expected non-empty command allowlist")
 	}
 }
+
+func TestDefaultConfig_UpdateCheckDefaults(t *testing.T) {
+	cfg := config.DefaultConfig()
+	if !cfg.Workspace.UpdateCheck {
+		t.Error("expected UpdateCheck=true by default")
+	}
+	if cfg.Workspace.UpdateIntervalHours != 48 {
+		t.Errorf("UpdateIntervalHours = %d, want 48", cfg.Workspace.UpdateIntervalHours)
+	}
+}
+
+func TestValidation_NegativeUpdateInterval(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Workspace.UpdateIntervalHours = -1
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for negative update_interval_hours")
+	}
+}
+
+func TestValidation_ZeroUpdateInterval(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Workspace.UpdateIntervalHours = 0
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected zero interval to pass validation, got: %v", err)
+	}
+}
