@@ -417,3 +417,295 @@ func TestWiring_PlannerArchaeology(t *testing.T) {
 		t.Error("TechLead prompt should NOT contain BugHuntingMethodology (that is for Senior role)")
 	}
 }
+
+// --- Test 9: PlannerProducesStories ---
+// Prove: requirement -> Planner -> stories with IDs, titles, complexity
+// emitted as STORY_CREATED events and projected into SQLite.
+
+func TestWiring_PlannerProducesStories(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module test"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	client := llm.NewReplayClient(llm.CompletionResponse{
+		Content: plannerResponseJSON,
+		Model:   "test-model",
+	})
+
+	es, ps := newTestStores(t)
+	cfg := config.DefaultConfig()
+	planner := NewPlanner(client, cfg, es, ps)
+
+	result, err := planner.Plan(context.Background(), "req-100", "Build a REST API", dir)
+	if err != nil {
+		t.Fatalf("Plan failed: %v", err)
+	}
+
+	// PlanResult has 3 stories
+	if len(result.Stories) != 3 {
+		t.Fatalf("expected 3 stories, got %d", len(result.Stories))
+	}
+
+	// Each story has non-empty ID, Title, and Complexity > 0
+	for i, s := range result.Stories {
+		if s.ID == "" {
+			t.Errorf("story %d has empty ID", i)
+		}
+		if s.Title == "" {
+			t.Errorf("story %d has empty Title", i)
+		}
+		if s.Complexity <= 0 {
+			t.Errorf("story %d has Complexity %d, want > 0", i, s.Complexity)
+		}
+	}
+
+	// Event store contains REQ_SUBMITTED, 3x STORY_CREATED, REQ_PLANNED
+	reqSubmitted, err := es.List(state.EventFilter{Type: state.EventReqSubmitted})
+	if err != nil {
+		t.Fatalf("list REQ_SUBMITTED: %v", err)
+	}
+	if len(reqSubmitted) != 1 {
+		t.Errorf("expected 1 REQ_SUBMITTED event, got %d", len(reqSubmitted))
+	}
+
+	storyCreated, err := es.List(state.EventFilter{Type: state.EventStoryCreated})
+	if err != nil {
+		t.Fatalf("list STORY_CREATED: %v", err)
+	}
+	if len(storyCreated) != 3 {
+		t.Errorf("expected 3 STORY_CREATED events, got %d", len(storyCreated))
+	}
+
+	reqPlanned, err := es.List(state.EventFilter{Type: state.EventReqPlanned})
+	if err != nil {
+		t.Fatalf("list REQ_PLANNED: %v", err)
+	}
+	if len(reqPlanned) != 1 {
+		t.Errorf("expected 1 REQ_PLANNED event, got %d", len(reqPlanned))
+	}
+
+	// SQLite projection has 3 stories in "draft" status
+	stories, err := ps.ListStories(state.StoryFilter{ReqID: "req-100"})
+	if err != nil {
+		t.Fatalf("list stories from projection: %v", err)
+	}
+	if len(stories) != 3 {
+		t.Fatalf("expected 3 projected stories, got %d", len(stories))
+	}
+	for _, s := range stories {
+		if s.Status != "draft" {
+			t.Errorf("story %s has status %q, want 'draft'", s.ID, s.Status)
+		}
+	}
+}
+
+// --- Test 10: ComplexityRoutesToCorrectTier ---
+// Prove: RouteByComplexity maps complexity scores to the right roles.
+
+func TestWiring_ComplexityRoutesToCorrectTier(t *testing.T) {
+	routing := config.RoutingConfig{
+		JuniorMaxComplexity:       3,
+		IntermediateMaxComplexity: 5,
+	}
+
+	tests := []struct {
+		complexity int
+		want       agent.Role
+	}{
+		{1, agent.RoleJunior},
+		{3, agent.RoleJunior},
+		{4, agent.RoleIntermediate},
+		{5, agent.RoleIntermediate},
+		{8, agent.RoleSenior},
+		{13, agent.RoleSenior},
+	}
+
+	for _, tc := range tests {
+		t.Run(fmt.Sprintf("complexity_%d", tc.complexity), func(t *testing.T) {
+			got := agent.RouteByComplexity(tc.complexity, routing)
+			if got != tc.want {
+				t.Errorf("RouteByComplexity(%d) = %s, want %s", tc.complexity, got, tc.want)
+			}
+		})
+	}
+}
+
+// --- Test 11: ReviewEmitsCorrectEvents ---
+// Prove: Reviewer -> REVIEW_PASSED event emitted to stores.
+
+func TestWiring_ReviewEmitsCorrectEvents(t *testing.T) {
+	es, ps := newTestStores(t)
+
+	// Pre-populate story so event projection succeeds
+	createEvt := state.NewEvent(state.EventStoryCreated, "tech-lead", "s-review-001", map[string]any{
+		"id": "s-review-001", "req_id": "r-review", "title": "Auth", "description": "desc", "complexity": 3,
+	})
+	if err := ps.Project(createEvt); err != nil {
+		t.Fatalf("project story created: %v", err)
+	}
+
+	// ReplayClient with approve review response (text path, non-tool provider)
+	reviewJSON := `{"passed": true, "comments": [], "summary": "All good"}`
+	client := llm.NewReplayClient(llm.CompletionResponse{
+		Content: reviewJSON,
+		Model:   "test-model",
+	})
+
+	reviewer := NewReviewer(client, "ollama", "test-model", 4000, es, ps)
+
+	result, err := reviewer.Review(
+		context.Background(),
+		"s-review-001",
+		"Add auth module",
+		"Auth works",
+		"diff --git a/main.go b/main.go\n+func Auth() {}",
+	)
+	if err != nil {
+		t.Fatalf("review: %v", err)
+	}
+
+	if !result.Passed {
+		t.Error("expected ReviewResult.Passed == true")
+	}
+
+	// Event store contains EventStoryReviewPassed
+	passed, err := es.List(state.EventFilter{Type: state.EventStoryReviewPassed})
+	if err != nil {
+		t.Fatalf("list review passed events: %v", err)
+	}
+	if len(passed) != 1 {
+		t.Fatalf("expected 1 STORY_REVIEW_PASSED event, got %d", len(passed))
+	}
+
+	// The event has the correct StoryID
+	if passed[0].StoryID != "s-review-001" {
+		t.Errorf("event StoryID = %q, want 's-review-001'", passed[0].StoryID)
+	}
+}
+
+// --- Test 12: EventsProjectToSQLite ---
+// Prove: emitted events -> projected to requirements/stories tables with
+// correct status transitions.
+
+func TestWiring_EventsProjectToSQLite(t *testing.T) {
+	_, ps := newTestStores(t)
+
+	// Emit REQ_SUBMITTED
+	reqEvt := state.NewEvent(state.EventReqSubmitted, "system", "", map[string]any{
+		"id":          "req-proj-001",
+		"title":       "Build auth",
+		"description": "Build an auth module",
+		"repo_path":   "/tmp/repo",
+	})
+	if err := ps.Project(reqEvt); err != nil {
+		t.Fatalf("project REQ_SUBMITTED: %v", err)
+	}
+
+	// Query requirements table — status should be "pending"
+	req, err := ps.GetRequirement("req-proj-001")
+	if err != nil {
+		t.Fatalf("get requirement: %v", err)
+	}
+	if req.Status != "pending" {
+		t.Errorf("requirement status = %q, want 'pending'", req.Status)
+	}
+
+	// Emit REQ_PLANNED
+	plannedEvt := state.NewEvent(state.EventReqPlanned, "tech-lead", "", map[string]any{
+		"id": "req-proj-001",
+	})
+	if err := ps.Project(plannedEvt); err != nil {
+		t.Fatalf("project REQ_PLANNED: %v", err)
+	}
+
+	// Query — status now "planned"
+	req, err = ps.GetRequirement("req-proj-001")
+	if err != nil {
+		t.Fatalf("get requirement after planned: %v", err)
+	}
+	if req.Status != "planned" {
+		t.Errorf("requirement status = %q, want 'planned'", req.Status)
+	}
+
+	// Emit STORY_CREATED
+	storyEvt := state.NewEvent(state.EventStoryCreated, "tech-lead", "s-proj-001", map[string]any{
+		"id":          "s-proj-001",
+		"req_id":      "req-proj-001",
+		"title":       "Setup scaffold",
+		"description": "Create project structure",
+		"complexity":  2,
+	})
+	if err := ps.Project(storyEvt); err != nil {
+		t.Fatalf("project STORY_CREATED: %v", err)
+	}
+
+	// Query stories — row exists with status "draft"
+	story, err := ps.GetStory("s-proj-001")
+	if err != nil {
+		t.Fatalf("get story: %v", err)
+	}
+	if story.Status != "draft" {
+		t.Errorf("story status = %q, want 'draft'", story.Status)
+	}
+	if story.ReqID != "req-proj-001" {
+		t.Errorf("story ReqID = %q, want 'req-proj-001'", story.ReqID)
+	}
+}
+
+// --- Test 13: InvalidConfigRejected ---
+// Prove: bad config values -> Validate() returns error.
+
+func TestWiring_InvalidConfigRejected(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(cfg *config.Config)
+	}{
+		{
+			name: "invalid_backend",
+			mutate: func(cfg *config.Config) {
+				cfg.Workspace.Backend = "badbackend"
+			},
+		},
+		{
+			name: "invalid_log_level",
+			mutate: func(cfg *config.Config) {
+				cfg.Workspace.LogLevel = "trace"
+			},
+		},
+		{
+			name: "invalid_merge_mode",
+			mutate: func(cfg *config.Config) {
+				cfg.Merge.Mode = "magic"
+			},
+		},
+		{
+			name: "negative_complexity_range",
+			mutate: func(cfg *config.Config) {
+				cfg.Routing.JuniorMaxComplexity = 8
+				cfg.Routing.IntermediateMaxComplexity = 3
+			},
+		},
+		{
+			name: "google_provider_without_google_model",
+			mutate: func(cfg *config.Config) {
+				cfg.Models.TechLead = config.ModelConfig{
+					Provider:    "google",
+					Model:       "gemini-pro",
+					MaxTokens:   8000,
+					GoogleModel: "",
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.DefaultConfig()
+			tc.mutate(&cfg)
+			if err := cfg.Validate(); err == nil {
+				t.Error("expected Validate() to return error, got nil")
+			}
+		})
+	}
+}
