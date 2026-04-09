@@ -17,6 +17,7 @@ import (
 
 	"github.com/tzone85/nexus-dispatch/internal/agent"
 	"github.com/tzone85/nexus-dispatch/internal/config"
+	"github.com/tzone85/nexus-dispatch/internal/graph"
 	"github.com/tzone85/nexus-dispatch/internal/llm"
 	"github.com/tzone85/nexus-dispatch/internal/state"
 )
@@ -415,5 +416,539 @@ func TestWiring_PlannerArchaeology(t *testing.T) {
 	// BugHuntingMethodology should NOT be in TechLead prompt — it is for Senior role
 	if strings.Contains(req.System, "BUG HUNTING METHODOLOGY") {
 		t.Error("TechLead prompt should NOT contain BugHuntingMethodology (that is for Senior role)")
+	}
+}
+
+// --- Test 9: PlannerProducesStories ---
+// Prove: requirement -> Planner -> stories with IDs, titles, complexity
+// emitted as STORY_CREATED events and projected into SQLite.
+
+func TestWiring_PlannerProducesStories(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module test"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	client := llm.NewReplayClient(llm.CompletionResponse{
+		Content: plannerResponseJSON,
+		Model:   "test-model",
+	})
+
+	es, ps := newTestStores(t)
+	cfg := config.DefaultConfig()
+	planner := NewPlanner(client, cfg, es, ps)
+
+	result, err := planner.Plan(context.Background(), "req-100", "Build a REST API", dir)
+	if err != nil {
+		t.Fatalf("Plan failed: %v", err)
+	}
+
+	// PlanResult has 3 stories
+	if len(result.Stories) != 3 {
+		t.Fatalf("expected 3 stories, got %d", len(result.Stories))
+	}
+
+	// Each story has non-empty ID, Title, and Complexity > 0
+	for i, s := range result.Stories {
+		if s.ID == "" {
+			t.Errorf("story %d has empty ID", i)
+		}
+		if s.Title == "" {
+			t.Errorf("story %d has empty Title", i)
+		}
+		if s.Complexity <= 0 {
+			t.Errorf("story %d has Complexity %d, want > 0", i, s.Complexity)
+		}
+	}
+
+	// Event store contains REQ_SUBMITTED, 3x STORY_CREATED, REQ_PLANNED
+	reqSubmitted, err := es.List(state.EventFilter{Type: state.EventReqSubmitted})
+	if err != nil {
+		t.Fatalf("list REQ_SUBMITTED: %v", err)
+	}
+	if len(reqSubmitted) != 1 {
+		t.Errorf("expected 1 REQ_SUBMITTED event, got %d", len(reqSubmitted))
+	}
+
+	storyCreated, err := es.List(state.EventFilter{Type: state.EventStoryCreated})
+	if err != nil {
+		t.Fatalf("list STORY_CREATED: %v", err)
+	}
+	if len(storyCreated) != 3 {
+		t.Errorf("expected 3 STORY_CREATED events, got %d", len(storyCreated))
+	}
+
+	reqPlanned, err := es.List(state.EventFilter{Type: state.EventReqPlanned})
+	if err != nil {
+		t.Fatalf("list REQ_PLANNED: %v", err)
+	}
+	if len(reqPlanned) != 1 {
+		t.Errorf("expected 1 REQ_PLANNED event, got %d", len(reqPlanned))
+	}
+
+	// SQLite projection has 3 stories in "draft" status
+	stories, err := ps.ListStories(state.StoryFilter{ReqID: "req-100"})
+	if err != nil {
+		t.Fatalf("list stories from projection: %v", err)
+	}
+	if len(stories) != 3 {
+		t.Fatalf("expected 3 projected stories, got %d", len(stories))
+	}
+	for _, s := range stories {
+		if s.Status != "draft" {
+			t.Errorf("story %s has status %q, want 'draft'", s.ID, s.Status)
+		}
+	}
+}
+
+// --- Test 10: ComplexityRoutesToCorrectTier ---
+// Prove: RouteByComplexity maps complexity scores to the right roles.
+
+func TestWiring_ComplexityRoutesToCorrectTier(t *testing.T) {
+	routing := config.RoutingConfig{
+		JuniorMaxComplexity:       3,
+		IntermediateMaxComplexity: 5,
+	}
+
+	tests := []struct {
+		complexity int
+		want       agent.Role
+	}{
+		{1, agent.RoleJunior},
+		{3, agent.RoleJunior},
+		{4, agent.RoleIntermediate},
+		{5, agent.RoleIntermediate},
+		{8, agent.RoleSenior},
+		{13, agent.RoleSenior},
+	}
+
+	for _, tc := range tests {
+		t.Run(fmt.Sprintf("complexity_%d", tc.complexity), func(t *testing.T) {
+			got := agent.RouteByComplexity(tc.complexity, routing)
+			if got != tc.want {
+				t.Errorf("RouteByComplexity(%d) = %s, want %s", tc.complexity, got, tc.want)
+			}
+		})
+	}
+}
+
+// --- Test 11: ReviewEmitsCorrectEvents ---
+// Prove: Reviewer -> REVIEW_PASSED event emitted to stores.
+
+func TestWiring_ReviewEmitsCorrectEvents(t *testing.T) {
+	es, ps := newTestStores(t)
+
+	// Pre-populate story so event projection succeeds
+	createEvt := state.NewEvent(state.EventStoryCreated, "tech-lead", "s-review-001", map[string]any{
+		"id": "s-review-001", "req_id": "r-review", "title": "Auth", "description": "desc", "complexity": 3,
+	})
+	if err := ps.Project(createEvt); err != nil {
+		t.Fatalf("project story created: %v", err)
+	}
+
+	// ReplayClient with approve review response (text path, non-tool provider)
+	reviewJSON := `{"passed": true, "comments": [], "summary": "All good"}`
+	client := llm.NewReplayClient(llm.CompletionResponse{
+		Content: reviewJSON,
+		Model:   "test-model",
+	})
+
+	reviewer := NewReviewer(client, "ollama", "test-model", 4000, es, ps)
+
+	result, err := reviewer.Review(
+		context.Background(),
+		"s-review-001",
+		"Add auth module",
+		"Auth works",
+		"diff --git a/main.go b/main.go\n+func Auth() {}",
+	)
+	if err != nil {
+		t.Fatalf("review: %v", err)
+	}
+
+	if !result.Passed {
+		t.Error("expected ReviewResult.Passed == true")
+	}
+
+	// Event store contains EventStoryReviewPassed
+	passed, err := es.List(state.EventFilter{Type: state.EventStoryReviewPassed})
+	if err != nil {
+		t.Fatalf("list review passed events: %v", err)
+	}
+	if len(passed) != 1 {
+		t.Fatalf("expected 1 STORY_REVIEW_PASSED event, got %d", len(passed))
+	}
+
+	// The event has the correct StoryID
+	if passed[0].StoryID != "s-review-001" {
+		t.Errorf("event StoryID = %q, want 's-review-001'", passed[0].StoryID)
+	}
+}
+
+// --- Test 12: EventsProjectToSQLite ---
+// Prove: emitted events -> projected to requirements/stories tables with
+// correct status transitions.
+
+func TestWiring_EventsProjectToSQLite(t *testing.T) {
+	_, ps := newTestStores(t)
+
+	// Emit REQ_SUBMITTED
+	reqEvt := state.NewEvent(state.EventReqSubmitted, "system", "", map[string]any{
+		"id":          "req-proj-001",
+		"title":       "Build auth",
+		"description": "Build an auth module",
+		"repo_path":   "/tmp/repo",
+	})
+	if err := ps.Project(reqEvt); err != nil {
+		t.Fatalf("project REQ_SUBMITTED: %v", err)
+	}
+
+	// Query requirements table — status should be "pending"
+	req, err := ps.GetRequirement("req-proj-001")
+	if err != nil {
+		t.Fatalf("get requirement: %v", err)
+	}
+	if req.Status != "pending" {
+		t.Errorf("requirement status = %q, want 'pending'", req.Status)
+	}
+
+	// Emit REQ_PLANNED
+	plannedEvt := state.NewEvent(state.EventReqPlanned, "tech-lead", "", map[string]any{
+		"id": "req-proj-001",
+	})
+	if err := ps.Project(plannedEvt); err != nil {
+		t.Fatalf("project REQ_PLANNED: %v", err)
+	}
+
+	// Query — status now "planned"
+	req, err = ps.GetRequirement("req-proj-001")
+	if err != nil {
+		t.Fatalf("get requirement after planned: %v", err)
+	}
+	if req.Status != "planned" {
+		t.Errorf("requirement status = %q, want 'planned'", req.Status)
+	}
+
+	// Emit STORY_CREATED
+	storyEvt := state.NewEvent(state.EventStoryCreated, "tech-lead", "s-proj-001", map[string]any{
+		"id":          "s-proj-001",
+		"req_id":      "req-proj-001",
+		"title":       "Setup scaffold",
+		"description": "Create project structure",
+		"complexity":  2,
+	})
+	if err := ps.Project(storyEvt); err != nil {
+		t.Fatalf("project STORY_CREATED: %v", err)
+	}
+
+	// Query stories — row exists with status "draft"
+	story, err := ps.GetStory("s-proj-001")
+	if err != nil {
+		t.Fatalf("get story: %v", err)
+	}
+	if story.Status != "draft" {
+		t.Errorf("story status = %q, want 'draft'", story.Status)
+	}
+	if story.ReqID != "req-proj-001" {
+		t.Errorf("story ReqID = %q, want 'req-proj-001'", story.ReqID)
+	}
+}
+
+// --- Test 13: InvalidConfigRejected ---
+// Prove: bad config values -> Validate() returns error.
+
+func TestWiring_InvalidConfigRejected(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(cfg *config.Config)
+	}{
+		{
+			name: "invalid_backend",
+			mutate: func(cfg *config.Config) {
+				cfg.Workspace.Backend = "badbackend"
+			},
+		},
+		{
+			name: "invalid_log_level",
+			mutate: func(cfg *config.Config) {
+				cfg.Workspace.LogLevel = "trace"
+			},
+		},
+		{
+			name: "invalid_merge_mode",
+			mutate: func(cfg *config.Config) {
+				cfg.Merge.Mode = "magic"
+			},
+		},
+		{
+			name: "negative_complexity_range",
+			mutate: func(cfg *config.Config) {
+				cfg.Routing.JuniorMaxComplexity = 8
+				cfg.Routing.IntermediateMaxComplexity = 3
+			},
+		},
+		{
+			name: "google_provider_without_google_model",
+			mutate: func(cfg *config.Config) {
+				cfg.Models.TechLead = config.ModelConfig{
+					Provider:    "google",
+					Model:       "gemini-pro",
+					MaxTokens:   8000,
+					GoogleModel: "",
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.DefaultConfig()
+			tc.mutate(&cfg)
+			if err := cfg.Validate(); err == nil {
+				t.Error("expected Validate() to return error, got nil")
+			}
+		})
+	}
+}
+
+// --- Test 14: StoryIDsGloballyUnique ---
+// Prove: Planner prefixes story IDs with requirement ID so they don't
+// collide across requirements.
+
+func TestWiring_StoryIDsGloballyUnique(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module test"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	twoStoryJSON := `[
+		{"id": "s-001", "title": "Story one", "description": "First", "acceptance_criteria": "Done", "complexity": 2, "depends_on": [], "owned_files": ["a.go"], "wave_hint": "parallel"},
+		{"id": "s-002", "title": "Story two", "description": "Second", "acceptance_criteria": "Done", "complexity": 3, "depends_on": [], "owned_files": ["b.go"], "wave_hint": "parallel"}
+	]`
+
+	client := llm.NewReplayClient(llm.CompletionResponse{
+		Content: twoStoryJSON,
+		Model:   "test-model",
+	})
+
+	es, ps := newTestStores(t)
+	cfg := config.DefaultConfig()
+	planner := NewPlanner(client, cfg, es, ps)
+
+	result, err := planner.Plan(context.Background(), "req-abc", "Build something", dir)
+	if err != nil {
+		t.Fatalf("Plan failed: %v", err)
+	}
+
+	// All returned story IDs must start with the requirement ID prefix
+	for _, s := range result.Stories {
+		if !strings.HasPrefix(s.ID, "req-abc-") {
+			t.Errorf("story ID %q does not start with 'req-abc-' prefix", s.ID)
+		}
+	}
+}
+
+// --- Test 15: OverlappingFilesRejected ---
+// Prove: two stories owning the same file -> Plan returns error.
+
+func TestWiring_OverlappingFilesRejected(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module test"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Two stories both claim "main.go" in owned_files
+	overlapJSON := `[
+		{"id": "s-001", "title": "Story one", "description": "First", "acceptance_criteria": "Done", "complexity": 2, "depends_on": [], "owned_files": ["main.go"], "wave_hint": "parallel"},
+		{"id": "s-002", "title": "Story two", "description": "Second", "acceptance_criteria": "Done", "complexity": 3, "depends_on": [], "owned_files": ["main.go"], "wave_hint": "parallel"}
+	]`
+
+	client := llm.NewReplayClient(llm.CompletionResponse{
+		Content: overlapJSON,
+		Model:   "test-model",
+	})
+
+	es, ps := newTestStores(t)
+	cfg := config.DefaultConfig()
+	planner := NewPlanner(client, cfg, es, ps)
+
+	_, err := planner.Plan(context.Background(), "req-overlap", "Build something", dir)
+	if err == nil {
+		t.Fatal("expected Plan to return error for overlapping owned_files, got nil")
+	}
+
+	// Error should mention the conflicting file
+	if !strings.Contains(err.Error(), "main.go") {
+		t.Errorf("error %q should mention 'main.go'", err.Error())
+	}
+}
+
+// --- Test 16: WavesRespectDependencies ---
+// Prove: stories with dependencies are dispatched in correct wave order.
+
+func TestWiring_WavesRespectDependencies(t *testing.T) {
+	es, ps := newTestStores(t)
+
+	// Emit STORY_CREATED events for 3 stories with a dependency chain:
+	// s-001 (no deps), s-002 (depends on s-001), s-003 (depends on s-002)
+	stories := []PlannedStory{
+		{ID: "s-001", Title: "Foundation", Complexity: 2, DependsOn: []string{}, OwnedFiles: []string{"a.go"}, WaveHint: "parallel"},
+		{ID: "s-002", Title: "Core logic", Complexity: 3, DependsOn: []string{"s-001"}, OwnedFiles: []string{"b.go"}, WaveHint: "parallel"},
+		{ID: "s-003", Title: "Tests", Complexity: 2, DependsOn: []string{"s-002"}, OwnedFiles: []string{"c.go"}, WaveHint: "parallel"},
+	}
+
+	for _, s := range stories {
+		evt := state.NewEvent(state.EventStoryCreated, "tech-lead", s.ID, map[string]any{
+			"id": s.ID, "req_id": "req-wave", "title": s.Title, "complexity": s.Complexity,
+		})
+		if err := es.Append(evt); err != nil {
+			t.Fatalf("append event: %v", err)
+		}
+		if err := ps.Project(evt); err != nil {
+			t.Fatalf("project event: %v", err)
+		}
+	}
+
+	// Build DAG from these dependencies
+	dag := graph.New()
+	for _, s := range stories {
+		dag.AddNode(s.ID)
+	}
+	for _, s := range stories {
+		for _, dep := range s.DependsOn {
+			dag.AddEdge(s.ID, dep)
+		}
+	}
+
+	cfg := config.DefaultConfig()
+	dispatcher := NewDispatcher(cfg, es, ps)
+
+	completed := make(map[string]bool)
+
+	// Wave 1: only s-001 should be dispatched (no unmet deps)
+	assignments, err := dispatcher.DispatchWave(dag, completed, "req-wave", stories, 1)
+	if err != nil {
+		t.Fatalf("DispatchWave 1: %v", err)
+	}
+	if len(assignments) != 1 {
+		t.Fatalf("wave 1: expected 1 assignment, got %d", len(assignments))
+	}
+	if assignments[0].StoryID != "s-001" {
+		t.Errorf("wave 1: expected s-001, got %s", assignments[0].StoryID)
+	}
+
+	// Mark s-001 complete and dispatch wave 2
+	completed["s-001"] = true
+	assignments, err = dispatcher.DispatchWave(dag, completed, "req-wave", stories, 2)
+	if err != nil {
+		t.Fatalf("DispatchWave 2: %v", err)
+	}
+	if len(assignments) != 1 {
+		t.Fatalf("wave 2: expected 1 assignment, got %d", len(assignments))
+	}
+	if assignments[0].StoryID != "s-002" {
+		t.Errorf("wave 2: expected s-002, got %s", assignments[0].StoryID)
+	}
+
+	// Mark s-002 complete and dispatch wave 3
+	completed["s-002"] = true
+	assignments, err = dispatcher.DispatchWave(dag, completed, "req-wave", stories, 3)
+	if err != nil {
+		t.Fatalf("DispatchWave 3: %v", err)
+	}
+	if len(assignments) != 1 {
+		t.Fatalf("wave 3: expected 1 assignment, got %d", len(assignments))
+	}
+	if assignments[0].StoryID != "s-003" {
+		t.Errorf("wave 3: expected s-003, got %s", assignments[0].StoryID)
+	}
+}
+
+// --- Test 17: ManagerDiagnosesFailure ---
+// Prove: DiagnosticContext -> Manager LLM -> ManagerAction with corrective action.
+
+func TestWiring_ManagerDiagnosesFailure(t *testing.T) {
+	es, ps := newTestStores(t)
+
+	// ReplayClient with a manager response (text path, non-tool provider)
+	managerJSON := `{
+		"diagnosis": "Test runner not installed in worktree",
+		"category": "environment",
+		"action": "retry",
+		"retry_config": {"target_role": "junior", "reset_tier": 0, "worktree_reset": true, "env_fixes": ["npm install"]}
+	}`
+	client := llm.NewReplayClient(llm.CompletionResponse{
+		Content: managerJSON,
+		Model:   "test-model",
+	})
+
+	manager := NewManager(client, "ollama", "test-model", 8000, es, ps)
+
+	dc := DiagnosticContext{
+		StoryID:          "s-mgr-001",
+		StoryTitle:       "Add login",
+		StoryDescription: "Implement login endpoint",
+		Complexity:       3,
+	}
+
+	action, err := manager.Diagnose(context.Background(), dc)
+	if err != nil {
+		t.Fatalf("Diagnose: %v", err)
+	}
+
+	if action.Action != "retry" {
+		t.Errorf("action = %q, want 'retry'", action.Action)
+	}
+	if action.Category == "" {
+		t.Error("expected non-empty Category")
+	}
+	if action.Diagnosis == "" {
+		t.Error("expected non-empty Diagnosis")
+	}
+}
+
+// --- Test 18: SupervisorDetectsDrift ---
+// Prove: Supervisor review -> SupervisorResult with drift detection.
+
+func TestWiring_SupervisorDetectsDrift(t *testing.T) {
+	es, _ := newTestStores(t)
+
+	// ReplayClient with supervisor response detecting drift (text path)
+	supervisorJSON := `{"on_track": false, "concerns": ["story stuck", "scope creep detected"], "reprioritize": []}`
+	client := llm.NewReplayClient(llm.CompletionResponse{
+		Content: supervisorJSON,
+		Model:   "test-model",
+	})
+
+	supervisor := NewSupervisor(client, "ollama", "test-model", 4000, es)
+
+	stories := []PlannedStory{
+		{ID: "s-sup-001", Title: "Auth", Complexity: 3},
+		{ID: "s-sup-002", Title: "Dashboard", Complexity: 5},
+	}
+	statuses := map[string]string{
+		"s-sup-001": "in_progress",
+		"s-sup-002": "draft",
+	}
+
+	result, err := supervisor.Review(context.Background(), "Build a dashboard app", stories, statuses)
+	if err != nil {
+		t.Fatalf("Supervisor Review: %v", err)
+	}
+
+	if result.OnTrack {
+		t.Error("expected OnTrack == false")
+	}
+	if len(result.Concerns) == 0 {
+		t.Error("expected len(Concerns) > 0")
+	}
+
+	// Verify SUPERVISOR_DRIFT_DETECTED event was emitted
+	driftEvents, err := es.List(state.EventFilter{Type: state.EventSupervisorDriftDetected})
+	if err != nil {
+		t.Fatalf("list drift events: %v", err)
+	}
+	if len(driftEvents) != 1 {
+		t.Errorf("expected 1 SUPERVISOR_DRIFT_DETECTED event, got %d", len(driftEvents))
 	}
 }
