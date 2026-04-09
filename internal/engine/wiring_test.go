@@ -17,6 +17,7 @@ import (
 
 	"github.com/tzone85/nexus-dispatch/internal/agent"
 	"github.com/tzone85/nexus-dispatch/internal/config"
+	"github.com/tzone85/nexus-dispatch/internal/graph"
 	"github.com/tzone85/nexus-dispatch/internal/llm"
 	"github.com/tzone85/nexus-dispatch/internal/state"
 )
@@ -707,5 +708,247 @@ func TestWiring_InvalidConfigRejected(t *testing.T) {
 				t.Error("expected Validate() to return error, got nil")
 			}
 		})
+	}
+}
+
+// --- Test 14: StoryIDsGloballyUnique ---
+// Prove: Planner prefixes story IDs with requirement ID so they don't
+// collide across requirements.
+
+func TestWiring_StoryIDsGloballyUnique(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module test"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	twoStoryJSON := `[
+		{"id": "s-001", "title": "Story one", "description": "First", "acceptance_criteria": "Done", "complexity": 2, "depends_on": [], "owned_files": ["a.go"], "wave_hint": "parallel"},
+		{"id": "s-002", "title": "Story two", "description": "Second", "acceptance_criteria": "Done", "complexity": 3, "depends_on": [], "owned_files": ["b.go"], "wave_hint": "parallel"}
+	]`
+
+	client := llm.NewReplayClient(llm.CompletionResponse{
+		Content: twoStoryJSON,
+		Model:   "test-model",
+	})
+
+	es, ps := newTestStores(t)
+	cfg := config.DefaultConfig()
+	planner := NewPlanner(client, cfg, es, ps)
+
+	result, err := planner.Plan(context.Background(), "req-abc", "Build something", dir)
+	if err != nil {
+		t.Fatalf("Plan failed: %v", err)
+	}
+
+	// All returned story IDs must start with the requirement ID prefix
+	for _, s := range result.Stories {
+		if !strings.HasPrefix(s.ID, "req-abc-") {
+			t.Errorf("story ID %q does not start with 'req-abc-' prefix", s.ID)
+		}
+	}
+}
+
+// --- Test 15: OverlappingFilesRejected ---
+// Prove: two stories owning the same file -> Plan returns error.
+
+func TestWiring_OverlappingFilesRejected(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module test"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Two stories both claim "main.go" in owned_files
+	overlapJSON := `[
+		{"id": "s-001", "title": "Story one", "description": "First", "acceptance_criteria": "Done", "complexity": 2, "depends_on": [], "owned_files": ["main.go"], "wave_hint": "parallel"},
+		{"id": "s-002", "title": "Story two", "description": "Second", "acceptance_criteria": "Done", "complexity": 3, "depends_on": [], "owned_files": ["main.go"], "wave_hint": "parallel"}
+	]`
+
+	client := llm.NewReplayClient(llm.CompletionResponse{
+		Content: overlapJSON,
+		Model:   "test-model",
+	})
+
+	es, ps := newTestStores(t)
+	cfg := config.DefaultConfig()
+	planner := NewPlanner(client, cfg, es, ps)
+
+	_, err := planner.Plan(context.Background(), "req-overlap", "Build something", dir)
+	if err == nil {
+		t.Fatal("expected Plan to return error for overlapping owned_files, got nil")
+	}
+
+	// Error should mention the conflicting file
+	if !strings.Contains(err.Error(), "main.go") {
+		t.Errorf("error %q should mention 'main.go'", err.Error())
+	}
+}
+
+// --- Test 16: WavesRespectDependencies ---
+// Prove: stories with dependencies are dispatched in correct wave order.
+
+func TestWiring_WavesRespectDependencies(t *testing.T) {
+	es, ps := newTestStores(t)
+
+	// Emit STORY_CREATED events for 3 stories with a dependency chain:
+	// s-001 (no deps), s-002 (depends on s-001), s-003 (depends on s-002)
+	stories := []PlannedStory{
+		{ID: "s-001", Title: "Foundation", Complexity: 2, DependsOn: []string{}, OwnedFiles: []string{"a.go"}, WaveHint: "parallel"},
+		{ID: "s-002", Title: "Core logic", Complexity: 3, DependsOn: []string{"s-001"}, OwnedFiles: []string{"b.go"}, WaveHint: "parallel"},
+		{ID: "s-003", Title: "Tests", Complexity: 2, DependsOn: []string{"s-002"}, OwnedFiles: []string{"c.go"}, WaveHint: "parallel"},
+	}
+
+	for _, s := range stories {
+		evt := state.NewEvent(state.EventStoryCreated, "tech-lead", s.ID, map[string]any{
+			"id": s.ID, "req_id": "req-wave", "title": s.Title, "complexity": s.Complexity,
+		})
+		if err := es.Append(evt); err != nil {
+			t.Fatalf("append event: %v", err)
+		}
+		if err := ps.Project(evt); err != nil {
+			t.Fatalf("project event: %v", err)
+		}
+	}
+
+	// Build DAG from these dependencies
+	dag := graph.New()
+	for _, s := range stories {
+		dag.AddNode(s.ID)
+	}
+	for _, s := range stories {
+		for _, dep := range s.DependsOn {
+			dag.AddEdge(s.ID, dep)
+		}
+	}
+
+	cfg := config.DefaultConfig()
+	dispatcher := NewDispatcher(cfg, es, ps)
+
+	completed := make(map[string]bool)
+
+	// Wave 1: only s-001 should be dispatched (no unmet deps)
+	assignments, err := dispatcher.DispatchWave(dag, completed, "req-wave", stories, 1)
+	if err != nil {
+		t.Fatalf("DispatchWave 1: %v", err)
+	}
+	if len(assignments) != 1 {
+		t.Fatalf("wave 1: expected 1 assignment, got %d", len(assignments))
+	}
+	if assignments[0].StoryID != "s-001" {
+		t.Errorf("wave 1: expected s-001, got %s", assignments[0].StoryID)
+	}
+
+	// Mark s-001 complete and dispatch wave 2
+	completed["s-001"] = true
+	assignments, err = dispatcher.DispatchWave(dag, completed, "req-wave", stories, 2)
+	if err != nil {
+		t.Fatalf("DispatchWave 2: %v", err)
+	}
+	if len(assignments) != 1 {
+		t.Fatalf("wave 2: expected 1 assignment, got %d", len(assignments))
+	}
+	if assignments[0].StoryID != "s-002" {
+		t.Errorf("wave 2: expected s-002, got %s", assignments[0].StoryID)
+	}
+
+	// Mark s-002 complete and dispatch wave 3
+	completed["s-002"] = true
+	assignments, err = dispatcher.DispatchWave(dag, completed, "req-wave", stories, 3)
+	if err != nil {
+		t.Fatalf("DispatchWave 3: %v", err)
+	}
+	if len(assignments) != 1 {
+		t.Fatalf("wave 3: expected 1 assignment, got %d", len(assignments))
+	}
+	if assignments[0].StoryID != "s-003" {
+		t.Errorf("wave 3: expected s-003, got %s", assignments[0].StoryID)
+	}
+}
+
+// --- Test 17: ManagerDiagnosesFailure ---
+// Prove: DiagnosticContext -> Manager LLM -> ManagerAction with corrective action.
+
+func TestWiring_ManagerDiagnosesFailure(t *testing.T) {
+	es, ps := newTestStores(t)
+
+	// ReplayClient with a manager response (text path, non-tool provider)
+	managerJSON := `{
+		"diagnosis": "Test runner not installed in worktree",
+		"category": "environment",
+		"action": "retry",
+		"retry_config": {"target_role": "junior", "reset_tier": 0, "worktree_reset": true, "env_fixes": ["npm install"]}
+	}`
+	client := llm.NewReplayClient(llm.CompletionResponse{
+		Content: managerJSON,
+		Model:   "test-model",
+	})
+
+	manager := NewManager(client, "ollama", "test-model", 8000, es, ps)
+
+	dc := DiagnosticContext{
+		StoryID:          "s-mgr-001",
+		StoryTitle:       "Add login",
+		StoryDescription: "Implement login endpoint",
+		Complexity:       3,
+	}
+
+	action, err := manager.Diagnose(context.Background(), dc)
+	if err != nil {
+		t.Fatalf("Diagnose: %v", err)
+	}
+
+	if action.Action != "retry" {
+		t.Errorf("action = %q, want 'retry'", action.Action)
+	}
+	if action.Category == "" {
+		t.Error("expected non-empty Category")
+	}
+	if action.Diagnosis == "" {
+		t.Error("expected non-empty Diagnosis")
+	}
+}
+
+// --- Test 18: SupervisorDetectsDrift ---
+// Prove: Supervisor review -> SupervisorResult with drift detection.
+
+func TestWiring_SupervisorDetectsDrift(t *testing.T) {
+	es, _ := newTestStores(t)
+
+	// ReplayClient with supervisor response detecting drift (text path)
+	supervisorJSON := `{"on_track": false, "concerns": ["story stuck", "scope creep detected"], "reprioritize": []}`
+	client := llm.NewReplayClient(llm.CompletionResponse{
+		Content: supervisorJSON,
+		Model:   "test-model",
+	})
+
+	supervisor := NewSupervisor(client, "ollama", "test-model", 4000, es)
+
+	stories := []PlannedStory{
+		{ID: "s-sup-001", Title: "Auth", Complexity: 3},
+		{ID: "s-sup-002", Title: "Dashboard", Complexity: 5},
+	}
+	statuses := map[string]string{
+		"s-sup-001": "in_progress",
+		"s-sup-002": "draft",
+	}
+
+	result, err := supervisor.Review(context.Background(), "Build a dashboard app", stories, statuses)
+	if err != nil {
+		t.Fatalf("Supervisor Review: %v", err)
+	}
+
+	if result.OnTrack {
+		t.Error("expected OnTrack == false")
+	}
+	if len(result.Concerns) == 0 {
+		t.Error("expected len(Concerns) > 0")
+	}
+
+	// Verify SUPERVISOR_DRIFT_DETECTED event was emitted
+	driftEvents, err := es.List(state.EventFilter{Type: state.EventSupervisorDriftDetected})
+	if err != nil {
+		t.Fatalf("list drift events: %v", err)
+	}
+	if len(driftEvents) != 1 {
+		t.Errorf("expected 1 SUPERVISOR_DRIFT_DETECTED event, got %d", len(driftEvents))
 	}
 }
