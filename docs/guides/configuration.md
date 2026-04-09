@@ -29,42 +29,57 @@ Maps each agent role to a specific LLM provider and model.
 ```yaml
 models:
   tech_lead:
-    provider: ollama                     # ollama, anthropic, or openai
-    model: deepseek-coder-v2:latest      # Model name (Ollama tag or API model ID)
+    provider: ollama                     # ollama, google+ollama, google, anthropic, or openai
+    model: gemma4:26b                    # Model name (Ollama tag or API model ID)
+    google_model: gemma-4-26b-a4b-it     # Google AI model ID (used by google+ollama and google providers)
     max_tokens: 16000                    # Max output tokens
   senior:
     provider: ollama
-    model: qwen2.5-coder:32b
+    model: gemma4:26b
     max_tokens: 8000
   intermediate:
     provider: ollama
-    model: qwen2.5-coder:14b
+    model: gemma4:26b
     max_tokens: 4000
   junior:
     provider: ollama
-    model: qwen2.5-coder:7b
+    model: gemma4:26b
     max_tokens: 4000
   qa:
     provider: ollama
-    model: qwen2.5-coder:14b
+    model: gemma4:26b
     max_tokens: 8000
   supervisor:
     provider: ollama
-    model: deepseek-coder-v2:latest
+    model: gemma4:26b
     max_tokens: 4000
+  fallback_cooldown_s: 60                # Seconds to wait before retrying cloud provider after quota error
 ```
 
 **Providers:**
 
-| Provider | Endpoint | Auth | Offline? |
-|----------|----------|------|----------|
-| `ollama` | `http://localhost:11434` | None | Yes |
-| `anthropic` | `https://api.anthropic.com` | `ANTHROPIC_API_KEY` | No |
-| `openai` | `https://api.openai.com` | `OPENAI_API_KEY` | No |
+| Provider | Endpoint | Auth | Offline? | Notes |
+|----------|----------|------|----------|-------|
+| `ollama` | `http://localhost:11434` | None | Yes | Default, fully offline |
+| `google+ollama` | Google AI + Ollama fallback | `GOOGLE_AI_API_KEY` | Partial | Uses Google AI first, falls back to Ollama on 429 |
+| `google` | `https://generativelanguage.googleapis.com` | `GOOGLE_AI_API_KEY` | No | Google AI only (no fallback) |
+| `anthropic` | `https://api.anthropic.com` | `ANTHROPIC_API_KEY` | No | |
+| `openai` | `https://api.openai.com` | `OPENAI_API_KEY` | No | |
 
-> **Authentication note:** These API keys are used for NXD's **internal operations** only — planning, code review, and QA. They are **not** passed to spawned coding agents. If you use Claude Code as a runtime, it authenticates via its own OAuth session (your Max/Pro subscription via `claude login`), so spawned agents incur no additional API cost. The API key is only consumed by the lightweight internal LLM calls (a few per story per stage).
+**Google AI setup (optional):**
 
-You can mix providers — for example, use Ollama for juniors and Anthropic for the Tech Lead.
+```bash
+# Get a free API key at https://ai.google.dev
+export GOOGLE_AI_API_KEY=your-key-here
+```
+
+When using `google+ollama`, NXD sends requests to Google AI first. If the free tier quota is exhausted (HTTP 429), it automatically falls back to the local Ollama model and retries Google AI after `fallback_cooldown_s` seconds. If `GOOGLE_AI_API_KEY` is not set, the `google+ollama` provider behaves identically to `ollama`.
+
+The `google_model` field specifies the model name for Google AI API calls (e.g., `gemma-4-26b-a4b-it`). This is separate from the `model` field, which is the Ollama tag.
+
+> **Authentication note:** These API keys are used for NXD's **internal operations** only -- planning, code review, and QA. They are **not** passed to spawned coding agents. If you use Claude Code as a runtime, it authenticates via its own OAuth session (your Max/Pro subscription via `claude login`), so spawned agents incur no additional API cost. The API key is only consumed by the lightweight internal LLM calls (a few per story per stage).
+
+You can mix providers -- for example, use Ollama for juniors and Google AI for the Tech Lead.
 
 ### routing
 
@@ -128,6 +143,17 @@ cleanup:
 2. **Deferred:** Worktree kept until `nxd gc` runs
 3. **Branch GC:** `nxd gc` deletes branches older than `branch_retention_days`
 
+### updates
+
+Controls automatic model update checks.
+
+```yaml
+update_check: true                # Enable/disable model update checks on startup
+update_interval_hours: 168        # Hours between checks (default: 168 = weekly)
+```
+
+When enabled, NXD runs `nxd models check` on startup to see if newer versions of your configured models are available in Ollama. Disable with `update_check: false` for fully offline environments.
+
 ### merge
 
 Controls how completed stories are integrated.
@@ -155,18 +181,29 @@ In `local` mode, stories still emit `STORY_PR_CREATED` and `STORY_MERGED` events
 
 ### runtimes
 
-Defines external CLI tools that agents use to write code. NXD spawns each in a tmux session.
+Defines CLI tools that agents use to write code. NXD spawns each in a tmux session.
 
 ```yaml
 runtimes:
-  aider:                                    # Runtime name (referenced internally)
-    command: aider                          # CLI executable
-    args: ["--model", "ollama_chat/deepseek-coder-v2:latest", "--no-auto-commits"]
-    models: ["deepseek-coder-v2", "qwen2.5-coder"]   # Models this runtime supports
+  gemma:                                       # Native runtime (built into NXD)
+    native: true                               # No external CLI dependency
+    models: ["gemma4"]                         # Auto-selected for Gemma 4 models
+    max_iterations: 10                         # Max edit-test cycles per story
+    command_allowlist:                          # Shell commands the native runtime may execute
+      - "go build ./..."
+      - "go test ./..."
+      - "npm test"
+      - "npm run build"
+  aider:                                       # External runtime
+    command: aider                             # CLI executable
+    args: ["--model", "ollama_chat/gemma4:26b", "--no-auto-commits"]
+    models: ["gemma4", "deepseek-coder-v2", "qwen2.5-coder"]   # Models this runtime supports
     detection:
-      idle_pattern: "^>"                    # Regex: agent is idle/ready
-      permission_pattern: "\\[Y/n\\]"       # Regex: agent is asking for permission
+      idle_pattern: "^>"                       # Regex: agent is idle/ready
+      permission_pattern: "\\[Y/n\\]"          # Regex: agent is asking for permission
 ```
+
+**Native runtime (`gemma`):** Built into NXD, requires no external dependencies. Auto-selects for Gemma 4 models. Uses function calling for structured code edits. The `command_allowlist` restricts which shell commands the runtime can execute for safety. The `max_iterations` field limits edit-test cycles to prevent runaway loops.
 
 **Detection patterns** are compiled as Go regexps and matched against the last 30 lines of tmux pane output. The Watchdog uses these to determine agent status.
 
@@ -175,16 +212,43 @@ Just add another block to `runtimes:` with the command, args, and detection patt
 
 ## Example Configurations
 
-### Minimal (8GB RAM laptop)
+### Gemma 4 Default (24GB+ RAM, recommended)
 
 ```yaml
 models:
-  tech_lead: { provider: ollama, model: qwen2.5-coder:7b, max_tokens: 4000 }
-  senior:    { provider: ollama, model: qwen2.5-coder:7b, max_tokens: 4000 }
-  intermediate: { provider: ollama, model: qwen2.5-coder:7b, max_tokens: 4000 }
-  junior:    { provider: ollama, model: qwen2.5-coder:7b, max_tokens: 4000 }
-  qa:        { provider: ollama, model: qwen2.5-coder:7b, max_tokens: 4000 }
-  supervisor: { provider: ollama, model: qwen2.5-coder:7b, max_tokens: 4000 }
+  tech_lead: { provider: ollama, model: gemma4:26b, max_tokens: 16000 }
+  senior:    { provider: ollama, model: gemma4:26b, max_tokens: 8000 }
+  intermediate: { provider: ollama, model: gemma4:26b, max_tokens: 4000 }
+  junior:    { provider: ollama, model: gemma4:26b, max_tokens: 4000 }
+  qa:        { provider: ollama, model: gemma4:26b, max_tokens: 8000 }
+  supervisor: { provider: ollama, model: gemma4:26b, max_tokens: 4000 }
+update_check: true                # Check for model updates on startup
+update_interval_hours: 168        # Check weekly (168 hours)
+```
+
+### Minimal (16GB RAM laptop)
+
+```yaml
+models:
+  tech_lead: { provider: ollama, model: gemma4:e4b, max_tokens: 4000 }
+  senior:    { provider: ollama, model: gemma4:e4b, max_tokens: 4000 }
+  intermediate: { provider: ollama, model: gemma4:e4b, max_tokens: 4000 }
+  junior:    { provider: ollama, model: gemma4:e4b, max_tokens: 4000 }
+  qa:        { provider: ollama, model: gemma4:e4b, max_tokens: 4000 }
+  supervisor: { provider: ollama, model: gemma4:e4b, max_tokens: 4000 }
+```
+
+### Google AI + Ollama Fallback (free tier)
+
+```yaml
+models:
+  tech_lead: { provider: google+ollama, model: gemma4:26b, google_model: gemma-4-26b-a4b-it, max_tokens: 16000 }
+  senior:    { provider: google+ollama, model: gemma4:26b, google_model: gemma-4-26b-a4b-it, max_tokens: 8000 }
+  intermediate: { provider: ollama, model: gemma4:26b, max_tokens: 4000 }
+  junior:    { provider: ollama, model: gemma4:26b, max_tokens: 4000 }
+  qa:        { provider: ollama, model: gemma4:26b, max_tokens: 8000 }
+  supervisor: { provider: google+ollama, model: gemma4:26b, google_model: gemma-4-26b-a4b-it, max_tokens: 4000 }
+  fallback_cooldown_s: 60
 ```
 
 ### Hybrid (Offline workers, Cloud planning)
@@ -193,9 +257,9 @@ models:
 models:
   tech_lead: { provider: anthropic, model: claude-sonnet-4-20250514, max_tokens: 16000 }
   senior:    { provider: anthropic, model: claude-sonnet-4-20250514, max_tokens: 8000 }
-  intermediate: { provider: ollama, model: qwen2.5-coder:14b, max_tokens: 4000 }
-  junior:    { provider: ollama, model: qwen2.5-coder:7b, max_tokens: 4000 }
-  qa:        { provider: ollama, model: qwen2.5-coder:14b, max_tokens: 8000 }
+  intermediate: { provider: ollama, model: gemma4:26b, max_tokens: 4000 }
+  junior:    { provider: ollama, model: gemma4:26b, max_tokens: 4000 }
+  qa:        { provider: ollama, model: gemma4:26b, max_tokens: 8000 }
   supervisor: { provider: anthropic, model: claude-sonnet-4-20250514, max_tokens: 4000 }
 merge:
   mode: github

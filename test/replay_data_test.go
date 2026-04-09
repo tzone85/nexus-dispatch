@@ -95,6 +95,48 @@ func reviewerToolCallResponse() llm.CompletionResponse {
 	}
 }
 
+// --- Single-story planner responses ---
+
+func singleStoryPlannerResponse() llm.CompletionResponse {
+	stories := `[
+		{
+			"id": "s-001",
+			"title": "Implement basic key-value store",
+			"description": "Create a simple in-memory key-value store with Get and Set operations",
+			"acceptance_criteria": "Get and Set work correctly with string keys and values",
+			"complexity": 2,
+			"depends_on": [],
+			"owned_files": ["store/store.go"]
+		}
+	]`
+	return llm.CompletionResponse{Content: stories, Model: "gemma4:26b"}
+}
+
+// twoWavePlannerResponse returns a planner response with 2 stories: wave 1 (s-001) and wave 2 (s-002).
+func twoWavePlannerResponse() llm.CompletionResponse {
+	stories := `[
+		{
+			"id": "s-001",
+			"title": "Foundation types and interfaces",
+			"description": "Define core types and interfaces for the system",
+			"acceptance_criteria": "Types compile and are usable by downstream stories",
+			"complexity": 2,
+			"depends_on": [],
+			"owned_files": ["types.go"]
+		},
+		{
+			"id": "s-002",
+			"title": "Storage implementation",
+			"description": "Implement file-based storage using foundation types",
+			"acceptance_criteria": "Storage reads and writes correctly",
+			"complexity": 3,
+			"depends_on": ["s-001"],
+			"owned_files": ["storage.go"]
+		}
+	]`
+	return llm.CompletionResponse{Content: stories, Model: "gemma4:26b"}
+}
+
 // --- Diamond dependency responses ---
 
 func diamondDepsPlannerResponse() llm.CompletionResponse {
