@@ -40,6 +40,7 @@ func DefaultConfig() Config {
 			QA:           gemma4Default(8000),
 			Supervisor:   gemma4Default(4000),
 			Manager:      gemma4Default(8000),
+			Investigator: gemma4Default(16000),
 		},
 		Routing: RoutingConfig{
 			JuniorMaxComplexity:           3,

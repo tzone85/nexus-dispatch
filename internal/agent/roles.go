@@ -13,8 +13,9 @@ const (
 	RoleIntermediate Role = "intermediate"
 	RoleJunior       Role = "junior"
 	RoleQA           Role = "qa"
-	RoleSupervisor   Role = "supervisor"
-	RoleManager      Role = "manager"
+	RoleSupervisor    Role = "supervisor"
+	RoleManager       Role = "manager"
+	RoleInvestigator  Role = "investigator"
 )
 
 // String returns the role as a plain string.
@@ -56,6 +57,8 @@ func (r Role) ExecutionMode() ExecutionMode {
 		return ExecCLI
 	case RoleQA:
 		return ExecHybrid
+	case RoleInvestigator:
+		return ExecHybrid
 	}
 	return ExecAPI
 }
@@ -78,6 +81,8 @@ func (r Role) ModelConfig(models config.ModelsConfig) config.ModelConfig {
 		return models.Supervisor
 	case RoleManager:
 		return models.Manager
+	case RoleInvestigator:
+		return models.Investigator
 	}
 	return models.Junior
 }
