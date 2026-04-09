@@ -121,6 +121,11 @@ func NewSQLiteStore(dsn string) (*SQLiteStore, error) {
 		db.Exec(m) // errors ignored for idempotency
 	}
 
+	// Migrate: add classification columns to requirements
+	db.Exec(`ALTER TABLE requirements ADD COLUMN req_type TEXT NOT NULL DEFAULT ''`)
+	db.Exec(`ALTER TABLE requirements ADD COLUMN is_existing BOOLEAN NOT NULL DEFAULT 0`)
+	db.Exec(`ALTER TABLE requirements ADD COLUMN investigation_report_json TEXT NOT NULL DEFAULT ''`)
+
 	return &SQLiteStore{db: db}, nil
 }
 
@@ -147,6 +152,23 @@ func (s *SQLiteStore) Project(evt Event) error {
 		return s.updateReqStatus(payload, "planned")
 	case EventReqCompleted:
 		return s.updateReqStatus(payload, "completed")
+
+	case EventReqClassified:
+		reqID, _ := payload["req_id"].(string)
+		reqType, _ := payload["req_type"].(string)
+		isExisting, _ := payload["is_existing"].(bool)
+		isExistingInt := 0
+		if isExisting {
+			isExistingInt = 1
+		}
+		_, err := s.db.Exec(`UPDATE requirements SET req_type = ?, is_existing = ? WHERE id = ?`, reqType, isExistingInt, reqID)
+		return err
+
+	case EventInvestigationCompleted:
+		reqID, _ := payload["req_id"].(string)
+		reportJSON, _ := payload["report"].(string)
+		_, err := s.db.Exec(`UPDATE requirements SET investigation_report_json = ? WHERE id = ?`, reportJSON, reqID)
+		return err
 
 	case EventStoryCreated:
 		return s.projectStoryCreated(payload)

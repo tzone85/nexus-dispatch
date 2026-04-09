@@ -55,6 +55,7 @@ type ModelsConfig struct {
 	QA           ModelConfig `yaml:"qa"`
 	Supervisor   ModelConfig `yaml:"supervisor"`
 	Manager      ModelConfig `yaml:"manager"`
+	Investigator ModelConfig `yaml:"investigator"`
 }
 
 // All returns every role→ModelConfig pair for iteration.
@@ -63,6 +64,7 @@ func (m ModelsConfig) All() map[string]ModelConfig {
 		"tech_lead": m.TechLead, "senior": m.Senior,
 		"intermediate": m.Intermediate, "junior": m.Junior,
 		"qa": m.QA, "supervisor": m.Supervisor, "manager": m.Manager,
+		"investigator": m.Investigator,
 	}
 }
 

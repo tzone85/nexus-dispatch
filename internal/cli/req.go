@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -14,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/tzone85/nexus-dispatch/internal/engine"
 	"github.com/tzone85/nexus-dispatch/internal/llm"
+	"github.com/tzone85/nexus-dispatch/internal/state"
 )
 
 func newReqCmd() *cobra.Command {
@@ -76,7 +78,65 @@ func runReq(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(out, "Planning requirement: %s\n", requirement)
 	fmt.Fprintf(out, "Requirement ID: %s\n\n", reqID)
 
-	result, err := planner.Plan(ctx, reqID, requirement, repoPath)
+	// Stage 1: Classify repo
+	repoProfile := engine.ClassifyRepo(repoPath)
+
+	// Stage 2: Classify requirement (only for existing repos)
+	var classification engine.RequirementClassification
+	if repoProfile.IsExisting {
+		classification, _ = engine.ClassifyRequirement(ctx, client, requirement, repoProfile)
+		fmt.Fprintf(out, "Detected: %s codebase, requirement type: %s (confidence: %.0f%%)\n",
+			repoProfile.Language, classification.Type, classification.Confidence*100)
+	} else {
+		classification = engine.RequirementClassification{Type: "feature", Confidence: 1.0}
+		fmt.Fprintf(out, "Detected: greenfield project (%s)\n", repoProfile.Language)
+	}
+
+	// Stage 3: Investigate (only for existing repos)
+	var report *engine.InvestigationReport
+	if repoProfile.IsExisting {
+		fmt.Fprintf(out, "Running codebase investigation...\n")
+		investigatorModel := s.Config.Models.Investigator
+		inv := engine.NewInvestigator(client, investigatorModel.Model, investigatorModel.MaxTokens)
+		report, err = inv.Investigate(ctx, repoPath)
+		if err != nil {
+			fmt.Fprintf(out, "Warning: investigation failed: %v (continuing without report)\n", err)
+			report = nil
+		} else {
+			fmt.Fprintf(out, "Investigation complete: %d modules, %d smells, %d risk areas\n",
+				len(report.Modules), len(report.CodeSmells), len(report.RiskAreas))
+		}
+	}
+
+	// Build requirement context
+	reqCtx := engine.NewRequirementContext(repoProfile, classification)
+	if report != nil {
+		reqCtx.Report = report
+	}
+
+	// Emit classification event
+	classPayload := map[string]any{
+		"req_id":      reqID,
+		"req_type":    classification.Type,
+		"is_existing": repoProfile.IsExisting,
+		"confidence":  classification.Confidence,
+	}
+	classEvt := state.NewEvent(state.EventReqClassified, "", "", classPayload)
+	s.Events.Append(classEvt)
+	s.Proj.Project(classEvt)
+
+	// Emit investigation event if report exists
+	if report != nil {
+		reportJSON, _ := json.Marshal(report)
+		invEvt := state.NewEvent(state.EventInvestigationCompleted, "", "", map[string]any{
+			"req_id": reqID,
+			"report": string(reportJSON),
+		})
+		s.Events.Append(invEvt)
+		s.Proj.Project(invEvt)
+	}
+
+	result, err := planner.PlanWithContext(ctx, reqID, requirement, repoPath, reqCtx)
 	if err != nil {
 		return fmt.Errorf("planning failed: %w", err)
 	}

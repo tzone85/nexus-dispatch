@@ -42,6 +42,7 @@ type Planner struct {
 	config     config.Config
 	eventStore state.EventStore
 	projStore  state.ProjectionStore
+	reqCtx     *RequirementContext
 }
 
 // NewPlanner creates a Planner wired to the given LLM client, configuration,
@@ -53,6 +54,14 @@ func NewPlanner(client llm.Client, cfg config.Config, es state.EventStore, ps st
 		eventStore: es,
 		projStore:  ps,
 	}
+}
+
+// PlanWithContext sets the requirement context on the planner and delegates
+// to Plan. The context supplies classification flags and an optional
+// investigation report that are injected into the Tech Lead prompt.
+func (p *Planner) PlanWithContext(ctx context.Context, reqID, requirement, repoPath string, reqCtx RequirementContext) (PlanResult, error) {
+	p.reqCtx = &reqCtx
+	return p.Plan(ctx, reqID, requirement, repoPath)
 }
 
 // Plan takes a requirement and produces decomposed stories with a dependency
@@ -78,6 +87,19 @@ func (p *Planner) Plan(ctx context.Context, reqID, requirement, repoPath string)
 		RepoPath:  repoPath,
 		TechStack: fmt.Sprintf("%s (%s)", stack.Language, stack.BuildTool),
 	}
+
+	// Inject classification flags and investigation report from requirement context
+	if p.reqCtx != nil {
+		promptCtx.IsExistingCodebase = p.reqCtx.IsExisting
+		promptCtx.IsBugFix = p.reqCtx.IsBugFix
+		promptCtx.IsRefactor = p.reqCtx.IsRefactor
+		promptCtx.IsInfrastructure = p.reqCtx.IsInfra
+		if p.reqCtx.Report != nil {
+			reportJSON, _ := json.Marshal(p.reqCtx.Report)
+			promptCtx.InvestigationReport = fmt.Sprintf("## Codebase Investigation Report\n\n```json\n%s\n```", string(reportJSON))
+		}
+	}
+
 	systemPrompt := agent.SystemPrompt(agent.RoleTechLead, promptCtx)
 
 	userMessage := fmt.Sprintf(`Decompose this requirement into atomic, implementable stories:
