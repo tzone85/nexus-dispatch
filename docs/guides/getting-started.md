@@ -40,28 +40,33 @@ This runs in the background on `http://localhost:11434`. Keep this terminal open
 
 ### 3. Pull a Model
 
-You only need **one model** to run the full NXD pipeline. Pick based on your hardware:
+You only need **one model** to run the full NXD pipeline. The default is **Gemma 4 26B MoE** -- a 26B Mixture-of-Experts model with only 3.8B active parameters per token, giving strong coding performance (77.1% LiveCodeBench) on consumer hardware.
 
 ```bash
-# Minimal (~4.5GB) — 16GB RAM / 8GB VRAM
-ollama pull qwen2.5-coder:7b
-
-# Recommended (~9GB) — 32GB RAM / 16GB VRAM
-ollama pull qwen2.5-coder:14b
+# Recommended (~18GB download) — 24GB+ RAM
+ollama pull gemma4:26b
 ```
 
 Set all agent roles to the same model in `nxd.yaml` and the complete pipeline (planning, execution, review, QA, merge) works end to end.
 
-**Want higher quality?** You can optionally pull dedicated models per agent tier for better output from planning, review, and complex tasks:
+**Smaller hardware?** Pull a lighter Gemma 4 variant:
 
 ```bash
-ollama pull deepseek-coder-v2:latest  # Tech Lead + Supervisor (~9GB)
-ollama pull qwen2.5-coder:32b        # Senior (~20GB, needs 24GB+ VRAM)
-ollama pull qwen2.5-coder:14b        # Intermediate + QA (~9GB)
-ollama pull qwen2.5-coder:7b         # Junior (~4.5GB)
+# 16GB RAM — good function calling, lower code quality
+ollama pull gemma4:e4b
+
+# Minimal devices (4GB RAM)
+ollama pull gemma4:e2b
 ```
 
-See [Model Selection](model-selection.md) for detailed recommendations per role and hardware tier.
+**Want maximum quality?** Pull the dense 31B model for leadership roles:
+
+```bash
+ollama pull gemma4:31b   # Dense 31B (~20GB, needs 64GB+ RAM)
+ollama pull gemma4:26b   # MoE 26B for workers
+```
+
+See [Gemma 4 Guide](gemma-4-guide.md) for detailed setup and hardware tuning, or [Model Selection](model-selection.md) for all model recommendations per role and hardware tier.
 
 ### 4. Install tmux
 
@@ -173,7 +178,7 @@ nxd req "Add user authentication with JWT tokens, login/register endpoints, and 
 
 NXD will:
 1. Emit a `REQ_SUBMITTED` event
-2. Call the Tech Lead model (DeepSeek Coder V2) to decompose the requirement
+2. Call the Tech Lead model (Gemma 4 26B) to decompose the requirement
 3. Create stories with Fibonacci complexity scores
 4. Build a dependency graph
 5. Print the plan
@@ -182,7 +187,7 @@ Example output:
 
 ```
 Requirement submitted: req-01HZ...
-Planning with Tech Lead (deepseek-coder-v2:latest)...
+Planning with Tech Lead (gemma4:26b)...
 
 Stories created:
   [1] story-01 | Add User model with password hashing      | Complexity: 2 | Deps: none
@@ -267,9 +272,24 @@ vhs docs/demo.tape
 
 This produces `docs/demo.gif` showing the full `nxd init` through `nxd dashboard` workflow.
 
+## Alternative Models (Legacy)
+
+If you prefer DeepSeek or Qwen models instead of Gemma 4, they still work with NXD:
+
+```bash
+ollama pull deepseek-coder-v2:latest  # Tech Lead + Supervisor (~9GB)
+ollama pull qwen2.5-coder:32b        # Senior (~20GB, needs 24GB+ VRAM)
+ollama pull qwen2.5-coder:14b        # Intermediate + QA (~9GB)
+ollama pull qwen2.5-coder:7b         # Junior (~4.5GB)
+```
+
+These models do not support native function calling, so NXD falls back to text-based JSON parsing. See [Model Selection](model-selection.md) for configuration details.
+
 ## Next Steps
 
+- [Gemma 4 Guide](./gemma-4-guide.md) — detailed Gemma 4 setup, hardware tuning, and features
 - [Configuration Guide](./configuration.md) — customize models, routing, runtimes
 - [Architecture Deep Dive](./architecture.md) — understand event sourcing, agent hierarchy
 - [Troubleshooting](./troubleshooting.md) — common issues and fixes
 - [Model Selection Guide](./model-selection.md) — pick the right models for your hardware
+- [Migration Guide](./migration-from-v0.md) — upgrading from DeepSeek/Qwen configurations

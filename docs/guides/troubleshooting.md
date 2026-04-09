@@ -33,11 +33,116 @@ sudo systemctl start ollama
 # Check what models you have
 ollama list
 
-# Pull the missing model
-ollama pull deepseek-coder-v2:latest
+# Pull the default model
+ollama pull gemma4:26b
 ```
 
 **Tip:** Model names in `nxd.yaml` must exactly match Ollama tags. Use `ollama list` to see exact names.
+
+### Gemma 4 model not loading
+
+**Cause:** Ollama version is too old. Gemma 4 requires Ollama >= 0.20.
+
+**Fix:**
+```bash
+# Check your Ollama version
+ollama --version
+
+# Update Ollama
+# macOS
+brew upgrade ollama
+
+# Linux
+curl -fsSL https://ollama.com/install.sh | sh
+```
+
+If Ollama reports the correct version but the model still fails to load, try removing and re-pulling:
+```bash
+ollama rm gemma4:26b
+ollama pull gemma4:26b
+```
+
+### Google AI 429 errors
+
+**Cause:** The Google AI free tier quota is exhausted. This is normal and expected.
+
+**Symptoms:**
+- Log messages: `Google AI rate limited, falling back to Ollama`
+- Slightly slower inference (local vs cloud)
+
+**Fix:**
+This is handled automatically. When using the `google+ollama` provider, NXD falls back to local Ollama on HTTP 429 and retries Google AI after `fallback_cooldown_s` (default: 60 seconds).
+
+If you see persistent 429 errors:
+1. Verify your API key is valid: `echo $GOOGLE_AI_API_KEY`
+2. Check free tier limits at [ai.google.dev](https://ai.google.dev)
+3. Increase cooldown: set `fallback_cooldown_s: 120` in `nxd.yaml`
+4. Switch to `ollama` provider to skip cloud entirely
+
+### Function calling unexpected results
+
+**Cause:** The model does not support native function calling, or is returning malformed tool calls.
+
+**Symptoms:**
+- JSON parse errors in planning output
+- Stories with missing fields
+- Agent actions not matching expected tool calls
+
+**Fix:**
+1. Verify you are using a Gemma 4 model (native function calling support):
+   ```bash
+   ollama show gemma4:26b | head -5
+   ```
+
+2. Ensure Ollama >= 0.20 (function calling support):
+   ```bash
+   ollama --version
+   ```
+
+3. If using a non-Gemma model, NXD falls back to text-based JSON parsing automatically. This is less reliable -- consider switching to Gemma 4.
+
+4. For persistent issues, increase `max_tokens` for the affected role to give the model more room for structured output.
+
+### Native runtime command blocked
+
+**Cause:** The native Gemma runtime tried to execute a shell command not in the `command_allowlist`.
+
+**Symptoms:**
+- Log messages: `command blocked by allowlist`
+- Agent appears stuck after attempting a build/test step
+
+**Fix:**
+Add the needed command to the `command_allowlist` in `nxd.yaml`:
+```yaml
+runtimes:
+  gemma:
+    native: true
+    command_allowlist:
+      - "go build ./..."
+      - "go test ./..."
+      - "npm test"
+      - "npm run build"
+      - "make test"         # Add your project's commands
+      - "cargo test"
+```
+
+Only add commands you trust -- this allowlist is a safety boundary preventing arbitrary shell execution.
+
+### Model update check
+
+**Cause:** NXD checks for newer model versions on startup (when `update_check: true`).
+
+**Symptoms:**
+- Startup message: `Newer version of gemma4:26b available`
+- Slow startup on metered connections
+
+**Fix:**
+- To update: `ollama pull gemma4:26b`
+- To check manually: `nxd models check`
+- To disable automatic checks:
+  ```yaml
+  update_check: false
+  ```
 
 ### Planning produces poor or malformed output
 
@@ -54,7 +159,7 @@ ollama pull deepseek-coder-v2:latest
    ```yaml
    tech_lead:
      provider: ollama
-     model: deepseek-coder-v2:latest  # 16B is minimum for good planning
+     model: gemma4:26b    # 26B MoE recommended for good planning
      max_tokens: 16000
    ```
 
@@ -165,7 +270,7 @@ tmux new-session -d -s test && tmux kill-session -t test
 **Fix:**
 1. Use smaller models:
    ```yaml
-   tech_lead: { provider: ollama, model: qwen2.5-coder:7b }
+   tech_lead: { provider: ollama, model: gemma4:e4b }
    ```
 
 2. Ensure only one model is loaded at a time (Ollama default behavior)
