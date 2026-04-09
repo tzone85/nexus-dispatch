@@ -25,10 +25,12 @@ func DefaultConfig() Config {
 	return Config{
 		Version: "1.0",
 		Workspace: WorkspaceConfig{
-			StateDir:         "~/.nxd",
-			Backend:          "sqlite",
-			LogLevel:         "info",
-			LogRetentionDays: 30,
+			StateDir:            "~/.nxd",
+			Backend:             "sqlite",
+			LogLevel:            "info",
+			LogRetentionDays:    30,
+			UpdateCheck:         true,
+			UpdateIntervalHours: 48,
 		},
 		Models: ModelsConfig{
 			TechLead:     gemma4Default(16000),
