@@ -19,13 +19,51 @@ type PromptContext struct {
 	BuildCommand       string
 	TestCommand        string
 	ReviewFeedback     string
+	IsExistingCodebase bool
+	IsBugFix           bool
+	IsRefactor         bool
+	IsInfrastructure   bool
+	InvestigationReport string // formatted markdown, injected by planner
 }
 
 // SystemPrompt renders the system prompt for the given role, substituting
-// placeholders from the provided context.
+// placeholders from the provided context. It conditionally appends diagnostic
+// playbooks based on the context flags (existing codebase, bug fix, etc.).
 func SystemPrompt(role Role, ctx PromptContext) string {
 	tmpl := promptTemplates[role]
-	return replacePlaceholders(tmpl, ctx)
+	base := replacePlaceholders(tmpl, ctx)
+
+	var extras []string
+
+	if ctx.IsExistingCodebase {
+		switch role {
+		case RoleTechLead:
+			extras = append(extras, CodebaseArchaeology)
+		case RoleSenior:
+			extras = append(extras, BugHuntingMethodology, LegacyCodeSurvival)
+		case RoleIntermediate, RoleJunior:
+			extras = append(extras, LegacyCodeSurvival)
+		}
+	}
+
+	if ctx.IsBugFix && !ctx.IsExistingCodebase {
+		if role == RoleSenior || role == RoleIntermediate {
+			extras = append(extras, BugHuntingMethodology)
+		}
+	}
+
+	if ctx.IsInfrastructure {
+		extras = append(extras, InfrastructureDebugging)
+	}
+
+	if ctx.InvestigationReport != "" && role == RoleTechLead {
+		extras = append(extras, ctx.InvestigationReport)
+	}
+
+	if len(extras) > 0 {
+		return base + "\n\n" + strings.Join(extras, "\n\n")
+	}
+	return base
 }
 
 // GoalPrompt builds the task description sent to the runtime CLI for a given role and story.
@@ -54,7 +92,19 @@ The previous implementation was rejected. Fix these issues:
 %s`, ctx.ReviewFeedback)
 	}
 
-	return base
+	goal := base
+
+	if ctx.IsExistingCodebase {
+		goal += "\n\nMANDATORY WORKFLOW FOR EXISTING CODEBASE:\n1. ORIENT: ls -la, read README.md, read CLAUDE.md\n2. MAP: find source files relevant to this story\n3. HISTORY: git log --oneline -15\n4. BASELINE: run existing test suite, record what passes\n5. SEARCH: grep for functions/types related to this story\n6. READ: open and read the relevant files\n7. THEN implement, matching existing code style"
+	}
+	if ctx.IsBugFix {
+		goal += "\n\nMANDATORY BUG FIX WORKFLOW:\n1. REPRODUCE: write a failing test\n2. ISOLATE: read stack trace, add logging\n3. ROOT CAUSE: understand WHY it's broken\n4. FIX: minimal change only\n5. VERIFY: test passes, full suite passes, no regressions"
+	}
+	if ctx.IsInfrastructure {
+		goal += "\n\nMANDATORY INFRASTRUCTURE WORKFLOW:\n1. Check services: docker ps -a, lsof for LISTEN\n2. Check logs: docker logs --tail 50, journalctl\n3. Check config: env vars, .env, docker-compose.yml\n4. Check resources: df -h, memory\n5. Fix and verify with health checks"
+	}
+
+	return goal
 }
 
 var promptTemplates = map[Role]string{
