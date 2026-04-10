@@ -756,13 +756,14 @@ func TestWiring_StoryIDsGloballyUnique(t *testing.T) {
 // --- Test 15: OverlappingFilesRejected ---
 // Prove: two stories owning the same file -> Plan returns error.
 
-func TestWiring_OverlappingFilesRejected(t *testing.T) {
+func TestWiring_OverlappingFilesWarnsForParallel(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module test"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
-	// Two stories both claim "main.go" in owned_files
+	// Two independent stories claim "main.go" — should warn but not error
+	// (dispatcher handles wave ordering to prevent conflicts)
 	overlapJSON := `[
 		{"id": "s-001", "title": "Story one", "description": "First", "acceptance_criteria": "Done", "complexity": 2, "depends_on": [], "owned_files": ["main.go"], "wave_hint": "parallel"},
 		{"id": "s-002", "title": "Story two", "description": "Second", "acceptance_criteria": "Done", "complexity": 3, "depends_on": [], "owned_files": ["main.go"], "wave_hint": "parallel"}
@@ -777,14 +778,13 @@ func TestWiring_OverlappingFilesRejected(t *testing.T) {
 	cfg := config.DefaultConfig()
 	planner := NewPlanner(client, cfg, es, ps)
 
-	_, err := planner.Plan(context.Background(), "req-overlap", "Build something", dir)
-	if err == nil {
-		t.Fatal("expected Plan to return error for overlapping owned_files, got nil")
+	// Should succeed (warning logged, not error)
+	result, err := planner.Plan(context.Background(), "req-overlap", "Build something", dir)
+	if err != nil {
+		t.Fatalf("Plan should succeed with overlapping files (warns, not errors): %v", err)
 	}
-
-	// Error should mention the conflicting file
-	if !strings.Contains(err.Error(), "main.go") {
-		t.Errorf("error %q should mention 'main.go'", err.Error())
+	if len(result.Stories) != 2 {
+		t.Errorf("expected 2 stories, got %d", len(result.Stories))
 	}
 }
 

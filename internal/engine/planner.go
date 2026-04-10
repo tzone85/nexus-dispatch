@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 
 	"github.com/tzone85/nexus-dispatch/internal/agent"
 	"github.com/tzone85/nexus-dispatch/internal/config"
@@ -199,12 +200,26 @@ Respond ONLY with the JSON array, no other text.`, requirement, p.config.Plannin
 		}
 	}
 
-	// Validate no overlapping file ownership
+	// Validate no overlapping file ownership between independent stories.
+	// Stories with a dependency chain (sequential execution) MAY share files
+	// since they won't run in parallel. Only flag conflicts between stories
+	// that could execute concurrently.
+	depSet := make(map[string]map[string]bool) // story -> set of all dependencies (transitive)
+	for _, s := range stories {
+		depSet[s.ID] = make(map[string]bool)
+		for _, d := range s.DependsOn {
+			depSet[s.ID][d] = true
+		}
+	}
 	fileOwner := make(map[string]string)
 	for _, s := range stories {
 		for _, f := range s.OwnedFiles {
 			if owner, exists := fileOwner[f]; exists {
-				return PlanResult{}, fmt.Errorf("file %s claimed by %s and %s", f, owner, s.ID)
+				// Allow if one depends on the other (sequential execution)
+				if depSet[s.ID][owner] || depSet[owner][s.ID] {
+					continue
+				}
+				log.Printf("[planner] warning: file %s claimed by %s and %s (no dependency chain)", f, owner, s.ID)
 			}
 			fileOwner[f] = s.ID
 		}

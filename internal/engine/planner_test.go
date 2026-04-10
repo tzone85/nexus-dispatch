@@ -289,7 +289,7 @@ func TestPlan_RejectsExcessiveComplexity(t *testing.T) {
 	}
 }
 
-func TestPlan_RejectsFileOverlap(t *testing.T) {
+func TestPlan_WarnsFileOverlapForParallel(t *testing.T) {
 	dir := t.TempDir()
 	_ = os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module test"), 0644)
 
@@ -305,6 +305,7 @@ func TestPlan_RejectsFileOverlap(t *testing.T) {
 	}
 	defer projStore.Close()
 
+	// Two independent stories sharing a file — should warn but succeed
 	response := `[
 		{"id": "s-001", "title": "Task A", "description": "d", "acceptance_criteria": "ac", "complexity": 3, "depends_on": [], "owned_files": ["src/shared.go", "src/a.go"], "wave_hint": "parallel"},
 		{"id": "s-002", "title": "Task B", "description": "d", "acceptance_criteria": "ac", "complexity": 3, "depends_on": [], "owned_files": ["src/shared.go", "src/b.go"], "wave_hint": "parallel"}
@@ -314,8 +315,11 @@ func TestPlan_RejectsFileOverlap(t *testing.T) {
 	cfg := config.DefaultConfig()
 	planner := engine.NewPlanner(client, cfg, eventStore, projStore)
 
-	_, err = planner.Plan(context.Background(), "r-004", "Overlapping files", dir)
-	if err == nil {
-		t.Fatal("expected file overlap validation error")
+	result, err := planner.Plan(context.Background(), "r-004", "Overlapping files", dir)
+	if err != nil {
+		t.Fatalf("Plan should succeed with overlapping files (warns, not errors): %v", err)
+	}
+	if len(result.Stories) != 2 {
+		t.Errorf("expected 2 stories, got %d", len(result.Stories))
 	}
 }
