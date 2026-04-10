@@ -8,9 +8,21 @@
 <body>
   <header id="header">
     <h1>NXD Dashboard</h1>
+    <span id="mempalace-status" class="status-indicator"></span>
     <span id="connection-status">Connecting...</span>
   </header>
   <div id="banner" class="hidden"></div>
+
+  <section id="metrics" class="panel">
+    <h2>Metrics</h2>
+    <div id="metrics-content" class="metrics-grid">
+      <div class="metric-card"><span class="metric-value" id="metric-tokens">-</span><span class="metric-label">Tokens</span></div>
+      <div class="metric-card"><span class="metric-value" id="metric-success">-</span><span class="metric-label">Success Rate</span></div>
+      <div class="metric-card"><span class="metric-value" id="metric-calls">-</span><span class="metric-label">LLM Calls</span></div>
+      <div class="metric-card"><span class="metric-value" id="metric-latency">-</span><span class="metric-label">Avg Latency</span></div>
+      <div class="metric-card"><span class="metric-value" id="metric-escalations">-</span><span class="metric-label">Escalations</span></div>
+    </div>
+  </section>
 
   <section id="agents">
     <h2>─ Agents</h2>
@@ -29,6 +41,11 @@
       <div id="progress-bar"></div>
       <span id="progress-text"></span>
     </div>
+  </section>
+
+  <section id="review-gates" class="panel" style="display:none">
+    <h2>Review Gates</h2>
+    <div id="review-gates-list"></div>
   </section>
 
   <section id="stories">
@@ -63,6 +80,15 @@
   <section id="escalations">
     <h2>─ Escalations</h2>
     <div id="escalations-list"></div>
+  </section>
+
+  <section id="investigations" class="panel" style="display:none">
+    <h2>Investigations</h2>
+    <div id="investigations-list"></div>
+  </section>
+  <section id="recovery-log" class="panel" style="display:none">
+    <h2>Recovery Log</h2>
+    <div id="recovery-list"></div>
   </section>
 
   <div id="toast" class="hidden"></div>
