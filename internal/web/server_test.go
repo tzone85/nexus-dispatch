@@ -25,7 +25,7 @@ func newTestServer(t *testing.T) *Server {
 		es.Close()  //nolint:errcheck
 		ps.Close()  //nolint:errcheck
 	})
-	return NewServer(es, ps, 0, state.ReqFilter{})
+	return NewServer(es, ps, 0, state.ReqFilter{}, tmpDir, nil)
 }
 
 // seedRequirement emits and projects a REQ_SUBMITTED event and returns the requirement ID.
