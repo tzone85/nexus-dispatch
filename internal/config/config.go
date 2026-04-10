@@ -23,8 +23,9 @@ type Config struct {
 	Cleanup   CleanupConfig            `yaml:"cleanup"`
 	Merge     MergeConfig              `yaml:"merge"`
 	Planning  PlanningConfig           `yaml:"planning"`
-	Memory    MemoryConfig             `yaml:"memory"`
-	Runtimes  map[string]RuntimeConfig `yaml:"runtimes"`
+	Memory        MemoryConfig             `yaml:"memory"`
+	Investigation InvestigationConfig      `yaml:"investigation"`
+	Runtimes      map[string]RuntimeConfig `yaml:"runtimes"`
 }
 
 // PlanningConfig controls how the planner decomposes requirements into stories.
@@ -101,10 +102,16 @@ type CleanupConfig struct {
 
 // MergeConfig controls how completed work is merged.
 type MergeConfig struct {
-	AutoMerge  bool   `yaml:"auto_merge"`
-	BaseBranch string `yaml:"base_branch"`
-	Mode       string `yaml:"mode"` // "local" or "github"
-	PRTemplate string `yaml:"pr_template"`
+	AutoMerge         bool   `yaml:"auto_merge"`
+	ReviewBeforeMerge bool   `yaml:"review_before_merge"`
+	BaseBranch        string `yaml:"base_branch"`
+	Mode              string `yaml:"mode"` // "local" or "github"
+	PRTemplate        string `yaml:"pr_template"`
+}
+
+// InvestigationConfig controls how the investigation agent operates.
+type InvestigationConfig struct {
+	CommandAllowlist []string `yaml:"command_allowlist"`
 }
 
 // RuntimeDetection holds patterns used to detect runtime states.

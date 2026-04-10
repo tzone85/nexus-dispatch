@@ -339,3 +339,15 @@ func TestDefaultConfig_MemoryDefaults(t *testing.T) {
 		t.Error("expected Memory.Enabled=true by default")
 	}
 }
+
+func TestDefaultConfig_SafetyDefaults(t *testing.T) {
+	cfg := config.DefaultConfig()
+
+	if cfg.Merge.ReviewBeforeMerge {
+		t.Error("expected ReviewBeforeMerge=false by default")
+	}
+
+	if len(cfg.Investigation.CommandAllowlist) == 0 {
+		t.Error("expected non-empty Investigation.CommandAllowlist by default")
+	}
+}

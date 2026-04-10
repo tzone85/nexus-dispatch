@@ -170,6 +170,11 @@ func (s *SQLiteStore) Project(evt Event) error {
 		_, err := s.db.Exec(`UPDATE requirements SET investigation_report_json = ? WHERE id = ?`, reportJSON, reqID)
 		return err
 
+	case EventReqPendingReview:
+		return s.updateReqStatus(payload, "pending_review")
+	case EventReqRejected:
+		return s.updateReqStatus(payload, "rejected")
+
 	case EventStoryCreated:
 		return s.projectStoryCreated(payload)
 	case EventStoryEstimated:
@@ -196,6 +201,15 @@ func (s *SQLiteStore) Project(evt Event) error {
 		return s.projectStoryPRCreated(evt.StoryID, payload)
 	case EventStoryMerged:
 		return s.updateStoryStatus(evt.StoryID, "merged")
+
+	case EventStoryMergeReady:
+		return s.updateStoryStatus(evt.StoryID, "merge_ready")
+	case EventStoryRecovery:
+		newStatus, _ := payload["new_status"].(string)
+		if newStatus != "" {
+			return s.updateStoryStatus(evt.StoryID, newStatus)
+		}
+		return nil
 
 	case EventStoryEscalated:
 		return s.projectStoryEscalated(evt, payload)
