@@ -386,6 +386,17 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 	}
 
 	// 3. Merge (serialized: rebase onto latest main, then push + merge)
+	if m.config.Merge.ReviewBeforeMerge {
+		evt := state.NewEvent(state.EventStoryMergeReady, "", storyID, nil)
+		if err := m.eventStore.Append(evt); err != nil {
+			log.Printf("[pipeline] failed to append merge_ready event for %s: %v", storyID, err)
+		}
+		if err := m.projStore.Project(evt); err != nil {
+			log.Printf("[pipeline] failed to project merge_ready event for %s: %v", storyID, err)
+		}
+		log.Printf("[pipeline] story %s ready for merge review (review_before_merge enabled)", storyID)
+		return
+	}
 	if m.merger != nil {
 		m.mergeMu.Lock()
 		defer m.mergeMu.Unlock()

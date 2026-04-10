@@ -43,6 +43,8 @@ func init() {
 	rootCmd.AddCommand(newPlanCmd())
 	rootCmd.AddCommand(newApproveCmd())
 	rootCmd.AddCommand(newRejectCmd())
+	rootCmd.AddCommand(newReviewStoryCmd())
+	rootCmd.AddCommand(newMergeStoryCmd())
 }
 
 func Execute() error {
