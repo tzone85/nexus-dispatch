@@ -1464,3 +1464,44 @@ func TestWiring_SubprocessProviderCompletes(t *testing.T) {
 		t.Errorf("Content = %q", resp.Content)
 	}
 }
+
+// --- Test 35: DoctorCommandRegistered ---
+// Prove: `nxd doctor` is registered and executable.
+
+func TestWiring_DoctorCommandRegistered(t *testing.T) {
+	// Build the binary and confirm doctor appears in help output.
+	bin := filepath.Join(t.TempDir(), "nxd")
+	build := exec.Command("go", "build", "-o", bin, "./cmd/nxd/")
+	build.Dir = findRepoRoot(t)
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("go build: %v\n%s", err, out)
+	}
+
+	help := exec.Command(bin, "--help")
+	out, err := help.Output()
+	if err != nil {
+		t.Fatalf("nxd --help: %v", err)
+	}
+	if !strings.Contains(string(out), "doctor") {
+		t.Fatal("doctor command not found in nxd --help output")
+	}
+}
+
+// findRepoRoot walks up from the test file to find the repo root (contains go.mod).
+func findRepoRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("could not find repo root (no go.mod)")
+		}
+		dir = parent
+	}
+}

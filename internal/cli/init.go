@@ -2,10 +2,8 @@ package cli
 
 import (
 	"fmt"
-	"net/http"
 	"os"
 	"path/filepath"
-	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/tzone85/nexus-dispatch/internal/config"
@@ -81,7 +79,8 @@ func runInit(cmd *cobra.Command, _ []string) error {
 	fmt.Fprintf(out, "  Projection store: %s\n", dbPath)
 
 	// Check if Ollama is running (non-blocking, informational only)
-	if err := checkOllama(); err != nil {
+	ollamaResult := checkOllamaRunning()
+	if ollamaResult.Status != "ok" {
 		fmt.Fprintf(out, "\nWarning: Ollama not detected. Install it at https://ollama.com for local LLM inference.\n")
 		fmt.Fprintf(out, "  After installing, run: ollama pull deepseek-coder-v2:latest\n")
 	} else {
@@ -93,16 +92,3 @@ func runInit(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-// checkOllama performs a quick health check against the local Ollama API.
-// Returns nil if Ollama is reachable, or an error otherwise.
-func checkOllama() error {
-	client := &http.Client{Timeout: 2 * time.Second}
-
-	resp, err := client.Get("http://localhost:11434/api/tags")
-	if err != nil {
-		return fmt.Errorf("ollama not reachable: %w", err)
-	}
-	resp.Body.Close()
-
-	return nil
-}
