@@ -19,6 +19,8 @@ import (
 	"github.com/tzone85/nexus-dispatch/internal/config"
 	"github.com/tzone85/nexus-dispatch/internal/graph"
 	"github.com/tzone85/nexus-dispatch/internal/llm"
+	"github.com/tzone85/nexus-dispatch/internal/memory"
+	"github.com/tzone85/nexus-dispatch/internal/metrics"
 	"github.com/tzone85/nexus-dispatch/internal/state"
 )
 
@@ -950,5 +952,170 @@ func TestWiring_SupervisorDetectsDrift(t *testing.T) {
 	}
 	if len(driftEvents) != 1 {
 		t.Errorf("expected 1 SUPERVISOR_DRIFT_DETECTED event, got %d", len(driftEvents))
+	}
+}
+
+// --- Test 19: MemPalaceGracefulDegradation ---
+// Prove: MemPalace with invalid path degrades gracefully — no errors, empty results.
+
+func TestWiring_MemPalaceGracefulDegradation(t *testing.T) {
+	mp := memory.NewMemPalaceWithPath("", "") // unavailable
+	if mp.IsAvailable() {
+		t.Skip("MemPalace is actually available — skip graceful degradation test")
+	}
+	results, err := mp.Search("test query", "wing", "room", 5)
+	if err != nil {
+		t.Fatalf("expected no error when unavailable, got: %v", err)
+	}
+	if len(results) != 0 {
+		t.Error("expected 0 results when unavailable")
+	}
+	if err := mp.Mine("wing", "room", "text"); err != nil {
+		t.Fatalf("Mine should not error when unavailable: %v", err)
+	}
+	if err := mp.MineMeta("learning"); err != nil {
+		t.Fatalf("MineMeta should not error when unavailable: %v", err)
+	}
+}
+
+// --- Test 20: QAFeedbackReachesAgent ---
+// Prove: QA failure output + AnalyzeFailure hint -> GoalPrompt includes feedback.
+
+func TestWiring_QAFeedbackReachesAgent(t *testing.T) {
+	qaOutput := "go build: ./store/store.go:42: undefined: NewStore"
+	hint := AnalyzeFailure(qaOutput, "")
+	feedback := fmt.Sprintf("QA FAILURE — fix this error:\n\n%s\n\nHint: %s", qaOutput, hint)
+
+	ctx := agent.PromptContext{
+		StoryTitle:       "Build store",
+		StoryDescription: "create key-value store",
+		ReviewFeedback:   feedback,
+	}
+	goal := agent.GoalPrompt(agent.RoleSenior, ctx)
+	if !strings.Contains(goal, "QA FAILURE") {
+		t.Error("expected QA feedback in goal prompt")
+	}
+	if !strings.Contains(goal, "undefined: NewStore") {
+		t.Error("expected specific error in goal prompt")
+	}
+}
+
+// --- Test 21: WaveBriefInjected ---
+// Prove: BuildWaveBrief excludes the current story and includes parallel stories.
+
+func TestWiring_WaveBriefInjected(t *testing.T) {
+	stories := []WaveStoryInfo{
+		{ID: "s-001", Title: "Store package", OwnedFiles: []string{"store/store.go"}},
+		{ID: "s-002", Title: "HTTP API", OwnedFiles: []string{"main.go"}},
+	}
+	brief := BuildWaveBrief("s-001", stories)
+	if !strings.Contains(brief, "s-002") {
+		t.Error("expected s-002 in wave brief for s-001")
+	}
+	if !strings.Contains(brief, "main.go") {
+		t.Error("expected owned files in wave brief")
+	}
+	if strings.Contains(brief, "s-001") {
+		t.Error("current story should NOT appear in its own wave brief")
+	}
+	// Single story wave produces empty brief
+	singleBrief := BuildWaveBrief("s-001", stories[:1])
+	if singleBrief != "" {
+		t.Error("single-story wave should produce empty brief")
+	}
+}
+
+// --- Test 22: FailureAnalyzerPatterns ---
+// Prove: AnalyzeFailure matches known error patterns and returns targeted hints.
+
+func TestWiring_FailureAnalyzerPatterns(t *testing.T) {
+	tests := []struct {
+		input       string
+		mustContain string
+	}{
+		{"undefined: NewStore", "symbol"},
+		{"cannot find package", "dependency"},
+		{"--- FAIL: TestFoo", "failure"},
+		{"nil pointer dereference", "nil"},
+		{"DATA RACE", "race"},
+	}
+	for _, tt := range tests {
+		name := tt.input
+		if len(name) > 20 {
+			name = name[:20]
+		}
+		t.Run(name, func(t *testing.T) {
+			hint := AnalyzeFailure(tt.input, "")
+			if !strings.Contains(strings.ToLower(hint), strings.ToLower(tt.mustContain)) {
+				t.Errorf("AnalyzeFailure(%q) = %q, want to contain %q", tt.input, hint, tt.mustContain)
+			}
+		})
+	}
+}
+
+// --- Test 23: MetricsRecorded ---
+// Prove: MetricsClient wrapping a ReplayClient records token usage to disk.
+
+func TestWiring_MetricsRecorded(t *testing.T) {
+	dir := t.TempDir()
+	rec := metrics.NewRecorder(filepath.Join(dir, "metrics.jsonl"))
+	inner := llm.NewReplayClient(llm.CompletionResponse{
+		Content: "test response",
+		Model:   "gemma4:26b",
+		Usage:   llm.Usage{InputTokens: 100, OutputTokens: 50},
+	})
+	mc := metrics.NewMetricsClient(inner, rec, "req-001", "plan", "tech_lead")
+	mc.Complete(context.Background(), llm.CompletionRequest{Model: "gemma4:26b"})
+
+	entries, err := rec.ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 metric entry, got %d", len(entries))
+	}
+	if entries[0].TokensIn != 100 {
+		t.Errorf("TokensIn = %d, want 100", entries[0].TokensIn)
+	}
+	if entries[0].Phase != "plan" {
+		t.Errorf("Phase = %q, want plan", entries[0].Phase)
+	}
+}
+
+// --- Test 24: ConventionsDetected ---
+// Prove: InvestigationReport correctly stores and exposes Convention entries.
+
+func TestWiring_ConventionsDetected(t *testing.T) {
+	report := InvestigationReport{
+		Summary: "test project",
+		Conventions: []Convention{
+			{Area: "testing", Pattern: "table-driven with testify", ExampleFile: "store_test.go"},
+			{Area: "handlers", Pattern: "Chi router with JSON", ExampleFile: "handler.go"},
+		},
+	}
+	if len(report.Conventions) != 2 {
+		t.Fatalf("expected 2 conventions, got %d", len(report.Conventions))
+	}
+	if report.Conventions[0].Area != "testing" {
+		t.Errorf("first convention area = %q", report.Conventions[0].Area)
+	}
+}
+
+// --- Test 25: MemPalaceSearchFlowsToPrompt ---
+// Prove: PriorWorkContext field flows through GoalPrompt into the goal string.
+
+func TestWiring_MemPalaceSearchFlowsToPrompt(t *testing.T) {
+	// Prove PriorWorkContext field flows through GoalPrompt
+	ctx := agent.PromptContext{
+		StoryTitle:       "Add tests",
+		StoryDescription: "unit tests for store",
+		PriorWorkContext: "## Prior Work\n\n- s-001 created store/store.go with Get, Set, Delete",
+	}
+	goal := agent.GoalPrompt(agent.RoleSenior, ctx)
+	if !strings.Contains(goal, "Prior Work") {
+		t.Error("expected PriorWorkContext in goal prompt")
+	}
+	if !strings.Contains(goal, "store/store.go") {
+		t.Error("expected prior work details in goal prompt")
 	}
 }
