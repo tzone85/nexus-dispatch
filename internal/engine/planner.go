@@ -172,6 +172,13 @@ Respond ONLY with the JSON array, no other text.`, requirement, p.config.Plannin
 		}
 	}
 
+	// Ensure all stories have IDs. Smaller models sometimes omit them.
+	for i, s := range stories {
+		if s.ID == "" {
+			stories[i].ID = fmt.Sprintf("s-%03d", i+1)
+		}
+	}
+
 	// Make story IDs globally unique by prefixing with short req ID.
 	// LLMs always generate generic IDs like "s-001" which collide across
 	// requirements.
