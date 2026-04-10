@@ -91,7 +91,7 @@ IMPORTANT INSTRUCTIONS:
 
 ## Previous Review Feedback (MUST ADDRESS)
 The previous implementation was rejected. Fix these issues:
-%s`, ctx.ReviewFeedback)
+%s`, SanitizePromptField(ctx.ReviewFeedback))
 	}
 
 	goal := base
@@ -107,7 +107,7 @@ The previous implementation was rejected. Fix these issues:
 	}
 
 	if ctx.PriorWorkContext != "" {
-		goal += "\n\n" + ctx.PriorWorkContext
+		goal += "\n\n" + SanitizePromptField(ctx.PriorWorkContext)
 	}
 	if ctx.WaveBrief != "" {
 		goal += "\n\n" + ctx.WaveBrief
