@@ -83,6 +83,11 @@ function renderState(data) {
   renderStories(data.stories || []);
   renderEvents(data.events || []);
   renderEscalations(data.escalations || []);
+  renderMetrics(data.metrics);
+  renderMemPalaceStatus(data.mempalace_status);
+  renderReviewGates(data.review_gates);
+  renderInvestigations(data.investigations);
+  renderRecoveryLog(data.recovery_log);
 }
 
 function renderAgents(agents) {
@@ -331,6 +336,180 @@ function renderEscalations(escalations) {
       );
     })
     .join("");
+}
+
+function renderMetrics(m) {
+  if (!m) return;
+  document.getElementById("metric-tokens").textContent =
+    Math.round(m.total_tokens / 1000) + "K";
+  document.getElementById("metric-success").textContent =
+    m.success_rate.toFixed(0) + "%";
+  var total = 0;
+  if (m.by_phase) {
+    for (var p in m.by_phase) {
+      total += m.by_phase[p].count;
+    }
+  }
+  document.getElementById("metric-calls").textContent = total;
+  document.getElementById("metric-latency").textContent =
+    m.avg_latency_ms + "ms";
+  document.getElementById("metric-escalations").textContent =
+    m.escalation_count;
+}
+
+function renderMemPalaceStatus(s) {
+  var el = document.getElementById("mempalace-status");
+  if (!el) return;
+  if (!s) {
+    el.textContent = "";
+    return;
+  }
+  el.textContent = s.available ? "Memory: Active" : "Memory: Offline";
+  el.className =
+    "status-indicator " + (s.available ? "mem-active" : "mem-offline");
+}
+
+function renderReviewGates(gates) {
+  var section = document.getElementById("review-gates");
+  var list = document.getElementById("review-gates-list");
+  if (!gates || gates.length === 0) {
+    section.style.display = "none";
+    return;
+  }
+  section.style.display = "";
+  list.textContent = ""; // clear
+  gates.forEach(function (g) {
+    var item = document.createElement("div");
+    item.className = "review-gate-item";
+
+    var badge = document.createElement("span");
+    badge.className = "badge badge-" + g.status;
+    badge.textContent = g.status;
+    item.appendChild(badge);
+
+    var title = document.createElement("strong");
+    title.textContent = " " + g.title + " ";
+    item.appendChild(title);
+
+    var idSpan = document.createElement("span");
+    idSpan.className = "gate-id";
+    idSpan.textContent = g.id;
+    item.appendChild(idSpan);
+
+    if (g.type === "requirement" && g.status === "pending_review") {
+      var approveBtn = document.createElement("button");
+      approveBtn.className = "btn-approve";
+      approveBtn.textContent = "Approve";
+      approveBtn.onclick = function () {
+        sendCommand("approve_requirement", { req_id: g.id });
+      };
+      item.appendChild(document.createTextNode(" "));
+      item.appendChild(approveBtn);
+
+      var rejectBtn = document.createElement("button");
+      rejectBtn.className = "btn-reject";
+      rejectBtn.textContent = "Reject";
+      rejectBtn.onclick = function () {
+        sendCommand("reject_requirement", { req_id: g.id });
+      };
+      item.appendChild(document.createTextNode(" "));
+      item.appendChild(rejectBtn);
+    } else if (g.type === "story" && g.status === "merge_ready") {
+      var mergeBtn = document.createElement("button");
+      mergeBtn.className = "btn-merge";
+      mergeBtn.textContent = "Merge";
+      mergeBtn.onclick = function () {
+        sendCommand("merge_story", { story_id: g.id });
+      };
+      item.appendChild(document.createTextNode(" "));
+      item.appendChild(mergeBtn);
+    }
+
+    list.appendChild(item);
+  });
+}
+
+function renderInvestigations(items) {
+  var section = document.getElementById("investigations");
+  var list = document.getElementById("investigations-list");
+  if (!items || items.length === 0) {
+    section.style.display = "none";
+    return;
+  }
+  section.style.display = "";
+  list.textContent = "";
+  items.forEach(function (inv) {
+    var item = document.createElement("div");
+    item.className = "investigation-item";
+
+    var reqId = document.createElement("strong");
+    reqId.textContent = inv.req_id + " ";
+    item.appendChild(reqId);
+
+    var summary = document.createElement("span");
+    summary.textContent = inv.summary;
+    item.appendChild(summary);
+
+    var badges = document.createElement("span");
+    badges.className = "inv-badges";
+
+    var modBadge = document.createElement("span");
+    modBadge.className = "badge";
+    modBadge.textContent = inv.module_count + " modules";
+    badges.appendChild(document.createTextNode(" "));
+    badges.appendChild(modBadge);
+
+    var smellBadge = document.createElement("span");
+    smellBadge.className = "badge badge-warn";
+    smellBadge.textContent = inv.smell_count + " smells";
+    badges.appendChild(document.createTextNode(" "));
+    badges.appendChild(smellBadge);
+
+    var riskBadge = document.createElement("span");
+    riskBadge.className = "badge badge-danger";
+    riskBadge.textContent = inv.risk_count + " risks";
+    badges.appendChild(document.createTextNode(" "));
+    badges.appendChild(riskBadge);
+
+    item.appendChild(badges);
+    list.appendChild(item);
+  });
+}
+
+function renderRecoveryLog(items) {
+  var section = document.getElementById("recovery-log");
+  var list = document.getElementById("recovery-list");
+  if (!items || items.length === 0) {
+    section.style.display = "none";
+    return;
+  }
+  section.style.display = "";
+  list.textContent = "";
+  items.forEach(function (r) {
+    var item = document.createElement("div");
+    item.className = "recovery-item";
+
+    var ts = document.createElement("span");
+    ts.className = "timestamp";
+    ts.textContent = r.timestamp;
+    item.appendChild(ts);
+
+    var typeBadge = document.createElement("span");
+    typeBadge.className = "badge";
+    typeBadge.textContent = r.type;
+    item.appendChild(document.createTextNode(" "));
+    item.appendChild(typeBadge);
+
+    var storyId = document.createElement("strong");
+    storyId.textContent = " " + r.story_id + " ";
+    item.appendChild(storyId);
+
+    var desc = document.createElement("span");
+    desc.textContent = r.description;
+    item.appendChild(desc);
+
+    list.appendChild(item);
+  });
 }
 
 // ── Commands ─────────────────────────────────────────────────────────
