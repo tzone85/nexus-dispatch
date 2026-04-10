@@ -26,6 +26,7 @@ type Config struct {
 	Memory        MemoryConfig             `yaml:"memory"`
 	Investigation InvestigationConfig      `yaml:"investigation"`
 	Runtimes      map[string]RuntimeConfig `yaml:"runtimes"`
+	Plugins       PluginConfig             `yaml:"plugins"`
 }
 
 // PlanningConfig controls how the planner decomposes requirements into stories.
