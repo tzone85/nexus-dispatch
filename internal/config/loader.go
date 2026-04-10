@@ -85,6 +85,7 @@ func DefaultConfig() Config {
 				"docker ps", "docker-compose config",
 			},
 		},
+		Plugins: PluginConfig{},
 		Runtimes: map[string]RuntimeConfig{
 			"aider": {
 				Command: "aider",

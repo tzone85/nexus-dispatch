@@ -9,11 +9,13 @@ import (
 	"path/filepath"
 
 	"github.com/spf13/cobra"
+	"github.com/tzone85/nexus-dispatch/internal/agent"
 	"github.com/tzone85/nexus-dispatch/internal/engine"
 	nxdgit "github.com/tzone85/nexus-dispatch/internal/git"
 	"github.com/tzone85/nexus-dispatch/internal/graph"
 	"github.com/tzone85/nexus-dispatch/internal/memory"
 	"github.com/tzone85/nexus-dispatch/internal/metrics"
+	"github.com/tzone85/nexus-dispatch/internal/plugin"
 	"github.com/tzone85/nexus-dispatch/internal/runtime"
 	"github.com/tzone85/nexus-dispatch/internal/state"
 )
@@ -42,6 +44,28 @@ func runResume(cmd *cobra.Command, args []string) error {
 	defer s.Close()
 
 	out := cmd.OutOrStdout()
+
+	// Load plugins.
+	pluginDir := expandHome("~/.nxd/plugins")
+	pm, pluginErr := plugin.LoadPlugins(s.Config.Plugins, pluginDir)
+	if pluginErr != nil {
+		fmt.Fprintf(out, "Warning: plugin loading failed: %v\n", pluginErr)
+		pm = plugin.EmptyManager()
+	}
+
+	// Apply plugin prompts and playbooks.
+	var pbEntries []agent.PluginPlaybookEntry
+	for _, pb := range pm.Playbooks {
+		pbEntries = append(pbEntries, agent.PluginPlaybookEntry{
+			Content:    pb.Content,
+			InjectWhen: pb.InjectWhen,
+			Roles:      pb.Roles,
+		})
+	}
+	agent.SetPluginState(pbEntries, pm.Prompts)
+
+	// Make plugin providers available to buildLLMClient.
+	activePluginProviders = pm.Providers
 
 	// Acquire pipeline lock to prevent concurrent runs.
 	stateDir := expandHome(s.Config.Workspace.StateDir)

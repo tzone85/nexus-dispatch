@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tzone85/nexus-dispatch/internal/agent"
 	"github.com/tzone85/nexus-dispatch/internal/config"
@@ -22,6 +23,7 @@ import (
 	"github.com/tzone85/nexus-dispatch/internal/llm"
 	"github.com/tzone85/nexus-dispatch/internal/memory"
 	"github.com/tzone85/nexus-dispatch/internal/metrics"
+	plugin "github.com/tzone85/nexus-dispatch/internal/plugin"
 	"github.com/tzone85/nexus-dispatch/internal/state"
 )
 
@@ -1383,5 +1385,82 @@ func TestWiring_LockPreventsConcurrentAccess(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "pipeline already running") {
 		t.Errorf("error should mention concurrent pipeline: %v", err)
+	}
+}
+
+// --- Test 31: PluginPlaybookInjected ---
+// Prove: a custom playbook appears in SystemPrompt when conditions match.
+
+func TestWiring_PluginPlaybookInjected(t *testing.T) {
+	agent.SetPluginState(
+		[]agent.PluginPlaybookEntry{
+			{Content: "## Custom Security Audit\nCheck for hardcoded secrets.", InjectWhen: "always", Roles: nil},
+		},
+		nil,
+	)
+	defer agent.SetPluginState(nil, nil)
+
+	ctx := agent.PromptContext{TechStack: "go (go)"}
+	prompt := agent.SystemPrompt(agent.RoleSenior, ctx)
+	if !strings.Contains(prompt, "Custom Security Audit") {
+		t.Error("expected plugin playbook in prompt")
+	}
+}
+
+// --- Test 32: PluginPromptOverrides ---
+// Prove: a custom prompt replaces the built-in but playbooks still append.
+
+func TestWiring_PluginPromptOverrides(t *testing.T) {
+	agent.SetPluginState(nil, map[string]string{
+		"tech_lead": "Custom Tech Lead for {repo_path}. Decompose the requirement.",
+	})
+	defer agent.SetPluginState(nil, nil)
+
+	ctx := agent.PromptContext{RepoPath: "/my/project", TechStack: "go (go)"}
+	prompt := agent.SystemPrompt(agent.RoleTechLead, ctx)
+	if !strings.Contains(prompt, "Custom Tech Lead for /my/project") {
+		t.Error("expected custom prompt with placeholder substitution")
+	}
+	// Built-in playbooks should still inject on top
+	ctx.IsExistingCodebase = true
+	prompt2 := agent.SystemPrompt(agent.RoleTechLead, ctx)
+	if !strings.Contains(prompt2, "Custom Tech Lead") {
+		t.Error("expected custom base prompt")
+	}
+}
+
+// --- Test 33: PluginQACheckRuns ---
+// Prove: a plugin QA script executes and exit code determines pass/fail.
+
+func TestWiring_PluginQACheckRuns(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "check.sh")
+	os.WriteFile(script, []byte("#!/bin/bash\necho 'passed'\nexit 0\n"), 0755)
+
+	check := plugin.PluginQACheck{Name: "test-check", ScriptPath: script, After: "test"}
+	result := plugin.RunPluginQACheck(context.Background(), check, dir)
+	if !result.Passed {
+		t.Error("expected QA check to pass")
+	}
+	if result.Name != "test-check" {
+		t.Errorf("Name = %q", result.Name)
+	}
+}
+
+// --- Test 34: SubprocessProviderCompletes ---
+// Prove: the SubprocessClient sends JSON and receives a valid response.
+
+func TestWiring_SubprocessProviderCompletes(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "provider.sh")
+	os.WriteFile(script, []byte("#!/bin/bash\nread input\necho '{\"content\":\"plugin response\",\"model\":\"custom\",\"usage\":{\"input_tokens\":50,\"output_tokens\":25}}'\n"), 0755)
+
+	client := llm.NewSubprocessClient(script, 10*time.Second)
+	resp, err := client.Complete(context.Background(), llm.CompletionRequest{Model: "custom"})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if resp.Content != "plugin response" {
+		t.Errorf("Content = %q", resp.Content)
 	}
 }

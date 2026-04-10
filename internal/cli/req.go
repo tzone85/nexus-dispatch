@@ -14,11 +14,17 @@ import (
 
 	"github.com/oklog/ulid/v2"
 	"github.com/spf13/cobra"
+	"github.com/tzone85/nexus-dispatch/internal/agent"
 	"github.com/tzone85/nexus-dispatch/internal/engine"
 	"github.com/tzone85/nexus-dispatch/internal/llm"
 	"github.com/tzone85/nexus-dispatch/internal/metrics"
+	"github.com/tzone85/nexus-dispatch/internal/plugin"
 	"github.com/tzone85/nexus-dispatch/internal/state"
 )
+
+// activePluginProviders holds plugin-contributed LLM providers for use by
+// buildLLMClient. Set after loading plugins in runReq or runResume.
+var activePluginProviders map[string]*plugin.SubprocessInfo
 
 func newReqCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -52,6 +58,30 @@ func runReq(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	defer s.Close()
+
+	out := cmd.OutOrStdout()
+
+	// Load plugins.
+	pluginDir := expandHome("~/.nxd/plugins")
+	pm, pluginErr := plugin.LoadPlugins(s.Config.Plugins, pluginDir)
+	if pluginErr != nil {
+		fmt.Fprintf(out, "Warning: plugin loading failed: %v\n", pluginErr)
+		pm = plugin.EmptyManager()
+	}
+
+	// Apply plugin prompts and playbooks.
+	var pbEntries []agent.PluginPlaybookEntry
+	for _, pb := range pm.Playbooks {
+		pbEntries = append(pbEntries, agent.PluginPlaybookEntry{
+			Content:    pb.Content,
+			InjectWhen: pb.InjectWhen,
+			Roles:      pb.Roles,
+		})
+	}
+	agent.SetPluginState(pbEntries, pm.Prompts)
+
+	// Make plugin providers available to buildLLMClient.
+	activePluginProviders = pm.Providers
 
 	// Acquire pipeline lock to prevent concurrent runs.
 	stateDir := expandHome(s.Config.Workspace.StateDir)
@@ -89,7 +119,6 @@ func runReq(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(cmd.Context(), 5*time.Minute)
 	defer cancel()
 
-	out := cmd.OutOrStdout()
 	fmt.Fprintf(out, "Planning requirement: %s\n", requirement)
 	fmt.Fprintf(out, "Requirement ID: %s\n\n", reqID)
 
@@ -273,6 +302,11 @@ func buildLLMClient(provider string, godmode ...bool) (llm.Client, error) {
 		googleClient := llm.NewGoogleClient(apiKey)
 		return llm.NewFallbackClient(googleClient, ollamaClient, 60*time.Second), nil
 	default:
+		if activePluginProviders != nil {
+			if provInfo, ok := activePluginProviders[provider]; ok {
+				return llm.NewSubprocessClient(provInfo.Command, 5*time.Minute), nil
+			}
+		}
 		return nil, fmt.Errorf("unsupported LLM provider: %s (supported: ollama, anthropic, openai, google, google+ollama)", provider)
 	}
 }

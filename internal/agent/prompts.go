@@ -3,7 +3,32 @@ package agent
 import (
 	"fmt"
 	"strings"
+	"sync"
 )
+
+// Package-level plugin state — set once from CLI commands after loading plugins.
+var (
+	pluginPlaybooks      []PluginPlaybookEntry
+	pluginPromptOverrides map[string]string
+	pluginMu             sync.RWMutex
+)
+
+// PluginPlaybookEntry describes a plugin-contributed playbook for injection
+// into system prompts.
+type PluginPlaybookEntry struct {
+	Content    string
+	InjectWhen string
+	Roles      []string
+}
+
+// SetPluginState configures plugin playbooks and prompt overrides.
+// Called from CLI commands after loading plugins.
+func SetPluginState(playbooks []PluginPlaybookEntry, prompts map[string]string) {
+	pluginMu.Lock()
+	defer pluginMu.Unlock()
+	pluginPlaybooks = playbooks
+	pluginPromptOverrides = prompts
+}
 
 // PromptContext holds the values substituted into system prompt templates.
 type PromptContext struct {
@@ -32,8 +57,18 @@ type PromptContext struct {
 // placeholders from the provided context. It conditionally appends diagnostic
 // playbooks based on the context flags (existing codebase, bug fix, etc.).
 func SystemPrompt(role Role, ctx PromptContext) string {
-	tmpl := promptTemplates[role]
-	base := replacePlaceholders(tmpl, ctx)
+	// Check for plugin prompt override.
+	pluginMu.RLock()
+	override, hasOverride := pluginPromptOverrides[string(role)]
+	pluginMu.RUnlock()
+
+	var base string
+	if hasOverride {
+		base = replacePlaceholders(override, ctx)
+	} else {
+		tmpl := promptTemplates[role]
+		base = replacePlaceholders(tmpl, ctx)
+	}
 
 	var extras []string
 
@@ -61,6 +96,39 @@ func SystemPrompt(role Role, ctx PromptContext) string {
 	if ctx.InvestigationReport != "" && role == RoleTechLead {
 		extras = append(extras, ctx.InvestigationReport)
 	}
+
+	// Inject plugin playbooks.
+	pluginMu.RLock()
+	for _, pb := range pluginPlaybooks {
+		shouldInject := false
+		switch pb.InjectWhen {
+		case "existing":
+			shouldInject = ctx.IsExistingCodebase
+		case "bugfix":
+			shouldInject = ctx.IsBugFix
+		case "infra":
+			shouldInject = ctx.IsInfrastructure
+		case "always":
+			shouldInject = true
+		}
+		if !shouldInject {
+			continue
+		}
+		if len(pb.Roles) > 0 {
+			roleMatch := false
+			for _, r := range pb.Roles {
+				if strings.EqualFold(r, string(role)) {
+					roleMatch = true
+					break
+				}
+			}
+			if !roleMatch {
+				continue
+			}
+		}
+		extras = append(extras, pb.Content)
+	}
+	pluginMu.RUnlock()
 
 	if len(extras) > 0 {
 		return base + "\n\n" + strings.Join(extras, "\n\n")
