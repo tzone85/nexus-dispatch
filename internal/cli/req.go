@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/tzone85/nexus-dispatch/internal/engine"
 	"github.com/tzone85/nexus-dispatch/internal/llm"
+	"github.com/tzone85/nexus-dispatch/internal/metrics"
 	"github.com/tzone85/nexus-dispatch/internal/state"
 )
 
@@ -62,6 +64,11 @@ func runReq(cmd *cobra.Command, args []string) error {
 
 	// Generate requirement ID
 	reqID := ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader).String()
+
+	// Wrap LLM client with metrics tracking
+	stateDir := expandHome(s.Config.Workspace.StateDir)
+	recorder := metrics.NewRecorder(filepath.Join(stateDir, "metrics.jsonl"))
+	client = metrics.NewMetricsClient(client, recorder, reqID, "pipeline", "")
 
 	// Determine repo path (current directory)
 	repoPath, err := os.Getwd()

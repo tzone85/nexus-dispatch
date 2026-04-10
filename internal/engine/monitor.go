@@ -16,6 +16,7 @@ import (
 	nxdgit "github.com/tzone85/nexus-dispatch/internal/git"
 	"github.com/tzone85/nexus-dispatch/internal/graph"
 	"github.com/tzone85/nexus-dispatch/internal/llm"
+	"github.com/tzone85/nexus-dispatch/internal/memory"
 	"github.com/tzone85/nexus-dispatch/internal/runtime"
 	"github.com/tzone85/nexus-dispatch/internal/state"
 )
@@ -34,6 +35,11 @@ type Monitor struct {
 	projStore        state.ProjectionStore
 	escalation       *EscalationMachine
 	manager          *Manager
+
+	// mempalace provides semantic memory for mining diffs, review
+	// feedback, and QA failures so future agent runs benefit from
+	// accumulated project knowledge.
+	mempalace *memory.MemPalace
 
 	// planner enables tier-3 (tech lead) re-planning. When set, the
 	// monitor can decompose failing stories into smaller replacements.
@@ -77,6 +83,13 @@ func NewMonitor(
 		projStore:  ps,
 		escalation: NewEscalationMachine(es, cfg.Routing),
 	}
+}
+
+// SetMemPalace enables semantic memory mining during the post-execution
+// pipeline. When set, the monitor mines story diffs, review feedback, and
+// QA failures into MemPalace for future agent context.
+func (m *Monitor) SetMemPalace(mp *memory.MemPalace) {
+	m.mempalace = mp
 }
 
 // SetConflictResolver enables LLM-based automatic conflict resolution during
@@ -262,16 +275,30 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 		return
 	}
 
+	// Look up story details used by review, MemPalace mining, and QA feedback.
+	storyTitle := storyID
+	reqID := ""
+	storyAC := ""
+	if story, err := m.projStore.GetStory(storyID); err == nil {
+		storyTitle = story.Title
+		storyAC = story.AcceptanceCriteria
+		reqID = story.ReqID
+	}
+
+	// Mine the story diff to MemPalace for future agent context.
+	if m.mempalace != nil && m.mempalace.IsAvailable() {
+		statDiff := captureStoryDiff(repoDir, branch)
+		if statDiff != "" {
+			repoName := filepath.Base(repoDir)
+			summary := fmt.Sprintf("Story %s (%s) completed. Changes:\n%s", storyID, storyTitle, truncateDiff(statDiff, 2000))
+			if err := m.mempalace.Mine(repoName, reqID, summary); err != nil {
+				log.Printf("[pipeline] mempalace mine diff for %s: %v", storyID, err)
+			}
+		}
+	}
+
 	// 1. Code Review
 	if m.reviewer != nil {
-		// Look up story details for the reviewer
-		storyTitle := storyID
-		storyAC := ""
-		if story, err := m.projStore.GetStory(storyID); err == nil {
-			storyTitle = story.Title
-			storyAC = story.AcceptanceCriteria
-		}
-
 		result, err := m.reviewer.Review(ctx, storyID, storyTitle, storyAC, diff)
 		if err != nil {
 			// Fatal API errors (auth failures, billing exhaustion,
@@ -286,6 +313,20 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 			m.resetStoryToDraft(storyID, "reviewer", fmt.Sprintf("review error: %v", err))
 			return
 		}
+
+		// Mine review feedback to MemPalace.
+		if m.mempalace != nil && m.mempalace.IsAvailable() {
+			repoName := filepath.Base(repoDir)
+			verdict := "approved"
+			if !result.Passed {
+				verdict = "rejected"
+			}
+			mineSummary := fmt.Sprintf("Review of %s: %s. %s", storyID, verdict, result.Summary)
+			if err := m.mempalace.Mine(repoName, reqID, mineSummary); err != nil {
+				log.Printf("[pipeline] mempalace mine review for %s: %v", storyID, err)
+			}
+		}
+
 		if !result.Passed {
 			m.resetStoryToDraft(storyID, "reviewer", fmt.Sprintf("review rejected: %s", result.Summary))
 			return
@@ -303,7 +344,42 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 		}
 		if !result.Passed {
 			log.Printf("[pipeline] QA failed for %s", storyID)
-			m.resetStoryToDraft(storyID, "qa", "QA checks failed")
+
+			// Collect QA failure output from failed checks.
+			var qaOutput string
+			for _, check := range result.Checks {
+				if !check.Passed {
+					qaOutput += fmt.Sprintf("[%s] %s\n", check.Name, check.Output)
+				}
+			}
+
+			// Generate a targeted fix hint from the failure output.
+			hint := AnalyzeFailure(qaOutput, "")
+
+			// Store as review feedback so the agent sees it on retry.
+			retryFeedback := fmt.Sprintf(
+				"QA FAILURE — fix this error:\n\n%s\n\nHint: %s\n\nMake the minimal change to fix this. Do not rewrite files.",
+				qaOutput, hint,
+			)
+			feedbackEvt := state.NewEvent(state.EventStoryReviewFailed, "monitor", storyID, map[string]any{
+				"feedback": retryFeedback,
+				"source":   "qa_failure",
+			})
+			if err := m.eventStore.Append(feedbackEvt); err != nil {
+				log.Printf("[pipeline] failed to append QA feedback event for %s: %v", storyID, err)
+			}
+			if err := m.projStore.Project(feedbackEvt); err != nil {
+				log.Printf("[pipeline] failed to project QA feedback event for %s: %v", storyID, err)
+			}
+
+			// Mine QA failure to MemPalace for future learning.
+			if m.mempalace != nil && m.mempalace.IsAvailable() {
+				repoName := filepath.Base(repoDir)
+				if err := m.mempalace.Mine(repoName, reqID, fmt.Sprintf("QA failure on %s: %s", storyID, qaOutput)); err != nil {
+					log.Printf("[pipeline] mempalace mine QA failure for %s: %v", storyID, err)
+				}
+			}
+
 			return
 		}
 		log.Printf("[pipeline] QA passed for %s", storyID)
@@ -1052,4 +1128,26 @@ func isGitignoreOnlyDiff(worktreePath, mergeBase string) bool {
 		}
 	}
 	return true
+}
+
+// captureStoryDiff returns a compact --stat summary of changes between main
+// and the given branch. Returns an empty string on any error so callers can
+// skip mining without disrupting the pipeline.
+func captureStoryDiff(repoDir, branch string) string {
+	cmd := exec.Command("git", "diff", "main..."+branch, "--stat")
+	cmd.Dir = repoDir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// truncateDiff returns s unchanged when it fits within max bytes, otherwise
+// truncates and appends an indicator.
+func truncateDiff(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "\n... (truncated)"
 }
