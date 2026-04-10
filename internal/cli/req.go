@@ -53,6 +53,14 @@ func runReq(cmd *cobra.Command, args []string) error {
 	}
 	defer s.Close()
 
+	// Acquire pipeline lock to prevent concurrent runs.
+	stateDir := expandHome(s.Config.Workspace.StateDir)
+	lock, err := engine.AcquireLock(stateDir)
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
+
 	// Determine LLM client — --godmode flag takes precedence over config
 	godmode, _ := cmd.Flags().GetBool("godmode")
 	if !godmode {
@@ -67,7 +75,6 @@ func runReq(cmd *cobra.Command, args []string) error {
 	reqID := ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader).String()
 
 	// Wrap LLM client with metrics tracking
-	stateDir := expandHome(s.Config.Workspace.StateDir)
 	recorder := metrics.NewRecorder(filepath.Join(stateDir, "metrics.jsonl"))
 	client = metrics.NewMetricsClient(client, recorder, reqID, "pipeline", "")
 
