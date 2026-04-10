@@ -10,6 +10,7 @@ import (
 	"github.com/tzone85/nexus-dispatch/internal/agent"
 	"github.com/tzone85/nexus-dispatch/internal/config"
 	nxdgit "github.com/tzone85/nexus-dispatch/internal/git"
+	"github.com/tzone85/nexus-dispatch/internal/memory"
 	"github.com/tzone85/nexus-dispatch/internal/runtime"
 	"github.com/tzone85/nexus-dispatch/internal/state"
 )
@@ -28,16 +29,19 @@ type Executor struct {
 	config     config.Config
 	eventStore state.EventStore
 	projStore  state.ProjectionStore
+	mempalace  *memory.MemPalace
 }
 
 // NewExecutor creates an Executor wired to the runtime registry, configuration,
-// event store, and projection store.
-func NewExecutor(reg *runtime.Registry, cfg config.Config, es state.EventStore, ps state.ProjectionStore) *Executor {
+// event store, projection store, and optional MemPalace client. Pass nil for
+// mp when MemPalace is not configured.
+func NewExecutor(reg *runtime.Registry, cfg config.Config, es state.EventStore, ps state.ProjectionStore, mp *memory.MemPalace) *Executor {
 	return &Executor{
 		registry:   reg,
 		config:     cfg,
 		eventStore: es,
 		projStore:  ps,
+		mempalace:  mp,
 	}
 }
 
@@ -50,16 +54,30 @@ type SpawnResult struct {
 }
 
 // SpawnAll creates worktrees and launches tmux sessions for each assignment.
+// It builds a wave brief from all assignments so each agent knows which
+// parallel stories are running and which files to avoid.
 func (e *Executor) SpawnAll(repoDir string, assignments []Assignment, stories map[string]PlannedStory) []SpawnResult {
+	// Build wave story info for parallel awareness.
+	waveStories := make([]WaveStoryInfo, 0, len(assignments))
+	for _, a := range assignments {
+		if story, ok := stories[a.StoryID]; ok {
+			waveStories = append(waveStories, WaveStoryInfo{
+				ID:         a.StoryID,
+				Title:      story.Title,
+				OwnedFiles: story.OwnedFiles,
+			})
+		}
+	}
+
 	results := make([]SpawnResult, 0, len(assignments))
 	for _, a := range assignments {
-		result := e.spawn(repoDir, a, stories[a.StoryID])
+		result := e.spawn(repoDir, a, stories[a.StoryID], waveStories)
 		results = append(results, result)
 	}
 	return results
 }
 
-func (e *Executor) spawn(repoDir string, a Assignment, story PlannedStory) SpawnResult {
+func (e *Executor) spawn(repoDir string, a Assignment, story PlannedStory, waveStories []WaveStoryInfo) SpawnResult {
 	result := SpawnResult{Assignment: a}
 
 	// Determine worktree path
@@ -96,6 +114,25 @@ func (e *Executor) spawn(repoDir string, a Assignment, story PlannedStory) Spawn
 		Complexity:         story.Complexity,
 		ReviewFeedback:     e.latestReviewFeedback(a.StoryID),
 	}
+
+	// Query MemPalace for prior work context.
+	if e.mempalace != nil && e.mempalace.IsAvailable() {
+		repoName := filepath.Base(repoDir)
+		query := story.Title + " " + story.Description
+		results, _ := e.mempalace.Search(query, repoName, "", 5)
+		if len(results) > 0 {
+			var sb strings.Builder
+			sb.WriteString("## Prior Work in This Requirement\n\n")
+			sb.WriteString("The following has already been built. Build on this, do not recreate.\n\n")
+			for _, r := range results {
+				sb.WriteString(fmt.Sprintf("- %s\n", r.Text))
+			}
+			promptCtx.PriorWorkContext = sb.String()
+		}
+	}
+
+	// Inject wave brief for parallel story awareness.
+	promptCtx.WaveBrief = BuildWaveBrief(a.StoryID, waveStories)
 
 	// Resolve model for this role
 	modelCfg := a.Role.ModelConfig(e.config.Models)
