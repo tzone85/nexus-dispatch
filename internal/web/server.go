@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/tzone85/nexus-dispatch/internal/memory"
 	"github.com/tzone85/nexus-dispatch/internal/state"
 )
 
@@ -20,20 +21,29 @@ import (
 var staticFiles embed.FS
 
 type Server struct {
-	eventStore state.EventStore
-	projStore  *state.SQLiteStore
-	hub        *Hub
-	port       int
-	reqFilter  state.ReqFilter
-	httpServer *http.Server
+	eventStore   state.EventStore
+	projStore    *state.SQLiteStore
+	hub          *Hub
+	port         int
+	reqFilter    state.ReqFilter
+	httpServer   *http.Server
+	metricsCache *MetricsCache
+	mempalace    *memory.MemPalace
 }
 
-func NewServer(es state.EventStore, ps *state.SQLiteStore, port int, filter state.ReqFilter) *Server {
+func NewServer(es state.EventStore, ps *state.SQLiteStore, port int, filter state.ReqFilter, stateDir string, mp *memory.MemPalace) *Server {
+	var mc *MetricsCache
+	if stateDir != "" {
+		mc = NewMetricsCache(stateDir)
+	}
+
 	s := &Server{
-		eventStore: es,
-		projStore:  ps,
-		port:       port,
-		reqFilter:  filter,
+		eventStore:   es,
+		projStore:    ps,
+		port:         port,
+		reqFilter:    filter,
+		metricsCache: mc,
+		mempalace:    mp,
 	}
 	s.hub = NewHub(s)
 	return s

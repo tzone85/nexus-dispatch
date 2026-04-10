@@ -32,6 +32,12 @@ func (s *Server) HandleCommand(action string, payload json.RawMessage) WSRespons
 		return s.handleKill(payload)
 	case "edit_story":
 		return s.handleEdit(payload)
+	case "approve_requirement":
+		return s.handleApproveRequirement(payload)
+	case "reject_requirement":
+		return s.handleRejectRequirement(payload)
+	case "merge_story":
+		return s.handleMergeStory(payload)
 	default:
 		return WSResponse{Type: "command_result", Action: action, Success: false, Message: "unknown command"}
 	}
@@ -317,6 +323,98 @@ func (s *Server) handleEdit(payload json.RawMessage) WSResponse {
 	s.projStore.Project(evt) //nolint:errcheck
 
 	return WSResponse{Type: "command_result", Action: action, Success: true, Message: "Story updated and reset to draft"}
+}
+
+func (s *Server) handleApproveRequirement(payload json.RawMessage) WSResponse {
+	const action = "approve_requirement"
+
+	var p reqPayload
+	if err := json.Unmarshal(payload, &p); err != nil || p.ReqID == "" {
+		return WSResponse{Type: "command_result", Action: action, Success: false, Message: "invalid req_id"}
+	}
+
+	req, err := s.findRequirement(p.ReqID)
+	if err != nil {
+		return WSResponse{Type: "command_result", Action: action, Success: false, Message: "store error"}
+	}
+	if req == nil {
+		return WSResponse{Type: "command_result", Action: action, Success: false, Message: "requirement not found"}
+	}
+	if req.Status != "pending_review" {
+		return WSResponse{Type: "command_result", Action: action, Success: false, Message: "requirement is not pending review"}
+	}
+
+	evt := state.NewEvent(state.EventReqPlanned, "dashboard", "", map[string]any{
+		"id":     p.ReqID,
+		"source": "dashboard",
+	})
+	if err := s.eventStore.Append(evt); err != nil {
+		return WSResponse{Type: "command_result", Action: action, Success: false, Message: fmt.Sprintf("event error: %v", err)}
+	}
+	s.projStore.Project(evt) //nolint:errcheck
+
+	return WSResponse{Type: "command_result", Action: action, Success: true, Message: "Requirement approved"}
+}
+
+func (s *Server) handleRejectRequirement(payload json.RawMessage) WSResponse {
+	const action = "reject_requirement"
+
+	var p reqPayload
+	if err := json.Unmarshal(payload, &p); err != nil || p.ReqID == "" {
+		return WSResponse{Type: "command_result", Action: action, Success: false, Message: "invalid req_id"}
+	}
+
+	req, err := s.findRequirement(p.ReqID)
+	if err != nil {
+		return WSResponse{Type: "command_result", Action: action, Success: false, Message: "store error"}
+	}
+	if req == nil {
+		return WSResponse{Type: "command_result", Action: action, Success: false, Message: "requirement not found"}
+	}
+	if req.Status != "pending_review" {
+		return WSResponse{Type: "command_result", Action: action, Success: false, Message: "requirement is not pending review"}
+	}
+
+	evt := state.NewEvent(state.EventReqRejected, "dashboard", "", map[string]any{
+		"id":     p.ReqID,
+		"source": "dashboard",
+	})
+	if err := s.eventStore.Append(evt); err != nil {
+		return WSResponse{Type: "command_result", Action: action, Success: false, Message: fmt.Sprintf("event error: %v", err)}
+	}
+	s.projStore.Project(evt) //nolint:errcheck
+
+	return WSResponse{Type: "command_result", Action: action, Success: true, Message: "Requirement rejected"}
+}
+
+func (s *Server) handleMergeStory(payload json.RawMessage) WSResponse {
+	const action = "merge_story"
+
+	var p storyPayload
+	if err := json.Unmarshal(payload, &p); err != nil || p.StoryID == "" {
+		return WSResponse{Type: "command_result", Action: action, Success: false, Message: "invalid story_id"}
+	}
+
+	story, err := s.findStory(p.StoryID)
+	if err != nil {
+		return WSResponse{Type: "command_result", Action: action, Success: false, Message: "store error"}
+	}
+	if story == nil {
+		return WSResponse{Type: "command_result", Action: action, Success: false, Message: "story not found"}
+	}
+	if story.Status != "merge_ready" {
+		return WSResponse{Type: "command_result", Action: action, Success: false, Message: "story is not merge ready"}
+	}
+
+	evt := state.NewEvent(state.EventStoryMerged, "dashboard", p.StoryID, map[string]any{
+		"source": "dashboard",
+	})
+	if err := s.eventStore.Append(evt); err != nil {
+		return WSResponse{Type: "command_result", Action: action, Success: false, Message: fmt.Sprintf("event error: %v", err)}
+	}
+	s.projStore.Project(evt) //nolint:errcheck
+
+	return WSResponse{Type: "command_result", Action: action, Success: true, Message: "Story merged"}
 }
 
 // --- lookup helpers ---

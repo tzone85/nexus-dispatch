@@ -8,12 +8,17 @@ import (
 )
 
 type StateSnapshot struct {
-	Agents       []state.Agent       `json:"agents"`
-	Stories      []state.Story       `json:"stories"`
-	Pipeline     PipelineCounts      `json:"pipeline"`
-	Events       []EventSummary      `json:"events"`
-	Escalations  []state.Escalation  `json:"escalations"`
-	Requirements []state.Requirement `json:"requirements"`
+	Agents          []state.Agent       `json:"agents"`
+	Stories         []state.Story       `json:"stories"`
+	Pipeline        PipelineCounts      `json:"pipeline"`
+	Events          []EventSummary      `json:"events"`
+	Escalations     []state.Escalation  `json:"escalations"`
+	Requirements    []state.Requirement `json:"requirements"`
+	Metrics         *MetricsSummary     `json:"metrics"`
+	MemPalaceStatus *MemPalaceStatus    `json:"mempalace_status"`
+	ReviewGates     []ReviewGateItem    `json:"review_gates"`
+	Investigations  []InvestigationItem `json:"investigations"`
+	RecoveryLog     []RecoveryItem      `json:"recovery_log"`
 }
 
 type PipelineCounts struct {
@@ -85,7 +90,98 @@ func (s *Server) BuildSnapshot() (StateSnapshot, error) {
 		})
 	}
 
+	// Metrics from cache
+	if s.metricsCache != nil {
+		snap.Metrics = s.metricsCache.Get()
+	}
+
+	// MemPalace status
+	snap.MemPalaceStatus = MemPalaceCheck(s.mempalace)
+
+	// Review gates: stories at merge_ready + requirements pending review
+	gates := []ReviewGateItem{}
+	for _, story := range snap.Stories {
+		if story.Status == "merge_ready" {
+			gates = append(gates, ReviewGateItem{
+				ID:     story.ID,
+				Type:   "story",
+				Title:  story.Title,
+				Status: story.Status,
+			})
+		}
+	}
+	for _, req := range snap.Requirements {
+		if req.Status == "pending_review" {
+			gates = append(gates, ReviewGateItem{
+				ID:     req.ID,
+				Type:   "requirement",
+				Title:  req.Title,
+				Status: req.Status,
+			})
+		}
+	}
+	snap.ReviewGates = gates
+
+	// Recovery log from STORY_RECOVERY events
+	recoveryEvents, _ := s.eventStore.List(state.EventFilter{
+		Type:  state.EventStoryRecovery,
+		Limit: 50,
+	})
+	recoveries := []RecoveryItem{}
+	for _, evt := range recoveryEvents {
+		payload := state.DecodePayload(evt.Payload)
+		recType, _ := payload["type"].(string)
+		desc, _ := payload["description"].(string)
+		recoveries = append(recoveries, RecoveryItem{
+			StoryID:     evt.StoryID,
+			Type:        recType,
+			Description: desc,
+			Timestamp:   evt.Timestamp.Format("15:04:05"),
+		})
+	}
+	snap.RecoveryLog = recoveries
+
+	// Investigations from INVESTIGATION_COMPLETED events
+	invEvents, _ := s.eventStore.List(state.EventFilter{
+		Type:  state.EventInvestigationCompleted,
+		Limit: 50,
+	})
+	investigations := []InvestigationItem{}
+	for _, evt := range invEvents {
+		payload := state.DecodePayload(evt.Payload)
+		summary, _ := payload["summary"].(string)
+		reqID, _ := payload["req_id"].(string)
+		moduleCount := intFromPayload(payload, "module_count")
+		smellCount := intFromPayload(payload, "smell_count")
+		riskCount := intFromPayload(payload, "risk_count")
+		investigations = append(investigations, InvestigationItem{
+			ReqID:       reqID,
+			Summary:     summary,
+			ModuleCount: moduleCount,
+			SmellCount:  smellCount,
+			RiskCount:   riskCount,
+		})
+	}
+	snap.Investigations = investigations
+
 	return snap, nil
+}
+
+// intFromPayload extracts an integer from a decoded JSON payload map.
+// JSON numbers decode as float64; this safely converts them.
+func intFromPayload(m map[string]any, key string) int {
+	v, ok := m[key]
+	if !ok {
+		return 0
+	}
+	switch n := v.(type) {
+	case float64:
+		return int(n)
+	case int:
+		return n
+	default:
+		return 0
+	}
 }
 
 func (s *Server) SnapshotJSON() ([]byte, error) {

@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 	"github.com/tzone85/nexus-dispatch/internal/dashboard"
+	"github.com/tzone85/nexus-dispatch/internal/memory"
 	"github.com/tzone85/nexus-dispatch/internal/state"
 	"github.com/tzone85/nexus-dispatch/internal/web"
 )
@@ -53,7 +54,10 @@ func runDashboard(cmd *cobra.Command, _ []string) error {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 
-		srv := web.NewServer(s.Events, s.Proj, port, filter)
+		stateDir := expandHome(s.Config.Workspace.StateDir)
+		mp := memory.NewMemPalace()
+
+		srv := web.NewServer(s.Events, s.Proj, port, filter, stateDir, mp)
 		if err := srv.Start(ctx); err != nil && err != http.ErrServerClosed {
 			return fmt.Errorf("web server: %w", err)
 		}

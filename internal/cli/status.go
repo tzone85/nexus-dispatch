@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 
@@ -17,6 +18,7 @@ func newStatusCmd() *cobra.Command {
 	}
 	cmd.Flags().String("req", "", "Filter by requirement ID")
 	cmd.Flags().Bool("all", false, "Show all requirements including archived and from other repos")
+	cmd.Flags().Bool("json", false, "Output as JSON")
 	cmd.SilenceUsage = true
 	return cmd
 }
@@ -25,12 +27,17 @@ func runStatus(cmd *cobra.Command, _ []string) error {
 	cfgPath, _ := cmd.Flags().GetString("config")
 	reqFilter, _ := cmd.Flags().GetString("req")
 	showAll, _ := cmd.Flags().GetBool("all")
+	jsonMode, _ := cmd.Flags().GetBool("json")
 
 	s, err := loadStores(cfgPath)
 	if err != nil {
 		return err
 	}
 	defer s.Close()
+
+	if jsonMode {
+		return runStatusJSON(cmd, s, reqFilter, showAll)
+	}
 
 	out := cmd.OutOrStdout()
 
@@ -152,4 +159,93 @@ func countByStatus(stories []state.Story) map[string]int {
 		counts[s.Status]++
 	}
 	return counts
+}
+
+// jsonStory is the JSON representation of a single story.
+type jsonStory struct {
+	ID         string `json:"id"`
+	Title      string `json:"title"`
+	Status     string `json:"status"`
+	Complexity int    `json:"complexity"`
+	Wave       int    `json:"wave"`
+	Branch     string `json:"branch"`
+}
+
+// jsonRequirement is the JSON representation of a requirement with its stories.
+type jsonRequirement struct {
+	ID         string      `json:"id"`
+	Title      string      `json:"title"`
+	Status     string      `json:"status"`
+	StoryCount int         `json:"story_count"`
+	Stories    []jsonStory `json:"stories"`
+}
+
+// jsonStatusOutput is the top-level JSON envelope for the status command.
+type jsonStatusOutput struct {
+	Requirements []jsonRequirement `json:"requirements"`
+}
+
+// runStatusJSON outputs the status information as structured JSON.
+func runStatusJSON(cmd *cobra.Command, s stores, reqFilter string, showAll bool) error {
+	out := cmd.OutOrStdout()
+
+	var reqs []state.Requirement
+
+	if reqFilter != "" {
+		req, err := s.Proj.GetRequirement(reqFilter)
+		if err != nil {
+			return fmt.Errorf("get requirement: %w", err)
+		}
+		reqs = []state.Requirement{req}
+	} else {
+		var filter state.ReqFilter
+		if !showAll {
+			cwd, _ := os.Getwd()
+			filter.RepoPath = cwd
+			filter.ExcludeArchived = true
+		}
+		var err error
+		reqs, err = s.Proj.ListRequirementsFiltered(filter)
+		if err != nil {
+			return fmt.Errorf("list requirements: %w", err)
+		}
+	}
+
+	output := jsonStatusOutput{
+		Requirements: make([]jsonRequirement, 0, len(reqs)),
+	}
+
+	for _, req := range reqs {
+		stories, err := s.Proj.ListStories(state.StoryFilter{ReqID: req.ID})
+		if err != nil {
+			return fmt.Errorf("list stories for %s: %w", req.ID, err)
+		}
+
+		jStories := make([]jsonStory, 0, len(stories))
+		for _, story := range stories {
+			jStories = append(jStories, jsonStory{
+				ID:         story.ID,
+				Title:      story.Title,
+				Status:     story.Status,
+				Complexity: story.Complexity,
+				Wave:       story.Wave,
+				Branch:     story.Branch,
+			})
+		}
+
+		output.Requirements = append(output.Requirements, jsonRequirement{
+			ID:         req.ID,
+			Title:      req.Title,
+			Status:     req.Status,
+			StoryCount: len(stories),
+			Stories:    jStories,
+		})
+	}
+
+	data, err := json.MarshalIndent(output, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal JSON: %w", err)
+	}
+	fmt.Fprintln(out, string(data))
+	return nil
 }

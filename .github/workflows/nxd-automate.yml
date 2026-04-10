@@ -1,0 +1,95 @@
+name: NXD Automate
+
+on:
+  issues:
+    types: [labeled]
+
+jobs:
+  nxd-automate:
+    if: github.event.label.name == 'nxd'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Build NXD
+        run: go build -o ./nxd ./cmd/nxd/
+
+      - name: Install Ollama
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          ollama serve &
+          sleep 5
+
+      - name: Pull model
+        run: ollama pull gemma4:26b
+        env:
+          OLLAMA_HOST: http://localhost:11434
+
+      - name: Initialize NXD
+        run: ./nxd init
+
+      - name: Plan requirement
+        env:
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+        run: |
+          REQUIREMENT="${ISSUE_TITLE}
+
+          ${ISSUE_BODY}"
+          ./nxd req --review "$REQUIREMENT"
+
+      - name: Get requirement ID
+        id: get-req
+        run: |
+          REQ_ID=$(./nxd status --json | jq -r '.requirements[0].id')
+          echo "req_id=$REQ_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Approve plan
+        env:
+          REQ_ID: ${{ steps.get-req.outputs.req_id }}
+        run: ./nxd approve "$REQ_ID"
+
+      - name: Execute pipeline
+        env:
+          REQ_ID: ${{ steps.get-req.outputs.req_id }}
+        run: ./nxd resume "$REQ_ID"
+        timeout-minutes: 20
+
+      - name: Create branch and PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+        run: |
+          BRANCH="nxd/issue-${ISSUE_NUMBER}"
+          git config user.name "NXD Bot"
+          git config user.email "nxd@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add -A
+          git diff --cached --quiet || git commit -m "feat: implement #${ISSUE_NUMBER}"
+          git push -u origin "$BRANCH"
+          gh pr create \
+            --title "NXD: ${ISSUE_TITLE}" \
+            --body "Automated implementation by NXD from #${ISSUE_NUMBER}" \
+            --head "$BRANCH"
+
+      - name: Comment on issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          PR_URL=$(gh pr list --head "nxd/issue-${ISSUE_NUMBER}" --json url -q '.[0].url')
+          gh issue comment "$ISSUE_NUMBER" \
+            --body "NXD has created a PR: $PR_URL"
