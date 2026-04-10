@@ -43,6 +43,30 @@ func runResume(cmd *cobra.Command, args []string) error {
 
 	out := cmd.OutOrStdout()
 
+	// Acquire pipeline lock to prevent concurrent runs.
+	stateDir := expandHome(s.Config.Workspace.StateDir)
+	lock, err := engine.AcquireLock(stateDir)
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
+
+	// Detect repo path early for recovery (also used later for execution).
+	repoDir, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("get working directory: %w", err)
+	}
+
+	// Run crash recovery before dispatching.
+	recoveryActions := engine.RunRecovery(repoDir, s.Events, s.Proj)
+	if len(recoveryActions) > 0 {
+		fmt.Fprintf(out, "Recovery: fixed %d issues\n", len(recoveryActions))
+		for _, a := range recoveryActions {
+			fmt.Fprintf(out, "  - %s: %s\n", a.StoryID, a.Description)
+		}
+		fmt.Fprintln(out)
+	}
+
 	// Verify the requirement exists
 	req, err := s.Proj.GetRequirement(reqID)
 	if err != nil {
@@ -123,12 +147,6 @@ func runResume(cmd *cobra.Command, args []string) error {
 	reg, err := runtime.NewRegistry(s.Config.Runtimes)
 	if err != nil {
 		return fmt.Errorf("init runtime registry: %w", err)
-	}
-
-	// Detect repo path
-	repoDir, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("get working directory: %w", err)
 	}
 
 	// Verify the repo has at least one commit (worktrees require a base commit)

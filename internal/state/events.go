@@ -21,6 +21,8 @@ const (
 	EventReqCompleted           EventType = "REQ_COMPLETED"
 	EventReqClassified          EventType = "REQ_CLASSIFIED"
 	EventInvestigationCompleted EventType = "INVESTIGATION_COMPLETED"
+	EventReqPendingReview       EventType = "REQ_PENDING_REVIEW"
+	EventReqRejected            EventType = "REQ_REJECTED"
 
 	// Story lifecycle events.
 	EventStoryCreated         EventType = "STORY_CREATED"
@@ -36,6 +38,8 @@ const (
 	EventStoryQAPassed        EventType = "STORY_QA_PASSED"
 	EventStoryPRCreated       EventType = "STORY_PR_CREATED"
 	EventStoryMerged          EventType = "STORY_MERGED"
+	EventStoryMergeReady      EventType = "STORY_MERGE_READY"
+	EventStoryRecovery        EventType = "STORY_RECOVERY"
 	EventStoryEscalated       EventType = "STORY_ESCALATED"
 	EventStoryRewritten       EventType = "STORY_REWRITTEN"
 	EventStorySplit           EventType = "STORY_SPLIT"

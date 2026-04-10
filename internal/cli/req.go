@@ -35,6 +35,7 @@ The requirement text can be provided as:
 	}
 	cmd.Flags().StringP("file", "f", "", "read requirement from a file (use - for stdin)")
 	cmd.Flags().Bool("godmode", false, "skip permission prompts on LLM calls (fully autonomous)")
+	cmd.Flags().Bool("review", false, "Pause after planning for manual review")
 	cmd.SilenceUsage = true
 	return cmd
 }
@@ -52,6 +53,14 @@ func runReq(cmd *cobra.Command, args []string) error {
 	}
 	defer s.Close()
 
+	// Acquire pipeline lock to prevent concurrent runs.
+	stateDir := expandHome(s.Config.Workspace.StateDir)
+	lock, err := engine.AcquireLock(stateDir)
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
+
 	// Determine LLM client — --godmode flag takes precedence over config
 	godmode, _ := cmd.Flags().GetBool("godmode")
 	if !godmode {
@@ -66,7 +75,6 @@ func runReq(cmd *cobra.Command, args []string) error {
 	reqID := ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader).String()
 
 	// Wrap LLM client with metrics tracking
-	stateDir := expandHome(s.Config.Workspace.StateDir)
 	recorder := metrics.NewRecorder(filepath.Join(stateDir, "metrics.jsonl"))
 	client = metrics.NewMetricsClient(client, recorder, reqID, "pipeline", "")
 
@@ -105,6 +113,7 @@ func runReq(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(out, "Running codebase investigation...\n")
 		investigatorModel := s.Config.Models.Investigator
 		inv := engine.NewInvestigator(client, investigatorModel.Model, investigatorModel.MaxTokens)
+		inv.SetCommandAllowlist(s.Config.Investigation.CommandAllowlist)
 		report, err = inv.Investigate(ctx, repoPath)
 		if err != nil {
 			fmt.Fprintf(out, "Warning: investigation failed: %v (continuing without report)\n", err)
@@ -163,6 +172,20 @@ func runReq(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Fprintf(out, "\nTotal complexity: %d story points\n", totalComplexity)
+
+	// If --review flag is set, pause for manual review before execution
+	reviewMode, _ := cmd.Flags().GetBool("review")
+	if reviewMode {
+		evt := state.NewEvent(state.EventReqPendingReview, "", "", map[string]any{"id": reqID})
+		s.Events.Append(evt)
+		s.Proj.Project(evt)
+		fmt.Fprintf(out, "\nPlan ready for review.\n")
+		fmt.Fprintf(out, "  Review:  nxd status --req %s\n", reqID)
+		fmt.Fprintf(out, "  Approve: nxd approve %s\n", reqID)
+		fmt.Fprintf(out, "  Reject:  nxd reject %s\n", reqID)
+		return nil
+	}
+
 	fmt.Fprintf(out, "Run 'nxd status --req %s' to track progress.\n", reqID)
 
 	return nil

@@ -61,10 +61,11 @@ func DefaultConfig() Config {
 			LogArchive:          "file",
 		},
 		Merge: MergeConfig{
-			AutoMerge:  true,
-			BaseBranch: "main",
-			Mode:       "local",
-			PRTemplate: "## Story: {story_id}\n{description}\n### Acceptance Criteria\n{acceptance_criteria}\n",
+			AutoMerge:         true,
+			ReviewBeforeMerge: false,
+			BaseBranch:        "main",
+			Mode:              "local",
+			PRTemplate:        "## Story: {story_id}\n{description}\n### Acceptance Criteria\n{acceptance_criteria}\n",
 		},
 		Planning: PlanningConfig{
 			SequentialFilePatterns: []string{"package.json", "*.config.*", "src/core/*"},
@@ -72,6 +73,17 @@ func DefaultConfig() Config {
 		},
 		Memory: MemoryConfig{
 			Enabled: true,
+		},
+		Investigation: InvestigationConfig{
+			CommandAllowlist: []string{
+				"ls", "find", "wc", "grep", "cat", "head", "tail",
+				"git log", "git status", "git diff", "git ls-files", "git blame", "git branch",
+				"go build", "go test", "go mod", "go vet",
+				"npm test", "npm run", "npm ls",
+				"python -m pytest", "python -m py_compile",
+				"make",
+				"docker ps", "docker-compose config",
+			},
 		},
 		Runtimes: map[string]RuntimeConfig{
 			"aider": {
