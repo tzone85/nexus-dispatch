@@ -183,6 +183,11 @@ func runResume(cmd *cobra.Command, args []string) error {
 
 	// Spawn agents via executor
 	executor := engine.NewExecutor(reg, s.Config, s.Events, s.Proj, mp)
+	// Provide LLM client for native runtimes (Gemma)
+	nativeClient, nativeErr := buildLLMClient(s.Config.Models.Junior.Provider)
+	if nativeErr == nil {
+		executor.SetLLMClient(nativeClient)
+	}
 	results := executor.SpawnAll(repoDir, assignments, storyMap)
 
 	activeAgents := make([]engine.ActiveAgent, 0, len(results))

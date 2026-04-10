@@ -1,8 +1,10 @@
 package engine
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +12,7 @@ import (
 	"github.com/tzone85/nexus-dispatch/internal/agent"
 	"github.com/tzone85/nexus-dispatch/internal/config"
 	nxdgit "github.com/tzone85/nexus-dispatch/internal/git"
+	"github.com/tzone85/nexus-dispatch/internal/llm"
 	"github.com/tzone85/nexus-dispatch/internal/memory"
 	"github.com/tzone85/nexus-dispatch/internal/runtime"
 	"github.com/tzone85/nexus-dispatch/internal/state"
@@ -30,6 +33,7 @@ type Executor struct {
 	eventStore state.EventStore
 	projStore  state.ProjectionStore
 	mempalace  *memory.MemPalace
+	llmClient  llm.Client // for native runtimes (Gemma)
 }
 
 // NewExecutor creates an Executor wired to the runtime registry, configuration,
@@ -43,6 +47,11 @@ func NewExecutor(reg *runtime.Registry, cfg config.Config, es state.EventStore, 
 		projStore:  ps,
 		mempalace:  mp,
 	}
+}
+
+// SetLLMClient sets the LLM client for native runtime execution.
+func (e *Executor) SetLLMClient(client llm.Client) {
+	e.llmClient = client
 }
 
 // SpawnResult holds the outcome of spawning an agent for one assignment.
@@ -97,6 +106,11 @@ func (e *Executor) spawn(repoDir string, a Assignment, story PlannedStory, waveS
 	// Resolve runtime for this role
 	rtName := e.runtimeForRole(a.Role)
 	result.RuntimeName = rtName
+
+	// Check if this is a native runtime (e.g., Gemma)
+	if e.registry.IsNative(rtName) {
+		return e.spawnNative(repoDir, a, story, waveStories, worktreePath, rtName, result)
+	}
 
 	rt, err := e.registry.Get(rtName)
 	if err != nil {
@@ -179,7 +193,21 @@ func (e *Executor) spawn(repoDir string, a Assignment, story PlannedStory, waveS
 // runtime is typically "aider" backed by Ollama.
 func (e *Executor) runtimeForRole(role agent.Role) string {
 	modelCfg := role.ModelConfig(e.config.Models)
+	modelName := strings.ToLower(modelCfg.Model)
 	provider := strings.ToLower(modelCfg.Provider)
+
+	// Check native runtimes first — if the model matches a native runtime's
+	// model list, prefer it (no external CLI dependency needed).
+	for name, rtCfg := range e.config.Runtimes {
+		if !rtCfg.Native {
+			continue
+		}
+		for _, m := range rtCfg.Models {
+			if strings.HasPrefix(modelName, strings.ToLower(m)) {
+				return name
+			}
+		}
+	}
 
 	// Well-known provider → runtime mappings
 	providerRuntimes := map[string][]string{
@@ -244,4 +272,74 @@ func execExpandHome(path string) string {
 		return path
 	}
 	return filepath.Join(home, path[1:])
+}
+
+// spawnNative runs a story using the native Gemma runtime (no tmux, no external CLI).
+// It calls the LLM directly via function calling tools.
+func (e *Executor) spawnNative(repoDir string, a Assignment, story PlannedStory, waveStories []WaveStoryInfo, worktreePath, rtName string, result SpawnResult) SpawnResult {
+	if e.llmClient == nil {
+		result.Error = fmt.Errorf("native runtime %s requires an LLM client (call SetLLMClient first)", rtName)
+		return result
+	}
+
+	nativeCfg, ok := e.registry.NativeConfig(rtName)
+	if !ok {
+		result.Error = fmt.Errorf("native runtime config not found: %s", rtName)
+		return result
+	}
+
+	// Build prompt context
+	promptCtx := agent.PromptContext{
+		StoryID:            a.StoryID,
+		StoryTitle:         story.Title,
+		StoryDescription:   story.Description,
+		AcceptanceCriteria: string(story.AcceptanceCriteria),
+		RepoPath:           worktreePath,
+		Complexity:         story.Complexity,
+		ReviewFeedback:     e.latestReviewFeedback(a.StoryID),
+	}
+
+	if e.mempalace != nil && e.mempalace.IsAvailable() {
+		repoName := filepath.Base(repoDir)
+		query := story.Title + " " + story.Description
+		searchResults, _ := e.mempalace.Search(query, repoName, "", 5)
+		if len(searchResults) > 0 {
+			var sb strings.Builder
+			sb.WriteString("## Prior Work in This Requirement\n\n")
+			for _, r := range searchResults {
+				sb.WriteString(fmt.Sprintf("- %s\n", r.Text))
+			}
+			promptCtx.PriorWorkContext = sb.String()
+		}
+	}
+	promptCtx.WaveBrief = BuildWaveBrief(a.StoryID, waveStories)
+
+	modelCfg := a.Role.ModelConfig(e.config.Models)
+	systemPrompt := agent.SystemPrompt(a.Role, promptCtx)
+	goal := agent.GoalPrompt(a.Role, promptCtx)
+
+	// Emit STORY_STARTED
+	startEvt := state.NewEvent(state.EventStoryStarted, a.AgentID, a.StoryID, map[string]any{
+		"worktree_path": worktreePath, "runtime": rtName, "branch": a.Branch,
+	})
+	e.eventStore.Append(startEvt)
+	e.projStore.Project(startEvt)
+
+	// Run native Gemma runtime in a goroutine (non-blocking, like tmux)
+	go func() {
+		gemmaRT := runtime.NewGemmaRuntime(e.llmClient, runtime.GemmaRuntimeConfig{
+			MaxIterations:    nativeCfg.MaxIterations,
+			CommandAllowlist: nativeCfg.CommandAllowlist,
+		})
+
+		log.Printf("[native-runtime] executing %s in %s", a.StoryID, worktreePath)
+		execResult := gemmaRT.Execute(context.Background(), worktreePath, modelCfg.Model, systemPrompt, goal)
+		if execResult.Error != nil {
+			log.Printf("[native-runtime] %s failed after %d iterations: %v", a.StoryID, execResult.Iterations, execResult.Error)
+		} else {
+			log.Printf("[native-runtime] %s completed in %d iterations: %s", a.StoryID, execResult.Iterations, execResult.Summary)
+		}
+	}()
+
+	return result
 }
