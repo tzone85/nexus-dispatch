@@ -12,6 +12,7 @@ import (
 	"github.com/tzone85/nexus-dispatch/internal/engine"
 	nxdgit "github.com/tzone85/nexus-dispatch/internal/git"
 	"github.com/tzone85/nexus-dispatch/internal/graph"
+	"github.com/tzone85/nexus-dispatch/internal/memory"
 	"github.com/tzone85/nexus-dispatch/internal/metrics"
 	"github.com/tzone85/nexus-dispatch/internal/runtime"
 	"github.com/tzone85/nexus-dispatch/internal/state"
@@ -135,8 +136,11 @@ func runResume(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("repository has no commits — run 'git add . && git commit -m \"initial commit\"' first")
 	}
 
+	// Initialize MemPalace for semantic memory (degrades gracefully when unavailable).
+	mp := memory.NewMemPalace()
+
 	// Spawn agents via executor
-	executor := engine.NewExecutor(reg, s.Config, s.Events, s.Proj, nil)
+	executor := engine.NewExecutor(reg, s.Config, s.Events, s.Proj, mp)
 	results := executor.SpawnAll(repoDir, assignments, storyMap)
 
 	activeAgents := make([]engine.ActiveAgent, 0, len(results))
@@ -199,6 +203,7 @@ func runResume(cmd *cobra.Command, args []string) error {
 	defer cancel()
 
 	monitor := engine.NewMonitor(reg, watchdog, reviewer, qaRunner, merger, s.Config, s.Events, s.Proj)
+	monitor.SetMemPalace(mp)
 
 	// Enable LLM-powered conflict resolution during rebase.
 	if llmClient != nil {
