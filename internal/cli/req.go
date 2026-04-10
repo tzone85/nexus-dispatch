@@ -105,6 +105,7 @@ func runReq(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(out, "Running codebase investigation...\n")
 		investigatorModel := s.Config.Models.Investigator
 		inv := engine.NewInvestigator(client, investigatorModel.Model, investigatorModel.MaxTokens)
+		inv.SetCommandAllowlist(s.Config.Investigation.CommandAllowlist)
 		report, err = inv.Investigate(ctx, repoPath)
 		if err != nil {
 			fmt.Fprintf(out, "Warning: investigation failed: %v (continuing without report)\n", err)

@@ -74,9 +74,10 @@ type Convention struct {
 // Investigator runs a tool-calling loop against an LLM to investigate a
 // codebase and produce a structured InvestigationReport.
 type Investigator struct {
-	client    llm.Client
-	model     string
-	maxTokens int
+	client           llm.Client
+	model            string
+	maxTokens        int
+	commandAllowlist []string
 }
 
 // NewInvestigator creates an Investigator backed by the given LLM client.
@@ -86,6 +87,27 @@ func NewInvestigator(client llm.Client, model string, maxTokens int) *Investigat
 		model:     model,
 		maxTokens: maxTokens,
 	}
+}
+
+// SetCommandAllowlist configures the list of allowed command prefixes for
+// run_command tool calls. An empty list allows all commands (backward compat).
+func (inv *Investigator) SetCommandAllowlist(allowlist []string) {
+	inv.commandAllowlist = allowlist
+}
+
+// isCommandAllowed checks whether a command is permitted by the allowlist.
+// If the allowlist is empty, all commands are allowed for backward compatibility.
+func (inv *Investigator) isCommandAllowed(command string) bool {
+	if len(inv.commandAllowlist) == 0 {
+		return true // backward compat
+	}
+	lower := strings.ToLower(strings.TrimSpace(command))
+	for _, pattern := range inv.commandAllowlist {
+		if strings.HasPrefix(lower, strings.ToLower(pattern)) {
+			return true
+		}
+	}
+	return false
 }
 
 // Investigate runs the 7-phase investigation loop on the repository at
@@ -215,6 +237,10 @@ func (inv *Investigator) handleRunCommand(ctx context.Context, repoPath string, 
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return fmt.Sprintf("error: invalid run_command arguments: %v", err)
+	}
+
+	if !inv.isCommandAllowed(params.Command) {
+		return fmt.Sprintf("error: command not in allowlist: %s", params.Command)
 	}
 
 	cmd := exec.CommandContext(ctx, "sh", "-c", params.Command)
