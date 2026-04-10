@@ -327,3 +327,37 @@ button:hover {
 .hidden {
   display: none !important;
 }
+
+/* ── Metrics ──────────────────────────────────────────────────────── */
+.metrics-grid { display: flex; gap: 1rem; flex-wrap: wrap; }
+.metric-card { background: var(--card-bg, #1a1a2e); padding: 1rem; border-radius: 8px; text-align: center; min-width: 120px; flex: 1; }
+.metric-value { display: block; font-size: 1.8rem; font-weight: bold; color: var(--accent, #00d4ff); }
+.metric-label { display: block; font-size: 0.8rem; opacity: 0.7; margin-top: 0.3rem; }
+
+/* ── Review Gates ─────────────────────────────────────────────────── */
+.review-gate-item { padding: 0.8rem; margin-bottom: 0.5rem; background: var(--card-bg, #1a1a2e); border-radius: 6px; display: flex; align-items: center; gap: 0.8rem; flex-wrap: wrap; }
+.gate-id { opacity: 0.5; font-size: 0.85rem; }
+.btn-approve { background: #28a745; color: white; border: none; padding: 0.4rem 1rem; border-radius: 4px; cursor: pointer; }
+.btn-reject { background: #dc3545; color: white; border: none; padding: 0.4rem 1rem; border-radius: 4px; cursor: pointer; }
+.btn-merge { background: #6f42c1; color: white; border: none; padding: 0.4rem 1rem; border-radius: 4px; cursor: pointer; }
+.btn-approve:hover { background: #218838; }
+.btn-reject:hover { background: #c82333; }
+.btn-merge:hover { background: #5a32a3; }
+
+/* ── Badges ───────────────────────────────────────────────────────── */
+.badge { display: inline-block; padding: 0.2rem 0.6rem; border-radius: 12px; font-size: 0.75rem; background: #333; }
+.badge-pending_review { background: #ffc107; color: #000; }
+.badge-merge_ready { background: #6f42c1; color: #fff; }
+.badge-warn { background: #ffc107; color: #000; }
+.badge-danger { background: #dc3545; color: #fff; }
+
+/* ── MemPalace Status ─────────────────────────────────────────────── */
+.status-indicator { font-size: 0.85rem; margin-left: 1rem; }
+.mem-active { color: #28a745; }
+.mem-offline { color: #6c757d; }
+
+/* ── Investigation + Recovery ─────────────────────────────────────── */
+.investigation-item { padding: 0.6rem; margin-bottom: 0.4rem; background: var(--card-bg, #1a1a2e); border-radius: 6px; }
+.inv-badges { margin-left: 0.5rem; }
+.recovery-item { padding: 0.5rem; margin-bottom: 0.3rem; font-size: 0.9rem; }
+.recovery-item .timestamp { opacity: 0.5; margin-right: 0.5rem; }
