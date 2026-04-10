@@ -40,6 +40,9 @@ func init() {
 	rootCmd.AddCommand(newModelsCmd())
 	rootCmd.AddCommand(newMetricsCmd())
 	rootCmd.AddCommand(newWatchCmd())
+	rootCmd.AddCommand(newPlanCmd())
+	rootCmd.AddCommand(newApproveCmd())
+	rootCmd.AddCommand(newRejectCmd())
 }
 
 func Execute() error {
