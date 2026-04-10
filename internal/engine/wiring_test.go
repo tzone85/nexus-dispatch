@@ -8,6 +8,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -1079,6 +1080,101 @@ func TestWiring_MetricsRecorded(t *testing.T) {
 	}
 	if entries[0].Phase != "plan" {
 		t.Errorf("Phase = %q, want plan", entries[0].Phase)
+	}
+}
+
+// --- Helper: createWiringTestStores ---
+
+// wiringTestStores bundles concrete store types for wiring tests that need
+// access to methods beyond the ProjectionStore interface (e.g. ListRequirementsFiltered).
+type wiringTestStores struct {
+	Events *state.FileStore
+	Proj   *state.SQLiteStore
+}
+
+// createWiringTestStores creates concrete FileStore + SQLiteStore instances
+// suitable for wiring tests. Both are cleaned up via t.Cleanup.
+func createWiringTestStores(t *testing.T) wiringTestStores {
+	t.Helper()
+	dir := t.TempDir()
+
+	es, err := state.NewFileStore(filepath.Join(dir, "events.jsonl"))
+	if err != nil {
+		t.Fatalf("create event store: %v", err)
+	}
+	t.Cleanup(func() { es.Close() })
+
+	ps, err := state.NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatalf("create projection store: %v", err)
+	}
+	t.Cleanup(func() { ps.Close() })
+
+	return wiringTestStores{Events: es, Proj: ps}
+}
+
+// --- Test 24: StatusJSONOutput ---
+// Prove: requirements stored in the projection store can be serialized to JSON.
+
+func TestWiring_StatusJSONOutput(t *testing.T) {
+	stores := createWiringTestStores(t)
+	reqEvt := state.NewEvent(state.EventReqSubmitted, "", "", map[string]any{
+		"id": "req-json-test", "title": "Test requirement", "description": "test",
+	})
+	stores.Events.Append(reqEvt)
+	stores.Proj.Project(reqEvt)
+
+	reqs, _ := stores.Proj.ListRequirementsFiltered(state.ReqFilter{})
+	if len(reqs) == 0 {
+		t.Fatal("expected at least 1 requirement")
+	}
+	data, err := json.Marshal(reqs)
+	if err != nil {
+		t.Fatalf("JSON marshal: %v", err)
+	}
+	if !strings.Contains(string(data), "req-json-test") {
+		t.Error("expected req ID in JSON output")
+	}
+}
+
+// --- Test 25: DashboardSnapshotIncludesMetrics ---
+// Prove: MetricsSummary type works correctly with the Summarize function.
+
+func TestWiring_DashboardSnapshotIncludesMetrics(t *testing.T) {
+	// Create metric entries and summarize
+	entries := []metrics.MetricEntry{
+		{ReqID: "r1", Phase: "plan", TokensIn: 500, TokensOut: 200, Success: true},
+		{ReqID: "r1", Phase: "review", TokensIn: 300, TokensOut: 100, Success: true},
+	}
+	summary := metrics.Summarize(entries)
+	if summary.TotalRequirements != 1 {
+		t.Errorf("TotalRequirements = %d, want 1", summary.TotalRequirements)
+	}
+	totalTokens := summary.TotalTokensIn + summary.TotalTokensOut
+	if totalTokens != 1100 {
+		t.Errorf("total tokens = %d, want 1100", totalTokens)
+	}
+}
+
+// --- Test 26: DashboardReviewGatesPopulated ---
+// Prove: stories in "merge_ready" status are detectable (the dashboard would filter these).
+
+func TestWiring_DashboardReviewGatesPopulated(t *testing.T) {
+	stores := createWiringTestStores(t)
+	createEvt := state.NewEvent(state.EventStoryCreated, "", "s-dash-test", map[string]any{
+		"id": "s-dash-test", "req_id": "req-test", "title": "Dashboard story",
+		"description": "", "complexity": 3, "acceptance_criteria": "",
+	})
+	stores.Events.Append(createEvt)
+	stores.Proj.Project(createEvt)
+
+	mrEvt := state.NewEvent(state.EventStoryMergeReady, "", "s-dash-test", nil)
+	stores.Events.Append(mrEvt)
+	stores.Proj.Project(mrEvt)
+
+	story, _ := stores.Proj.GetStory("s-dash-test")
+	if story.Status != "merge_ready" {
+		t.Errorf("status = %q, want merge_ready", story.Status)
 	}
 }
 
