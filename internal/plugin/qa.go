@@ -7,7 +7,6 @@ import (
 )
 
 // PluginQACheck defines a QA check provided by a plugin.
-// This type may also be defined in loader.go; if so, remove this definition.
 type PluginQACheck struct {
 	Name       string
 	ScriptPath string
