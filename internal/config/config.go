@@ -7,6 +7,12 @@ import (
 	"strings"
 )
 
+// MemoryConfig controls the MemPalace context-memory subsystem.
+type MemoryConfig struct {
+	Enabled    bool   `yaml:"enabled"`
+	PalacePath string `yaml:"palace_path,omitempty"`
+}
+
 // Config is the top-level NXD configuration.
 type Config struct {
 	Version   string                   `yaml:"version"`
@@ -17,6 +23,7 @@ type Config struct {
 	Cleanup   CleanupConfig            `yaml:"cleanup"`
 	Merge     MergeConfig              `yaml:"merge"`
 	Planning  PlanningConfig           `yaml:"planning"`
+	Memory    MemoryConfig             `yaml:"memory"`
 	Runtimes  map[string]RuntimeConfig `yaml:"runtimes"`
 }
 

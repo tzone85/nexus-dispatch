@@ -332,3 +332,10 @@ func TestValidation_ZeroUpdateInterval(t *testing.T) {
 		t.Fatalf("expected zero interval to pass validation, got: %v", err)
 	}
 }
+
+func TestDefaultConfig_MemoryDefaults(t *testing.T) {
+	cfg := config.DefaultConfig()
+	if !cfg.Memory.Enabled {
+		t.Error("expected Memory.Enabled=true by default")
+	}
+}

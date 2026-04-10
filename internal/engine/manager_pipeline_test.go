@@ -72,7 +72,7 @@ func buildManagerMonitorWithAutoResume(
 	mon.SetManager(mgr)
 
 	dispatcher := engine.NewDispatcher(cfg, es, ps)
-	executor := engine.NewExecutor(reg, cfg, es, ps)
+	executor := engine.NewExecutor(reg, cfg, es, ps, nil)
 	mon.SetAutoResume(dispatcher, executor)
 
 	return mon

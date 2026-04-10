@@ -134,7 +134,7 @@ func runResume(cmd *cobra.Command, args []string) error {
 	}
 
 	// Spawn agents via executor
-	executor := engine.NewExecutor(reg, s.Config, s.Events, s.Proj)
+	executor := engine.NewExecutor(reg, s.Config, s.Events, s.Proj, nil)
 	results := executor.SpawnAll(repoDir, assignments, storyMap)
 
 	activeAgents := make([]engine.ActiveAgent, 0, len(results))

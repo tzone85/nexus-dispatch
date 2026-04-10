@@ -38,6 +38,8 @@ func init() {
 	rootCmd.AddCommand(newDashboardCmd())
 	rootCmd.AddCommand(newArchiveCmd())
 	rootCmd.AddCommand(newModelsCmd())
+	rootCmd.AddCommand(newMetricsCmd())
+	rootCmd.AddCommand(newWatchCmd())
 }
 
 func Execute() error {
