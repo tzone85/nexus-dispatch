@@ -417,6 +417,61 @@ func TestInvestigator_NoToolCallsReturnsReport(t *testing.T) {
 	}
 }
 
+func TestInvestigator_ConventionsInReport(t *testing.T) {
+	reportJSON := `{
+		"summary": "test project",
+		"entry_points": ["main.go"],
+		"build_passes": true,
+		"test_passes": true,
+		"test_count": 5,
+		"coverage_pct": 80.0,
+		"modules": [],
+		"code_smells": [],
+		"risk_areas": [],
+		"recommendations": ["add more tests"],
+		"conventions": [
+			{"area": "testing", "pattern": "table-driven with testify", "example_file": "store_test.go"},
+			{"area": "handlers", "pattern": "Chi router with JSON responses", "example_file": "handler.go"}
+		]
+	}`
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\nfunc main() {}"), 0644); err != nil {
+		t.Fatalf("write main.go: %v", err)
+	}
+
+	client := llm.NewReplayClient(
+		llm.CompletionResponse{
+			Model: "gemma4:26b",
+			ToolCalls: []llm.ToolCall{
+				{
+					ID:        "call-1",
+					Name:      "submit_report",
+					Arguments: json.RawMessage(reportJSON),
+				},
+			},
+		},
+	)
+
+	inv := engine.NewInvestigator(client, "gemma4:26b", 16000)
+	report, err := inv.Investigate(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("Investigate: %v", err)
+	}
+	if len(report.Conventions) != 2 {
+		t.Fatalf("expected 2 conventions, got %d", len(report.Conventions))
+	}
+	if report.Conventions[0].Area != "testing" {
+		t.Errorf("first convention area = %q, want %q", report.Conventions[0].Area, "testing")
+	}
+	if report.Conventions[1].Pattern != "Chi router with JSON responses" {
+		t.Errorf("second convention pattern = %q, want %q", report.Conventions[1].Pattern, "Chi router with JSON responses")
+	}
+	if report.Conventions[0].ExampleFile != "store_test.go" {
+		t.Errorf("first convention example_file = %q, want %q", report.Conventions[0].ExampleFile, "store_test.go")
+	}
+}
+
 func TestInvestigator_MultipleToolCallsInOneResponse(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte("package a"), 0644); err != nil {

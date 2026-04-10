@@ -29,6 +29,7 @@ type InvestigationReport struct {
 	TestStatus      HealthStatus `json:"test_status"`
 	CodeSmells      []CodeSmell  `json:"code_smells"`
 	RiskAreas       []RiskArea   `json:"risk_areas"`
+	Conventions     []Convention `json:"conventions"`
 	Recommendations []string     `json:"recommendations"`
 }
 
@@ -63,6 +64,13 @@ type RiskArea struct {
 	Severity string `json:"severity"`
 }
 
+// Convention describes a coding pattern or convention detected in the codebase.
+type Convention struct {
+	Area        string `json:"area"`
+	Pattern     string `json:"pattern"`
+	ExampleFile string `json:"example_file"`
+}
+
 // Investigator runs a tool-calling loop against an LLM to investigate a
 // codebase and produce a structured InvestigationReport.
 type Investigator struct {
@@ -80,7 +88,7 @@ func NewInvestigator(client llm.Client, model string, maxTokens int) *Investigat
 	}
 }
 
-// Investigate runs the 6-phase investigation loop on the repository at
+// Investigate runs the 7-phase investigation loop on the repository at
 // repoPath. It returns a structured report or an error if the model fails to
 // submit a report within the iteration limit.
 func (inv *Investigator) Investigate(ctx context.Context, repoPath string) (*InvestigationReport, error) {
@@ -90,7 +98,7 @@ func (inv *Investigator) Investigate(ctx context.Context, repoPath string) (*Inv
 	messages := []llm.Message{
 		{
 			Role:    llm.RoleUser,
-			Content: fmt.Sprintf("Investigate the codebase at: %s\nFollow all 6 phases, then call submit_report.", repoPath),
+			Content: fmt.Sprintf("Investigate the codebase at: %s\nFollow all 7 phases, then call submit_report.", repoPath),
 		},
 	}
 
@@ -239,6 +247,7 @@ func parseSubmitReport(args json.RawMessage) (*InvestigationReport, error) {
 		CoveragePct     float64      `json:"coverage_pct"`
 		CodeSmells      []CodeSmell  `json:"code_smells"`
 		RiskAreas       []RiskArea   `json:"risk_areas"`
+		Conventions     []Convention `json:"conventions"`
 		Recommendations []string     `json:"recommendations"`
 	}
 
@@ -260,6 +269,7 @@ func parseSubmitReport(args json.RawMessage) (*InvestigationReport, error) {
 		},
 		CodeSmells:      raw.CodeSmells,
 		RiskAreas:       raw.RiskAreas,
+		Conventions:     raw.Conventions,
 		Recommendations: raw.Recommendations,
 	}
 
@@ -275,6 +285,9 @@ func parseSubmitReport(args json.RawMessage) (*InvestigationReport, error) {
 	}
 	if report.RiskAreas == nil {
 		report.RiskAreas = []RiskArea{}
+	}
+	if report.Conventions == nil {
+		report.Conventions = []Convention{}
 	}
 	if report.Recommendations == nil {
 		report.Recommendations = []string{}
