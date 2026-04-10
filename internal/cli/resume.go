@@ -6,11 +6,13 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 	"github.com/tzone85/nexus-dispatch/internal/engine"
 	nxdgit "github.com/tzone85/nexus-dispatch/internal/git"
 	"github.com/tzone85/nexus-dispatch/internal/graph"
+	"github.com/tzone85/nexus-dispatch/internal/metrics"
 	"github.com/tzone85/nexus-dispatch/internal/runtime"
 	"github.com/tzone85/nexus-dispatch/internal/state"
 )
@@ -172,6 +174,11 @@ func runResume(cmd *cobra.Command, args []string) error {
 	if llmErr != nil {
 		log.Printf("Warning: LLM client unavailable, skipping code review: %v", llmErr)
 	} else {
+		// Wrap LLM client with metrics tracking
+		stateDir := expandHome(s.Config.Workspace.StateDir)
+		recorder := metrics.NewRecorder(filepath.Join(stateDir, "metrics.jsonl"))
+		llmClient = metrics.NewMetricsClient(llmClient, recorder, reqID, "pipeline", "")
+
 		seniorModel := s.Config.Models.Senior
 		reviewer = engine.NewReviewer(llmClient, seniorModel.Provider, seniorModel.Model, seniorModel.MaxTokens, s.Events, s.Proj)
 	}
