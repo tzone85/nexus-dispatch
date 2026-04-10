@@ -70,6 +70,9 @@ func DefaultConfig() Config {
 			SequentialFilePatterns: []string{"package.json", "*.config.*", "src/core/*"},
 			MaxStoryComplexity:     5,
 		},
+		Memory: MemoryConfig{
+			Enabled: true,
+		},
 		Runtimes: map[string]RuntimeConfig{
 			"aider": {
 				Command: "aider",
