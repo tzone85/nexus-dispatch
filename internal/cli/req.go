@@ -35,6 +35,7 @@ The requirement text can be provided as:
 	}
 	cmd.Flags().StringP("file", "f", "", "read requirement from a file (use - for stdin)")
 	cmd.Flags().Bool("godmode", false, "skip permission prompts on LLM calls (fully autonomous)")
+	cmd.Flags().Bool("review", false, "Pause after planning for manual review")
 	cmd.SilenceUsage = true
 	return cmd
 }
@@ -164,6 +165,20 @@ func runReq(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Fprintf(out, "\nTotal complexity: %d story points\n", totalComplexity)
+
+	// If --review flag is set, pause for manual review before execution
+	reviewMode, _ := cmd.Flags().GetBool("review")
+	if reviewMode {
+		evt := state.NewEvent(state.EventReqPendingReview, "", "", map[string]any{"id": reqID})
+		s.Events.Append(evt)
+		s.Proj.Project(evt)
+		fmt.Fprintf(out, "\nPlan ready for review.\n")
+		fmt.Fprintf(out, "  Review:  nxd status --req %s\n", reqID)
+		fmt.Fprintf(out, "  Approve: nxd approve %s\n", reqID)
+		fmt.Fprintf(out, "  Reject:  nxd reject %s\n", reqID)
+		return nil
+	}
+
 	fmt.Fprintf(out, "Run 'nxd status --req %s' to track progress.\n", reqID)
 
 	return nil
