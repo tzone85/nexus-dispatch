@@ -2,9 +2,11 @@ package engine
 
 import (
 	"fmt"
+	"path/filepath"
 	"time"
 
 	"github.com/tzone85/nexus-dispatch/internal/config"
+	"github.com/tzone85/nexus-dispatch/internal/metrics"
 	"github.com/tzone85/nexus-dispatch/internal/state"
 )
 
@@ -201,7 +203,8 @@ func (rb *ReportBuilder) storyDuration(s state.Story) time.Duration {
 	return d
 }
 
-// buildEffort maps the stories to StoryEstimate values and calls CalculateCost.
+// buildEffort maps the stories to StoryEstimate values and calls CalculateCostWithTokens
+// using actual token usage from the metrics store when available.
 func (rb *ReportBuilder) buildEffort(stories []state.Story) Estimate {
 	estimates := make([]StoryEstimate, 0, len(stories))
 	for _, s := range stories {
@@ -211,7 +214,31 @@ func (rb *ReportBuilder) buildEffort(stories []state.Story) Estimate {
 			Role:       s.AgentID,
 		})
 	}
-	return CalculateCost(estimates, rb.cfg.Billing, 0)
+
+	// Sum actual token usage from the metrics store.
+	inputTokens, outputTokens := rb.sumTokenUsage()
+	return CalculateCostWithTokens(estimates, rb.cfg.Billing, 0, inputTokens, outputTokens)
+}
+
+// sumTokenUsage reads the metrics.jsonl file and sums all token counts.
+// Returns (0, 0) if the file doesn't exist or can't be read.
+func (rb *ReportBuilder) sumTokenUsage() (inputTokens, outputTokens int) {
+	stateDir := rb.cfg.Workspace.StateDir
+	if stateDir == "" {
+		return 0, 0
+	}
+	// Expand ~ manually since report may run without CLI helpers.
+	metricsPath := filepath.Join(stateDir, "metrics.jsonl")
+	recorder := metrics.NewRecorder(metricsPath)
+	entries, err := recorder.ReadAll()
+	if err != nil || len(entries) == 0 {
+		return 0, 0
+	}
+	for _, e := range entries {
+		inputTokens += e.TokensIn
+		outputTokens += e.TokensOut
+	}
+	return inputTokens, outputTokens
 }
 
 // buildTimeline builds an ordered list of significant delivery events.

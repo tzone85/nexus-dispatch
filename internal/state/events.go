@@ -62,6 +62,11 @@ const (
 	EventSupervisorReprioritize  EventType = "SUPERVISOR_REPRIORITIZE"
 	EventSupervisorDriftDetected EventType = "SUPERVISOR_DRIFT_DETECTED"
 
+	// Controller events.
+	EventControllerAnalysis     EventType = "CONTROLLER_ANALYSIS"
+	EventControllerAction       EventType = "CONTROLLER_ACTION"
+	EventControllerStuckDetected EventType = "CONTROLLER_STUCK_DETECTED"
+
 	// Cleanup events.
 	EventWorktreePruned EventType = "WORKTREE_PRUNED"
 	EventBranchDeleted  EventType = "BRANCH_DELETED"

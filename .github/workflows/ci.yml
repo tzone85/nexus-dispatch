@@ -26,8 +26,21 @@ jobs:
       - name: Install dependencies
         run: go mod download
 
+      - name: Vet
+        run: go vet ./...
+
       - name: Run tests
         run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: Check coverage threshold
+        run: |
+          COVERAGE=$(go tool cover -func=coverage.out | grep '^total:' | awk '{print $NF}' | tr -d '%')
+          echo "Total coverage: ${COVERAGE}%"
+          THRESHOLD=50
+          if [ "$(echo "$COVERAGE < $THRESHOLD" | bc -l)" -eq 1 ]; then
+            echo "::error::Coverage ${COVERAGE}% is below threshold ${THRESHOLD}%"
+            exit 1
+          fi
 
       - name: Upload coverage
         uses: actions/upload-artifact@v4
