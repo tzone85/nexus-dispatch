@@ -325,20 +325,66 @@ func (e *Executor) spawnNative(repoDir string, a Assignment, story PlannedStory,
 	e.eventStore.Append(startEvt)
 	e.projStore.Project(startEvt)
 
-	// Run native Gemma runtime in a goroutine (non-blocking, like tmux)
+	// Run native Gemma runtime in a goroutine (non-blocking, like tmux).
+	// On completion (success or failure) the goroutine emits STORY_COMPLETED
+	// so the monitor's pollOnce can trigger the post-execution pipeline.
 	go func() {
 		gemmaRT := runtime.NewGemmaRuntime(e.llmClient, runtime.GemmaRuntimeConfig{
 			MaxIterations:    nativeCfg.MaxIterations,
 			CommandAllowlist: nativeCfg.CommandAllowlist,
 		})
 
+		// Wire progress callback to emit fine-grained STORY_PROGRESS events.
+		gemmaRT.OnProgress = func(prog runtime.ProgressEvent) {
+			payload := map[string]any{
+				"iteration": prog.Iteration,
+				"max_iter":  prog.MaxIter,
+				"phase":     string(prog.Phase),
+				"detail":    prog.Detail,
+			}
+			if prog.Tool != "" {
+				payload["tool"] = prog.Tool
+			}
+			if prog.File != "" {
+				payload["file"] = prog.File
+			}
+			if prog.Command != "" {
+				payload["command"] = prog.Command
+			}
+			if prog.IsError {
+				payload["is_error"] = true
+			}
+			evt := state.NewEvent(state.EventStoryProgress, a.AgentID, a.StoryID, payload)
+			e.eventStore.Append(evt)
+			e.projStore.Project(evt)
+		}
+
 		log.Printf("[native-runtime] executing %s in %s", a.StoryID, worktreePath)
 		execResult := gemmaRT.Execute(context.Background(), worktreePath, modelCfg.Model, systemPrompt, goal)
+
 		if execResult.Error != nil {
-			log.Printf("[native-runtime] %s failed after %d iterations: %v", a.StoryID, execResult.Iterations, execResult.Error)
+			log.Printf("[native-runtime] %s failed after %d iterations: %v",
+				a.StoryID, execResult.Iterations, execResult.Error)
 		} else {
-			log.Printf("[native-runtime] %s completed in %d iterations: %s", a.StoryID, execResult.Iterations, execResult.Summary)
+			log.Printf("[native-runtime] %s completed in %d iterations: %s",
+				a.StoryID, execResult.Iterations, execResult.Summary)
 		}
+
+		// Emit STORY_COMPLETED regardless of success/failure — the monitor's
+		// post-execution pipeline handles empty diffs and retries.
+		payload := map[string]any{
+			"iterations": execResult.Iterations,
+			"native":     true,
+		}
+		if execResult.Summary != "" {
+			payload["summary"] = execResult.Summary
+		}
+		if execResult.Error != nil {
+			payload["error"] = execResult.Error.Error()
+		}
+		completeEvt := state.NewEvent(state.EventStoryCompleted, a.AgentID, a.StoryID, payload)
+		e.eventStore.Append(completeEvt)
+		e.projStore.Project(completeEvt)
 	}()
 
 	return result

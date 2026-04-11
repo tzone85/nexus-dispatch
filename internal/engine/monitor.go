@@ -192,6 +192,13 @@ func (m *Monitor) RunWithContext(ctx context.Context, agents []ActiveAgent, repo
 // kicking off post-execution pipelines for any that have finished.
 func (m *Monitor) pollOnce(ctx context.Context, wg *sync.WaitGroup, active map[string]ActiveAgent, repoDir string) {
 	for sessionName, ag := range active {
+		// Native runtimes (e.g. Gemma) run in-process goroutines, not tmux
+		// sessions. Check the event store for a STORY_COMPLETED event instead.
+		if m.registry.IsNative(ag.RuntimeName) {
+			m.pollNativeAgent(ctx, wg, active, sessionName, ag, repoDir)
+			continue
+		}
+
 		rt, err := m.registry.Get(ag.RuntimeName)
 		if err != nil {
 			continue
@@ -244,6 +251,30 @@ func (m *Monitor) pollOnce(ctx context.Context, wg *sync.WaitGroup, active map[s
 
 		log.Printf("[monitor] %d agents remaining", len(active))
 	}
+}
+
+// pollNativeAgent checks whether a native runtime agent (e.g. Gemma) has
+// finished by looking for a STORY_COMPLETED event. Native agents run as
+// in-process goroutines and emit completion events directly to the store.
+func (m *Monitor) pollNativeAgent(ctx context.Context, wg *sync.WaitGroup, active map[string]ActiveAgent, sessionName string, ag ActiveAgent, repoDir string) {
+	events, err := m.eventStore.List(state.EventFilter{
+		Type:    state.EventStoryCompleted,
+		StoryID: ag.Assignment.StoryID,
+	})
+	if err != nil || len(events) == 0 {
+		return // still running
+	}
+
+	log.Printf("[monitor] native agent %s finished for %s", ag.Assignment.AgentID, ag.Assignment.StoryID)
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		m.postExecutionPipeline(ctx, ag, repoDir)
+	}()
+
+	delete(active, sessionName)
+	log.Printf("[monitor] %d agents remaining", len(active))
 }
 
 // postExecutionPipeline runs review, QA, and merge for a completed story.

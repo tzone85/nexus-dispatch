@@ -18,11 +18,40 @@ type GemmaRuntimeConfig struct {
 	CommandAllowlist []string
 }
 
+// ProgressPhase identifies what stage a progress event represents.
+type ProgressPhase string
+
+const (
+	PhaseThinking   ProgressPhase = "thinking"
+	PhaseToolCall   ProgressPhase = "tool_call"
+	PhaseToolResult ProgressPhase = "tool_result"
+	PhaseError      ProgressPhase = "error"
+	PhaseCompleted  ProgressPhase = "completed"
+)
+
+// ProgressEvent describes a single progress update during native runtime
+// execution. Events are emitted at two granularities: per-iteration (coarse)
+// and per-tool-call (fine).
+type ProgressEvent struct {
+	Iteration int           // 1-based iteration index
+	MaxIter   int           // configured max iterations
+	Phase     ProgressPhase // what is happening
+	Tool      string        // tool name (for tool_call/tool_result phases)
+	File      string        // file path (for file operations)
+	Command   string        // shell command (for run_command)
+	IsError   bool          // whether the tool result was an error
+	Detail    string        // brief human-readable description
+}
+
+// ProgressCallback receives progress events during execution.
+type ProgressCallback func(ProgressEvent)
+
 // GemmaRuntime is a native coding runtime that uses Gemma 4's function calling
 // to make code edits directly, bypassing external CLI tools like Aider.
 type GemmaRuntime struct {
-	client llm.Client
-	config GemmaRuntimeConfig
+	client     llm.Client
+	config     GemmaRuntimeConfig
+	OnProgress ProgressCallback
 }
 
 // NewGemmaRuntime creates a new GemmaRuntime with the given LLM client and
@@ -125,6 +154,14 @@ func (g *GemmaRuntime) Execute(ctx context.Context, workDir, model, systemPrompt
 	}
 
 	for i := 0; i < g.config.MaxIterations; i++ {
+		// Coarse progress: iteration started, model is thinking.
+		g.emitProgress(ProgressEvent{
+			Iteration: i + 1,
+			MaxIter:   g.config.MaxIterations,
+			Phase:     PhaseThinking,
+			Detail:    fmt.Sprintf("iteration %d/%d: waiting for LLM response", i+1, g.config.MaxIterations),
+		})
+
 		resp, err := g.client.Complete(ctx, llm.CompletionRequest{
 			Model:     model,
 			System:    systemPrompt,
@@ -133,11 +170,24 @@ func (g *GemmaRuntime) Execute(ctx context.Context, workDir, model, systemPrompt
 			MaxTokens: 8192,
 		})
 		if err != nil {
+			g.emitProgress(ProgressEvent{
+				Iteration: i + 1,
+				MaxIter:   g.config.MaxIterations,
+				Phase:     PhaseError,
+				IsError:   true,
+				Detail:    fmt.Sprintf("LLM error: %v", err),
+			})
 			return ExecuteResult{Error: fmt.Errorf("llm completion (iteration %d): %w", i+1, err)}
 		}
 
 		// No tool calls means the model is done talking without completing.
 		if len(resp.ToolCalls) == 0 {
+			g.emitProgress(ProgressEvent{
+				Iteration: i + 1,
+				MaxIter:   g.config.MaxIterations,
+				Phase:     PhaseCompleted,
+				Detail:    "model finished without tool calls",
+			})
 			return ExecuteResult{
 				Summary:    resp.Content,
 				Iterations: i + 1,
@@ -159,13 +209,45 @@ func (g *GemmaRuntime) Execute(ctx context.Context, workDir, model, systemPrompt
 					Summary string `json:"summary"`
 				}
 				json.Unmarshal(tc.Arguments, &args)
+				g.emitProgress(ProgressEvent{
+					Iteration: i + 1,
+					MaxIter:   g.config.MaxIterations,
+					Phase:     PhaseCompleted,
+					Tool:      "task_complete",
+					Detail:    args.Summary,
+				})
 				return ExecuteResult{
 					Summary:    args.Summary,
 					Iterations: i + 1,
 				}
 			}
 
+			// Fine progress: about to execute a tool call.
+			file, command := extractToolTarget(tc)
+			g.emitProgress(ProgressEvent{
+				Iteration: i + 1,
+				MaxIter:   g.config.MaxIterations,
+				Phase:     PhaseToolCall,
+				Tool:      tc.Name,
+				File:      file,
+				Command:   command,
+				Detail:    describeToolCall(tc.Name, file, command),
+			})
+
 			result := g.executeTool(tc, workDir)
+
+			// Fine progress: tool call result.
+			g.emitProgress(ProgressEvent{
+				Iteration: i + 1,
+				MaxIter:   g.config.MaxIterations,
+				Phase:     PhaseToolResult,
+				Tool:      tc.Name,
+				File:      file,
+				Command:   command,
+				IsError:   result.IsError,
+				Detail:    describeToolResult(tc.Name, file, command, result.IsError),
+			})
+
 			messages = append(messages, llm.Message{
 				Role:       llm.RoleTool,
 				Content:    result.Content,
@@ -174,10 +256,71 @@ func (g *GemmaRuntime) Execute(ctx context.Context, workDir, model, systemPrompt
 		}
 	}
 
+	g.emitProgress(ProgressEvent{
+		Iteration: g.config.MaxIterations,
+		MaxIter:   g.config.MaxIterations,
+		Phase:     PhaseError,
+		IsError:   true,
+		Detail:    fmt.Sprintf("reached max iterations (%d)", g.config.MaxIterations),
+	})
+
 	return ExecuteResult{
 		Summary:    "max iterations reached",
 		Iterations: g.config.MaxIterations,
 		Error:      fmt.Errorf("reached max iterations (%d) without task completion", g.config.MaxIterations),
+	}
+}
+
+// emitProgress sends a progress event if a callback is registered.
+func (g *GemmaRuntime) emitProgress(evt ProgressEvent) {
+	if g.OnProgress != nil {
+		g.OnProgress(evt)
+	}
+}
+
+// extractToolTarget pulls the file path or command from a tool call's arguments.
+func extractToolTarget(tc llm.ToolCall) (file, command string) {
+	var args struct {
+		Path    string `json:"path"`
+		Command string `json:"command"`
+	}
+	json.Unmarshal(tc.Arguments, &args)
+	return args.Path, args.Command
+}
+
+// describeToolCall returns a human-readable description of a tool invocation.
+func describeToolCall(tool, file, command string) string {
+	switch tool {
+	case "read_file":
+		return fmt.Sprintf("reading %s", file)
+	case "write_file":
+		return fmt.Sprintf("writing %s", file)
+	case "edit_file":
+		return fmt.Sprintf("editing %s", file)
+	case "run_command":
+		return fmt.Sprintf("running: %s", command)
+	default:
+		return fmt.Sprintf("calling %s", tool)
+	}
+}
+
+// describeToolResult returns a human-readable description of a tool's outcome.
+func describeToolResult(tool, file, command string, isError bool) string {
+	status := "ok"
+	if isError {
+		status = "failed"
+	}
+	switch tool {
+	case "read_file":
+		return fmt.Sprintf("read %s: %s", file, status)
+	case "write_file":
+		return fmt.Sprintf("wrote %s: %s", file, status)
+	case "edit_file":
+		return fmt.Sprintf("edited %s: %s", file, status)
+	case "run_command":
+		return fmt.Sprintf("command %s: %s", command, status)
+	default:
+		return fmt.Sprintf("%s: %s", tool, status)
 	}
 }
 
