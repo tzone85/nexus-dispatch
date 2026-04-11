@@ -125,6 +125,13 @@ func (c *Controller) tick(ctx context.Context) {
 		log.Printf("[controller] story %s stuck for %s (threshold: %s)",
 			story.ID, stuckDuration.Round(time.Second), stuckThreshold)
 
+		// Emit stuck detection event for observability.
+		c.eventStore.Append(state.NewEvent(state.EventControllerStuckDetected, "controller", story.ID, map[string]any{
+			"stuck_duration_s": int(stuckDuration.Seconds()),
+			"threshold_s":      c.config.MaxStuckDurationS,
+			"escalation_tier":  story.EscalationTier,
+		}))
+
 		action := c.decideAction(story)
 		if action == nil {
 			continue
@@ -139,7 +146,7 @@ func (c *Controller) tick(ctx context.Context) {
 	}
 
 	// Emit analysis event.
-	c.eventStore.Append(state.NewEvent("CONTROLLER_ANALYSIS", "controller", "", map[string]any{
+	c.eventStore.Append(state.NewEvent(state.EventControllerAnalysis, "controller", "", map[string]any{
 		"stories_checked": len(stories),
 		"actions_taken":   actionsThisTick,
 	}))
@@ -167,11 +174,13 @@ func (c *Controller) lastProgressTime(storyID string) time.Time {
 }
 
 func (c *Controller) decideAction(story state.Story) *ControlAction {
-	if c.config.AutoCancel && !c.config.AutoRestart {
+	// Priority: reprioritize > restart > cancel.
+	// Reprioritize bumps to next tier; restart resets; cancel just stops.
+	if c.config.AutoReprioritize {
 		return &ControlAction{
-			Kind:    ActionCancel,
+			Kind:    ActionReprioritize,
 			StoryID: story.ID,
-			Reason:  "stuck beyond threshold",
+			Reason:  "stuck beyond threshold, reprioritizing to higher tier",
 		}
 	}
 	if c.config.AutoRestart {
@@ -179,6 +188,13 @@ func (c *Controller) decideAction(story state.Story) *ControlAction {
 			Kind:    ActionRestart,
 			StoryID: story.ID,
 			Reason:  "stuck beyond threshold, restarting",
+		}
+	}
+	if c.config.AutoCancel {
+		return &ControlAction{
+			Kind:    ActionCancel,
+			StoryID: story.ID,
+			Reason:  "stuck beyond threshold",
 		}
 	}
 	return nil
@@ -194,10 +210,10 @@ func (c *Controller) executeAction(ctx context.Context, action ControlAction) {
 		c.cancelStory(action.StoryID)
 		c.resetStoryToDraft(action.StoryID, action.Reason)
 	case ActionReprioritize:
-		// Emit reprioritize event for the monitor/dispatcher to handle.
+		c.reprioritizeStory(action.StoryID, action.Reason)
 	}
 
-	c.eventStore.Append(state.NewEvent("CONTROLLER_ACTION", "controller", action.StoryID, map[string]any{
+	c.eventStore.Append(state.NewEvent(state.EventControllerAction, "controller", action.StoryID, map[string]any{
 		"kind":   string(action.Kind),
 		"reason": action.Reason,
 	}))
@@ -228,4 +244,30 @@ func (c *Controller) resetStoryToDraft(storyID, reason string) {
 	})
 	c.eventStore.Append(evt)
 	c.projStore.Project(evt)
+}
+
+// reprioritizeStory cancels the current agent, bumps the story's escalation
+// tier, and resets it to draft so it gets re-dispatched at a higher tier.
+func (c *Controller) reprioritizeStory(storyID, reason string) {
+	c.cancelStory(storyID)
+
+	// Bump escalation tier via event.
+	story, err := c.projStore.GetStory(storyID)
+	if err != nil {
+		log.Printf("[controller] get story %s for reprioritize: %v", storyID, err)
+		return
+	}
+
+	nextTier := story.EscalationTier + 1
+	escEvt := state.NewEvent(state.EventStoryEscalated, "controller", storyID, map[string]any{
+		"from_tier": story.EscalationTier,
+		"to_tier":   nextTier,
+		"reason":    reason,
+		"source":    "controller",
+	})
+	c.eventStore.Append(escEvt)
+	c.projStore.Project(escEvt)
+
+	// Reset to draft for re-dispatch.
+	c.resetStoryToDraft(storyID, reason)
 }

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/tzone85/nexus-dispatch/internal/criteria"
 	"github.com/tzone85/nexus-dispatch/internal/llm"
 	"github.com/tzone85/nexus-dispatch/internal/scratchboard"
 )
@@ -54,8 +55,9 @@ type GemmaRuntime struct {
 	config       GemmaRuntimeConfig
 	OnProgress   ProgressCallback
 	Scratchboard *scratchboard.Scratchboard
-	AgentID      string // used as author when writing to scratchboard
-	StoryID      string // used as context when writing to scratchboard
+	Criteria     []criteria.Criterion // optional success criteria to evaluate after task_complete
+	AgentID      string               // used as author when writing to scratchboard
+	StoryID      string               // used as context when writing to scratchboard
 }
 
 // NewGemmaRuntime creates a new GemmaRuntime with the given LLM client and
@@ -164,9 +166,10 @@ func CodingTools() []llm.ToolDefinition {
 
 // ExecuteResult holds the outcome of a native runtime execution.
 type ExecuteResult struct {
-	Summary    string
-	Iterations int
-	Error      error
+	Summary        string
+	Iterations     int
+	Error          error
+	CriteriaResult []criteria.Result // populated when criteria are configured
 }
 
 // Execute runs the main tool-calling loop: sends the goal and tools to the LLM,
@@ -242,10 +245,22 @@ func (g *GemmaRuntime) Execute(ctx context.Context, workDir, model, systemPrompt
 					Tool:      "task_complete",
 					Detail:    args.Summary,
 				})
-				return ExecuteResult{
+
+				result := ExecuteResult{
 					Summary:    args.Summary,
 					Iterations: i + 1,
 				}
+
+				// Run criteria evaluation if criteria are configured.
+				if len(g.Criteria) > 0 {
+					result.CriteriaResult = criteria.EvaluateAll(ctx, workDir, g.Criteria)
+					if !criteria.AllPassed(result.CriteriaResult) {
+						result.Error = fmt.Errorf("criteria check failed: %s",
+							criteria.FailureSummary(result.CriteriaResult))
+					}
+				}
+
+				return result
 			}
 
 			// Fine progress: about to execute a tool call.

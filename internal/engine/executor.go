@@ -12,6 +12,7 @@ import (
 	"github.com/tzone85/nexus-dispatch/internal/agent"
 	"github.com/tzone85/nexus-dispatch/internal/artifact"
 	"github.com/tzone85/nexus-dispatch/internal/config"
+	"github.com/tzone85/nexus-dispatch/internal/criteria"
 	nxdgit "github.com/tzone85/nexus-dispatch/internal/git"
 	"github.com/tzone85/nexus-dispatch/internal/llm"
 	"github.com/tzone85/nexus-dispatch/internal/memory"
@@ -457,6 +458,7 @@ func (e *Executor) spawnNative(repoDir string, a Assignment, story PlannedStory,
 		gemmaRT.AgentID = a.AgentID
 		gemmaRT.StoryID = a.StoryID
 		gemmaRT.Scratchboard = e.scratchboard
+		gemmaRT.Criteria = configCriteriaToRuntime(e.config.QA.SuccessCriteria)
 
 		// Wire progress callback to emit fine-grained STORY_PROGRESS events.
 		gemmaRT.OnProgress = func(prog runtime.ProgressEvent) {
@@ -518,10 +520,34 @@ func (e *Executor) spawnNative(repoDir string, a Assignment, story PlannedStory,
 		if execResult.Error != nil {
 			payload["error"] = execResult.Error.Error()
 		}
+		if len(execResult.CriteriaResult) > 0 {
+			passed := criteria.AllPassed(execResult.CriteriaResult)
+			payload["criteria_passed"] = passed
+			if !passed {
+				payload["criteria_failures"] = criteria.FailureSummary(execResult.CriteriaResult)
+			}
+		}
 		completeEvt := state.NewEvent(state.EventStoryCompleted, a.AgentID, a.StoryID, payload)
 		e.eventStore.Append(completeEvt)
 		e.projStore.Project(completeEvt)
 	}()
 
+	return result
+}
+
+// configCriteriaToRuntime converts config.SuccessCriterion slice to
+// criteria.Criterion slice for use by the native runtime.
+func configCriteriaToRuntime(cfgCriteria []config.SuccessCriterion) []criteria.Criterion {
+	if len(cfgCriteria) == 0 {
+		return nil
+	}
+	result := make([]criteria.Criterion, 0, len(cfgCriteria))
+	for _, c := range cfgCriteria {
+		result = append(result, criteria.Criterion{
+			Type:     criteria.Type(c.Kind),
+			Target:   c.Path,
+			Expected: c.Value,
+		})
+	}
 	return result
 }

@@ -408,6 +408,127 @@ func TestHandleEdit_AcceptanceCriteria(t *testing.T) {
 	}
 }
 
+func TestHandleApproveRequirement_Success(t *testing.T) {
+	s := newTestServer(t)
+	reqID := seedRequirement(t, s)
+
+	// Move to pending_review status first.
+	pendingEvt := state.NewEvent(state.EventReqPendingReview, "system", "", map[string]any{"id": reqID})
+	s.eventStore.Append(pendingEvt)
+	s.projStore.Project(pendingEvt)
+
+	resp := s.HandleCommand("approve_requirement", mustMarshal(t, map[string]any{"req_id": reqID}))
+	if !resp.Success {
+		t.Errorf("expected Success=true, got: %s", resp.Message)
+	}
+
+	req, err := s.projStore.GetRequirement(reqID)
+	if err != nil {
+		t.Fatalf("GetRequirement: %v", err)
+	}
+	if req.Status != "planned" {
+		t.Errorf("expected status=planned after approve, got %q", req.Status)
+	}
+}
+
+func TestHandleApproveRequirement_NotPendingReview(t *testing.T) {
+	s := newTestServer(t)
+	reqID := seedRequirement(t, s)
+
+	// Requirement is in 'pending' status, not 'pending_review'.
+	resp := s.HandleCommand("approve_requirement", mustMarshal(t, map[string]any{"req_id": reqID}))
+	if resp.Success {
+		t.Error("expected Success=false when requirement is not pending_review")
+	}
+}
+
+func TestHandleApproveRequirement_NotFound(t *testing.T) {
+	s := newTestServer(t)
+
+	resp := s.HandleCommand("approve_requirement", mustMarshal(t, map[string]any{"req_id": "nonexistent"}))
+	if resp.Success {
+		t.Error("expected Success=false for unknown requirement")
+	}
+}
+
+func TestHandleRejectRequirement_Success(t *testing.T) {
+	s := newTestServer(t)
+	reqID := seedRequirement(t, s)
+
+	// Move to pending_review status.
+	pendingEvt := state.NewEvent(state.EventReqPendingReview, "system", "", map[string]any{"id": reqID})
+	s.eventStore.Append(pendingEvt)
+	s.projStore.Project(pendingEvt)
+
+	resp := s.HandleCommand("reject_requirement", mustMarshal(t, map[string]any{"req_id": reqID}))
+	if !resp.Success {
+		t.Errorf("expected Success=true, got: %s", resp.Message)
+	}
+
+	req, err := s.projStore.GetRequirement(reqID)
+	if err != nil {
+		t.Fatalf("GetRequirement: %v", err)
+	}
+	if req.Status != "rejected" {
+		t.Errorf("expected status=rejected after reject, got %q", req.Status)
+	}
+}
+
+func TestHandleRejectRequirement_NotPendingReview(t *testing.T) {
+	s := newTestServer(t)
+	reqID := seedRequirement(t, s)
+
+	resp := s.HandleCommand("reject_requirement", mustMarshal(t, map[string]any{"req_id": reqID}))
+	if resp.Success {
+		t.Error("expected Success=false when requirement is not pending_review")
+	}
+}
+
+func TestHandleMergeStory_Success(t *testing.T) {
+	s := newTestServer(t)
+	reqID := seedRequirement(t, s)
+	storyID := seedStory(t, s, reqID)
+
+	// Move story to merge_ready.
+	mergeReadyEvt := state.NewEvent(state.EventStoryMergeReady, "system", storyID, nil)
+	s.eventStore.Append(mergeReadyEvt)
+	s.projStore.Project(mergeReadyEvt)
+
+	resp := s.HandleCommand("merge_story", mustMarshal(t, map[string]any{"story_id": storyID}))
+	if !resp.Success {
+		t.Errorf("expected Success=true, got: %s", resp.Message)
+	}
+
+	story, err := s.projStore.GetStory(storyID)
+	if err != nil {
+		t.Fatalf("GetStory: %v", err)
+	}
+	if story.Status != "merged" {
+		t.Errorf("expected status=merged after merge, got %q", story.Status)
+	}
+}
+
+func TestHandleMergeStory_NotMergeReady(t *testing.T) {
+	s := newTestServer(t)
+	reqID := seedRequirement(t, s)
+	storyID := seedStory(t, s, reqID)
+
+	// Story is in 'draft' status, not 'merge_ready'.
+	resp := s.HandleCommand("merge_story", mustMarshal(t, map[string]any{"story_id": storyID}))
+	if resp.Success {
+		t.Error("expected Success=false when story is not merge_ready")
+	}
+}
+
+func TestHandleMergeStory_NotFound(t *testing.T) {
+	s := newTestServer(t)
+
+	resp := s.HandleCommand("merge_story", mustMarshal(t, map[string]any{"story_id": "nonexistent"}))
+	if resp.Success {
+		t.Error("expected Success=false for unknown story")
+	}
+}
+
 func TestHandleCommand_EventsEmitted(t *testing.T) {
 	s := newTestServer(t)
 	reqID := seedRequirement(t, s)

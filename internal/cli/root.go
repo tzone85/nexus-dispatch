@@ -48,6 +48,8 @@ func init() {
 	rootCmd.AddCommand(newDoctorCmd())
 	rootCmd.AddCommand(newEstimateCmd())
 	rootCmd.AddCommand(newReportCmd())
+	rootCmd.AddCommand(newLogsCmd())
+	rootCmd.AddCommand(newDiffCmd())
 }
 
 func Execute() error {
