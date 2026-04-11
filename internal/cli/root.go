@@ -46,6 +46,8 @@ func init() {
 	rootCmd.AddCommand(newReviewStoryCmd())
 	rootCmd.AddCommand(newMergeStoryCmd())
 	rootCmd.AddCommand(newDoctorCmd())
+	rootCmd.AddCommand(newEstimateCmd())
+	rootCmd.AddCommand(newReportCmd())
 }
 
 func Execute() error {

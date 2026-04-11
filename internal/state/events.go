@@ -36,6 +36,7 @@ const (
 	EventStoryReviewFailed    EventType = "STORY_REVIEW_FAILED"
 	EventStoryQAStarted       EventType = "STORY_QA_STARTED"
 	EventStoryQAPassed        EventType = "STORY_QA_PASSED"
+	EventStoryQAFailed        EventType = "STORY_QA_FAILED"
 	EventStoryPRCreated       EventType = "STORY_PR_CREATED"
 	EventStoryMerged          EventType = "STORY_MERGED"
 	EventStoryMergeReady      EventType = "STORY_MERGE_READY"
@@ -43,6 +44,9 @@ const (
 	EventStoryEscalated       EventType = "STORY_ESCALATED"
 	EventStoryRewritten       EventType = "STORY_REWRITTEN"
 	EventStorySplit           EventType = "STORY_SPLIT"
+
+	// Estimate events.
+	EventReqEstimated         EventType = "REQ_ESTIMATED"
 
 	// Agent lifecycle events.
 	EventAgentSpawned    EventType = "AGENT_SPAWNED"

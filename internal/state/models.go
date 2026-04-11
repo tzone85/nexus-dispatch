@@ -37,6 +37,7 @@ type Story struct {
 	EscalationTier     int
 	SplitDepth         int
 	CreatedAt          time.Time
+	MergedAt           time.Time
 }
 
 // Agent represents an AI agent that can work on stories.

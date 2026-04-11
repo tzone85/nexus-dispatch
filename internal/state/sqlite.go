@@ -126,6 +126,9 @@ func NewSQLiteStore(dsn string) (*SQLiteStore, error) {
 	db.Exec(`ALTER TABLE requirements ADD COLUMN is_existing BOOLEAN NOT NULL DEFAULT 0`)
 	db.Exec(`ALTER TABLE requirements ADD COLUMN investigation_report_json TEXT NOT NULL DEFAULT ''`)
 
+	// Migrate: add merged_at column to stories
+	db.Exec(`ALTER TABLE stories ADD COLUMN merged_at TIMESTAMP`)
+
 	return &SQLiteStore{db: db}, nil
 }
 
@@ -197,10 +200,12 @@ func (s *SQLiteStore) Project(evt Event) error {
 		return s.updateStoryStatus(evt.StoryID, "qa")
 	case EventStoryQAPassed:
 		return s.updateStoryStatus(evt.StoryID, "pr_submitted")
+	case EventStoryQAFailed:
+		return s.updateStoryStatus(evt.StoryID, "draft")
 	case EventStoryPRCreated:
 		return s.projectStoryPRCreated(evt.StoryID, payload)
 	case EventStoryMerged:
-		return s.updateStoryStatus(evt.StoryID, "merged")
+		return s.projectStoryMerged(evt)
 
 	case EventStoryMergeReady:
 		return s.updateStoryStatus(evt.StoryID, "merge_ready")
@@ -242,18 +247,22 @@ func (s *SQLiteStore) GetRequirement(id string) (Requirement, error) {
 func (s *SQLiteStore) GetStory(id string) (Story, error) {
 	var story Story
 	var ownedFilesJSON string
+	var mergedAt sql.NullTime
 	err := s.db.QueryRow(
-		`SELECT id, req_id, title, description, acceptance_criteria, complexity, status, agent_id, branch, pr_url, pr_number, owned_files, wave_hint, wave, escalation_tier, split_depth, created_at
+		`SELECT id, req_id, title, description, acceptance_criteria, complexity, status, agent_id, branch, pr_url, pr_number, owned_files, wave_hint, wave, escalation_tier, split_depth, created_at, merged_at
 		 FROM stories WHERE id = ?`,
 		id,
 	).Scan(
 		&story.ID, &story.ReqID, &story.Title, &story.Description,
 		&story.AcceptanceCriteria, &story.Complexity, &story.Status, &story.AgentID, &story.Branch,
 		&story.PRUrl, &story.PRNumber, &ownedFilesJSON, &story.WaveHint, &story.Wave,
-		&story.EscalationTier, &story.SplitDepth, &story.CreatedAt,
+		&story.EscalationTier, &story.SplitDepth, &story.CreatedAt, &mergedAt,
 	)
 	if err != nil {
 		return Story{}, fmt.Errorf("get story %s: %w", id, err)
+	}
+	if mergedAt.Valid {
+		story.MergedAt = mergedAt.Time
 	}
 	if ownedFilesJSON != "" {
 		json.Unmarshal([]byte(ownedFilesJSON), &story.OwnedFiles)
@@ -266,7 +275,7 @@ func (s *SQLiteStore) GetStory(id string) (Story, error) {
 
 // ListStories returns stories matching the given filter.
 func (s *SQLiteStore) ListStories(filter StoryFilter) ([]Story, error) {
-	query := `SELECT id, req_id, title, description, acceptance_criteria, complexity, status, agent_id, branch, pr_url, pr_number, owned_files, wave_hint, wave, escalation_tier, split_depth, created_at FROM stories`
+	query := `SELECT id, req_id, title, description, acceptance_criteria, complexity, status, agent_id, branch, pr_url, pr_number, owned_files, wave_hint, wave, escalation_tier, split_depth, created_at, merged_at FROM stories`
 	var conditions []string
 	var args []any
 
@@ -294,13 +303,17 @@ func (s *SQLiteStore) ListStories(filter StoryFilter) ([]Story, error) {
 	for rows.Next() {
 		var story Story
 		var ownedFilesJSON string
+		var mergedAt sql.NullTime
 		if err := rows.Scan(
 			&story.ID, &story.ReqID, &story.Title, &story.Description,
 			&story.AcceptanceCriteria, &story.Complexity, &story.Status, &story.AgentID, &story.Branch,
 			&story.PRUrl, &story.PRNumber, &ownedFilesJSON, &story.WaveHint, &story.Wave,
-			&story.EscalationTier, &story.SplitDepth, &story.CreatedAt,
+			&story.EscalationTier, &story.SplitDepth, &story.CreatedAt, &mergedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan story: %w", err)
+		}
+		if mergedAt.Valid {
+			story.MergedAt = mergedAt.Time
 		}
 		if ownedFilesJSON != "" {
 			json.Unmarshal([]byte(ownedFilesJSON), &story.OwnedFiles)
@@ -562,6 +575,14 @@ func (s *SQLiteStore) projectStoryPRCreated(storyID string, payload map[string]a
 	_, err := s.db.Exec(
 		`UPDATE stories SET status = 'pr_submitted', pr_url = ?, pr_number = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
 		prURL, prNumber, storyID,
+	)
+	return err
+}
+
+func (s *SQLiteStore) projectStoryMerged(evt Event) error {
+	_, err := s.db.Exec(
+		`UPDATE stories SET status = 'merged', merged_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+		evt.Timestamp, evt.StoryID,
 	)
 	return err
 }

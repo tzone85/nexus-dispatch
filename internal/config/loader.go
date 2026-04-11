@@ -71,6 +71,21 @@ func DefaultConfig() Config {
 			SequentialFilePatterns: []string{"package.json", "*.config.*", "src/core/*"},
 			MaxStoryComplexity:     5,
 		},
+		Billing: BillingConfig{
+			DefaultRate: 150.0,
+			Currency:    "USD",
+			HoursPerPoint: map[int][2]float64{
+				1:  {0.5, 1.0},
+				2:  {1.0, 2.0},
+				3:  {2.0, 3.0},
+				5:  {3.0, 5.0},
+				8:  {5.0, 8.0},
+				13: {8.0, 13.0},
+			},
+			LLMCosts: LLMCostConfig{
+				Mode: "subscription",
+			},
+		},
 		Memory: MemoryConfig{
 			Enabled: true,
 		},
