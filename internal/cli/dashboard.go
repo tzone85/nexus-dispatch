@@ -58,6 +58,16 @@ func runDashboard(cmd *cobra.Command, _ []string) error {
 		mp := memory.NewMemPalace()
 
 		srv := web.NewServer(s.Events, s.Proj, port, filter, stateDir, mp)
+
+		// Wire event bus for instant WebSocket push.
+		eventBus := web.NewEventBus()
+		srv.Hub().SetEventBus(eventBus)
+		if fs, ok := s.Events.(*state.FileStore); ok {
+			fs.OnAppend = func(evt state.Event) {
+				eventBus.Publish(evt)
+			}
+		}
+
 		if err := srv.Start(ctx); err != nil && err != http.ErrServerClosed {
 			return fmt.Errorf("web server: %w", err)
 		}

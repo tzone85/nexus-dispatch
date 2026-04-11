@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/tzone85/nexus-dispatch/internal/agent"
+	"github.com/tzone85/nexus-dispatch/internal/artifact"
 	"github.com/tzone85/nexus-dispatch/internal/criteria"
 	"github.com/tzone85/nexus-dispatch/internal/engine"
 	nxdgit "github.com/tzone85/nexus-dispatch/internal/git"
@@ -18,6 +19,7 @@ import (
 	"github.com/tzone85/nexus-dispatch/internal/metrics"
 	"github.com/tzone85/nexus-dispatch/internal/plugin"
 	"github.com/tzone85/nexus-dispatch/internal/runtime"
+	"github.com/tzone85/nexus-dispatch/internal/scratchboard"
 	"github.com/tzone85/nexus-dispatch/internal/state"
 	"github.com/tzone85/nexus-dispatch/internal/tmux"
 )
@@ -213,11 +215,32 @@ func runResume(cmd *cobra.Command, args []string) error {
 
 	// Spawn agents via executor
 	executor := engine.NewExecutor(reg, s.Config, s.Events, s.Proj, mp)
+
 	// Provide LLM client for native runtimes (Gemma)
 	nativeClient, nativeErr := buildLLMClient(s.Config.Models.Junior.Provider)
 	if nativeErr == nil {
 		executor.SetLLMClient(nativeClient)
 	}
+
+	// Initialize artifact store for per-story persistence.
+	stateDir0 := expandHome(s.Config.Workspace.StateDir)
+	artifactDir := filepath.Join(stateDir0, "artifacts")
+	artStore, artErr := artifact.NewStore(artifactDir)
+	if artErr == nil {
+		executor.SetArtifactStore(artStore)
+	}
+
+	// Initialize scratchboard for cross-agent knowledge sharing.
+	sbPath := filepath.Join(stateDir0, "scratchboards", reqID+".jsonl")
+	sb, sbErr := scratchboard.New(sbPath)
+	if sbErr == nil {
+		executor.SetScratchboard(sb)
+	}
+
+	// Initialize periodic controller for stuck agent detection.
+	controller := engine.NewController(s.Config.Controller, nil, s.Events, s.Proj)
+	executor.SetController(controller)
+
 	results := executor.SpawnAll(repoDir, assignments, storyMap)
 
 	activeAgents := make([]engine.ActiveAgent, 0, len(results))
@@ -293,6 +316,9 @@ func runResume(cmd *cobra.Command, args []string) error {
 
 	monitor := engine.NewMonitor(reg, watchdog, reviewer, qaRunner, merger, s.Config, s.Events, s.Proj)
 	monitor.SetMemPalace(mp)
+	if artStore != nil {
+		monitor.SetArtifactStore(artStore)
+	}
 
 	// Enable LLM-powered conflict resolution during rebase.
 	if llmClient != nil {
@@ -311,6 +337,9 @@ func runResume(cmd *cobra.Command, args []string) error {
 		DAG:            dag,
 		WaveNumber:     maxWave + 1,
 	}
+
+	// Start periodic controller in background (if enabled).
+	go controller.RunLoop(ctx)
 
 	if err := monitor.RunWithContext(ctx, activeAgents, repoDir, rc); err != nil {
 		return err
