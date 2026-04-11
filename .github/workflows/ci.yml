@@ -51,6 +51,10 @@ jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
+    # Non-blocking until golangci-lint ships a release built with Go 1.26+.
+    # Remove continue-on-error once https://github.com/golangci/golangci-lint
+    # publishes a compatible version.
+    continue-on-error: true
     steps:
       - name: Checkout
         uses: actions/checkout@v4
