@@ -21,7 +21,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version: '1.26'
 
       - name: Install dependencies
         run: go mod download
@@ -58,7 +58,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version: '1.26'
 
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v6
@@ -78,7 +78,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version: '1.26'
 
       - name: Build binary
         run: go build -o nxd ./cmd/nxd
@@ -103,7 +103,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version: '1.26'
 
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
