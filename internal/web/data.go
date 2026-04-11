@@ -4,6 +4,7 @@ package web
 import (
 	"encoding/json"
 
+	"github.com/tzone85/nexus-dispatch/internal/graph"
 	"github.com/tzone85/nexus-dispatch/internal/state"
 )
 
@@ -19,6 +20,7 @@ type StateSnapshot struct {
 	ReviewGates     []ReviewGateItem    `json:"review_gates"`
 	Investigations  []InvestigationItem `json:"investigations"`
 	RecoveryLog     []RecoveryItem      `json:"recovery_log"`
+	DAG             *graph.DAGExport    `json:"dag,omitempty"`
 }
 
 type PipelineCounts struct {
@@ -32,10 +34,11 @@ type PipelineCounts struct {
 }
 
 type EventSummary struct {
-	Type      string `json:"type"`
-	Timestamp string `json:"timestamp"`
-	AgentID   string `json:"agent_id"`
-	StoryID   string `json:"story_id"`
+	Type      string         `json:"type"`
+	Timestamp string         `json:"timestamp"`
+	AgentID   string         `json:"agent_id"`
+	StoryID   string         `json:"story_id"`
+	Payload   map[string]any `json:"payload,omitempty"`
 }
 
 func (s *Server) BuildSnapshot() (StateSnapshot, error) {
@@ -163,6 +166,9 @@ func (s *Server) BuildSnapshot() (StateSnapshot, error) {
 		})
 	}
 	snap.Investigations = investigations
+
+	// Include DAG export if available.
+	snap.DAG = s.dagExport
 
 	return snap, nil
 }

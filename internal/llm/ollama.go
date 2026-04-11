@@ -13,7 +13,7 @@ import (
 
 const (
 	ollamaDefaultBaseURL = "http://localhost:11434"
-	ollamaDefaultTimeout = 5 * time.Minute
+	ollamaDefaultTimeout = 15 * time.Minute
 )
 
 // OllamaClient communicates with an Ollama instance via its

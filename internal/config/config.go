@@ -23,9 +23,11 @@ type Config struct {
 	Cleanup   CleanupConfig            `yaml:"cleanup"`
 	Merge     MergeConfig              `yaml:"merge"`
 	Planning  PlanningConfig           `yaml:"planning"`
-	Billing   BillingConfig            `yaml:"billing"`
+	Billing    BillingConfig            `yaml:"billing"`
+	Controller ControllerConfig         `yaml:"controller"`
 	Memory        MemoryConfig             `yaml:"memory"`
 	Investigation InvestigationConfig      `yaml:"investigation"`
+	QA            QAConfig                 `yaml:"qa"`
 	Runtimes      map[string]RuntimeConfig `yaml:"runtimes"`
 	Plugins       PluginConfig             `yaml:"plugins"`
 }
@@ -95,6 +97,18 @@ type MonitorConfig struct {
 	ContextFreshnessTokens int `yaml:"context_freshness_tokens"`
 }
 
+// ControllerConfig configures the periodic active controller.
+type ControllerConfig struct {
+	Enabled           bool `yaml:"enabled"`
+	IntervalS         int  `yaml:"interval_s"`
+	MaxStuckDurationS int  `yaml:"max_stuck_duration_s"`
+	AutoCancel        bool `yaml:"auto_cancel"`
+	AutoRestart       bool `yaml:"auto_restart"`
+	AutoReprioritize  bool `yaml:"auto_reprioritize"`
+	MaxActionsPerTick int  `yaml:"max_actions_per_tick"`
+	CooldownS         int  `yaml:"cooldown_s"`
+}
+
 // CleanupConfig controls post-task cleanup behaviour.
 type CleanupConfig struct {
 	WorktreePrune       string `yaml:"worktree_prune"`
@@ -152,6 +166,7 @@ type RuntimeConfig struct {
 	Native           bool             `yaml:"native,omitempty"`
 	MaxIterations    int              `yaml:"max_iterations,omitempty"`
 	CommandAllowlist []string         `yaml:"command_allowlist,omitempty"`
+	Concurrency      int              `yaml:"concurrency,omitempty"`
 }
 
 // validBackends is the set of allowed workspace backends.

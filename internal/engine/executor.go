@@ -10,11 +10,13 @@ import (
 	"strings"
 
 	"github.com/tzone85/nexus-dispatch/internal/agent"
+	"github.com/tzone85/nexus-dispatch/internal/artifact"
 	"github.com/tzone85/nexus-dispatch/internal/config"
 	nxdgit "github.com/tzone85/nexus-dispatch/internal/git"
 	"github.com/tzone85/nexus-dispatch/internal/llm"
 	"github.com/tzone85/nexus-dispatch/internal/memory"
 	"github.com/tzone85/nexus-dispatch/internal/runtime"
+	"github.com/tzone85/nexus-dispatch/internal/scratchboard"
 	"github.com/tzone85/nexus-dispatch/internal/state"
 )
 
@@ -28,12 +30,15 @@ type ActiveAgent struct {
 // Executor spawns agents for dispatched assignments by creating git worktrees,
 // launching tmux sessions with configured runtimes, and emitting lifecycle events.
 type Executor struct {
-	registry   *runtime.Registry
-	config     config.Config
-	eventStore state.EventStore
-	projStore  state.ProjectionStore
-	mempalace  *memory.MemPalace
-	llmClient  llm.Client // for native runtimes (Gemma)
+	registry      *runtime.Registry
+	config        config.Config
+	eventStore    state.EventStore
+	projStore     state.ProjectionStore
+	mempalace     *memory.MemPalace
+	llmClient     llm.Client // for native runtimes (Gemma)
+	artifactStore *artifact.Store
+	scratchboard  *scratchboard.Scratchboard
+	controller    *Controller
 }
 
 // NewExecutor creates an Executor wired to the runtime registry, configuration,
@@ -54,6 +59,21 @@ func (e *Executor) SetLLMClient(client llm.Client) {
 	e.llmClient = client
 }
 
+// SetArtifactStore sets the artifact store for persisting per-story artifacts.
+func (e *Executor) SetArtifactStore(store *artifact.Store) {
+	e.artifactStore = store
+}
+
+// SetScratchboard sets the shared scratchboard for cross-agent knowledge.
+func (e *Executor) SetScratchboard(sb *scratchboard.Scratchboard) {
+	e.scratchboard = sb
+}
+
+// SetController sets the periodic controller for context cancellation support.
+func (e *Executor) SetController(c *Controller) {
+	e.controller = c
+}
+
 // SpawnResult holds the outcome of spawning an agent for one assignment.
 type SpawnResult struct {
 	Assignment   Assignment
@@ -64,7 +84,9 @@ type SpawnResult struct {
 
 // SpawnAll creates worktrees and launches tmux sessions for each assignment.
 // It builds a wave brief from all assignments so each agent knows which
-// parallel stories are running and which files to avoid.
+// parallel stories are running and which files to avoid. For native runtimes
+// it wraps the LLM client with a concurrency semaphore so that parallel
+// agents don't overwhelm a single-GPU Ollama instance.
 func (e *Executor) SpawnAll(repoDir string, assignments []Assignment, stories map[string]PlannedStory) []SpawnResult {
 	// Build wave story info for parallel awareness.
 	waveStories := make([]WaveStoryInfo, 0, len(assignments))
@@ -78,15 +100,37 @@ func (e *Executor) SpawnAll(repoDir string, assignments []Assignment, stories ma
 		}
 	}
 
+	// Build a shared semaphore-wrapped LLM client for native runtimes in
+	// this wave. All native goroutines share one semaphore so that at most
+	// N concurrent LLM calls proceed (default 1 for single-GPU Ollama).
+	nativeClient := e.buildNativeClient()
+
 	results := make([]SpawnResult, 0, len(assignments))
 	for _, a := range assignments {
-		result := e.spawn(repoDir, a, stories[a.StoryID], waveStories)
+		result := e.spawn(repoDir, a, stories[a.StoryID], waveStories, nativeClient)
 		results = append(results, result)
 	}
 	return results
 }
 
-func (e *Executor) spawn(repoDir string, a Assignment, story PlannedStory, waveStories []WaveStoryInfo) SpawnResult {
+// buildNativeClient wraps e.llmClient with a concurrency semaphore based on
+// the first native runtime's Concurrency config. Returns nil if no LLM client
+// is set.
+func (e *Executor) buildNativeClient() llm.Client {
+	if e.llmClient == nil {
+		return nil
+	}
+	concurrency := 1
+	for _, rtCfg := range e.config.Runtimes {
+		if rtCfg.Native && rtCfg.Concurrency > 0 {
+			concurrency = rtCfg.Concurrency
+			break
+		}
+	}
+	return llm.NewSemaphoreClient(e.llmClient, concurrency)
+}
+
+func (e *Executor) spawn(repoDir string, a Assignment, story PlannedStory, waveStories []WaveStoryInfo, nativeClient llm.Client) SpawnResult {
 	result := SpawnResult{Assignment: a}
 
 	// Determine worktree path
@@ -109,7 +153,7 @@ func (e *Executor) spawn(repoDir string, a Assignment, story PlannedStory, waveS
 
 	// Check if this is a native runtime (e.g., Gemma)
 	if e.registry.IsNative(rtName) {
-		return e.spawnNative(repoDir, a, story, waveStories, worktreePath, rtName, result)
+		return e.spawnNative(repoDir, a, story, waveStories, worktreePath, rtName, result, nativeClient)
 	}
 
 	rt, err := e.registry.Get(rtName)
@@ -276,8 +320,8 @@ func execExpandHome(path string) string {
 
 // spawnNative runs a story using the native Gemma runtime (no tmux, no external CLI).
 // It calls the LLM directly via function calling tools.
-func (e *Executor) spawnNative(repoDir string, a Assignment, story PlannedStory, waveStories []WaveStoryInfo, worktreePath, rtName string, result SpawnResult) SpawnResult {
-	if e.llmClient == nil {
+func (e *Executor) spawnNative(repoDir string, a Assignment, story PlannedStory, waveStories []WaveStoryInfo, worktreePath, rtName string, result SpawnResult, nativeClient llm.Client) SpawnResult {
+	if nativeClient == nil {
 		result.Error = fmt.Errorf("native runtime %s requires an LLM client (call SetLLMClient first)", rtName)
 		return result
 	}
@@ -318,6 +362,17 @@ func (e *Executor) spawnNative(repoDir string, a Assignment, story PlannedStory,
 	systemPrompt := agent.SystemPrompt(a.Role, promptCtx)
 	goal := agent.GoalPrompt(a.Role, promptCtx)
 
+	// Write launch config artifact for reproducibility.
+	if e.artifactStore != nil {
+		e.artifactStore.Write(a.StoryID, artifact.TypeLaunchConfig, artifact.LaunchConfig{
+			StoryID:   a.StoryID,
+			Runtime:   rtName,
+			Model:     modelCfg.Model,
+			Prompt:    goal,
+			WaveBrief: promptCtx.WaveBrief,
+		})
+	}
+
 	// Emit STORY_STARTED
 	startEvt := state.NewEvent(state.EventStoryStarted, a.AgentID, a.StoryID, map[string]any{
 		"worktree_path": worktreePath, "runtime": rtName, "branch": a.Branch,
@@ -329,10 +384,13 @@ func (e *Executor) spawnNative(repoDir string, a Assignment, story PlannedStory,
 	// On completion (success or failure) the goroutine emits STORY_COMPLETED
 	// so the monitor's pollOnce can trigger the post-execution pipeline.
 	go func() {
-		gemmaRT := runtime.NewGemmaRuntime(e.llmClient, runtime.GemmaRuntimeConfig{
+		gemmaRT := runtime.NewGemmaRuntime(nativeClient, runtime.GemmaRuntimeConfig{
 			MaxIterations:    nativeCfg.MaxIterations,
 			CommandAllowlist: nativeCfg.CommandAllowlist,
 		})
+		gemmaRT.AgentID = a.AgentID
+		gemmaRT.StoryID = a.StoryID
+		gemmaRT.Scratchboard = e.scratchboard
 
 		// Wire progress callback to emit fine-grained STORY_PROGRESS events.
 		gemmaRT.OnProgress = func(prog runtime.ProgressEvent) {
@@ -357,10 +415,22 @@ func (e *Executor) spawnNative(repoDir string, a Assignment, story PlannedStory,
 			evt := state.NewEvent(state.EventStoryProgress, a.AgentID, a.StoryID, payload)
 			e.eventStore.Append(evt)
 			e.projStore.Project(evt)
+
+			// Append to per-story trace artifact for post-mortem replay.
+			if e.artifactStore != nil {
+				e.artifactStore.Append(a.StoryID, artifact.TypeTraceEvents, payload)
+			}
+		}
+
+		// Create a cancellable context so the controller can stop stuck agents.
+		execCtx, execCancel := context.WithCancel(context.Background())
+		defer execCancel()
+		if e.controller != nil {
+			e.controller.RegisterCancel(a.StoryID, execCancel)
 		}
 
 		log.Printf("[native-runtime] executing %s in %s", a.StoryID, worktreePath)
-		execResult := gemmaRT.Execute(context.Background(), worktreePath, modelCfg.Model, systemPrompt, goal)
+		execResult := gemmaRT.Execute(execCtx, worktreePath, modelCfg.Model, systemPrompt, goal)
 
 		if execResult.Error != nil {
 			log.Printf("[native-runtime] %s failed after %d iterations: %v",

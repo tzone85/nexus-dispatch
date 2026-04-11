@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tzone85/nexus-dispatch/internal/artifact"
 	"github.com/tzone85/nexus-dispatch/internal/config"
 	nxdgit "github.com/tzone85/nexus-dispatch/internal/git"
 	"github.com/tzone85/nexus-dispatch/internal/graph"
@@ -40,6 +41,10 @@ type Monitor struct {
 	// feedback, and QA failures so future agent runs benefit from
 	// accumulated project knowledge.
 	mempalace *memory.MemPalace
+
+	// artifactStore persists per-story artifacts (diffs, review results,
+	// QA results) for post-mortem inspection.
+	artifactStore *artifact.Store
 
 	// planner enables tier-3 (tech lead) re-planning. When set, the
 	// monitor can decompose failing stories into smaller replacements.
@@ -90,6 +95,11 @@ func NewMonitor(
 // QA failures into MemPalace for future agent context.
 func (m *Monitor) SetMemPalace(mp *memory.MemPalace) {
 	m.mempalace = mp
+}
+
+// SetArtifactStore enables per-story artifact persistence (diffs, reviews, QA).
+func (m *Monitor) SetArtifactStore(store *artifact.Store) {
+	m.artifactStore = store
 }
 
 // SetConflictResolver enables LLM-based automatic conflict resolution during
@@ -306,6 +316,11 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 		return
 	}
 
+	// Persist the diff as an artifact for post-mortem inspection.
+	if m.artifactStore != nil {
+		m.artifactStore.WriteRaw(storyID, artifact.TypeGitDiff, diff)
+	}
+
 	// Look up story details used by review, MemPalace mining, and QA feedback.
 	storyTitle := storyID
 	reqID := ""
@@ -358,6 +373,14 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 			}
 		}
 
+		// Persist review result as artifact.
+		if m.artifactStore != nil {
+			m.artifactStore.Write(storyID, artifact.TypeReviewResult, map[string]any{
+				"passed":  result.Passed,
+				"summary": result.Summary,
+			})
+		}
+
 		if !result.Passed {
 			m.resetStoryToDraft(storyID, "reviewer", fmt.Sprintf("review rejected: %s", result.Summary))
 			return
@@ -373,6 +396,15 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 			m.resetStoryToDraft(storyID, "qa", fmt.Sprintf("QA error: %v", err))
 			return
 		}
+
+		// Persist QA result as artifact.
+		if m.artifactStore != nil {
+			m.artifactStore.Write(storyID, artifact.TypeQAResult, map[string]any{
+				"passed": result.Passed,
+				"checks": result.Checks,
+			})
+		}
+
 		if !result.Passed {
 			log.Printf("[pipeline] QA failed for %s", storyID)
 

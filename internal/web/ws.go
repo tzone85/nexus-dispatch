@@ -20,6 +20,7 @@ type Hub struct {
 	clients        map[*websocket.Conn]bool
 	mu             sync.Mutex
 	lastEventCount int
+	eventBus       *EventBus
 }
 
 func NewHub(s *Server) *Hub {
@@ -27,6 +28,11 @@ func NewHub(s *Server) *Hub {
 		server:  s,
 		clients: make(map[*websocket.Conn]bool),
 	}
+}
+
+// SetEventBus connects the hub to an event bus for instant event delivery.
+func (h *Hub) SetEventBus(bus *EventBus) {
+	h.eventBus = bus
 }
 
 type WSMessage struct {
@@ -74,17 +80,49 @@ func (h *Hub) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Hub) Run(ctx context.Context) {
-	ticker := time.NewTicker(2 * time.Second)
+	// State snapshots are now a safety net (for reconnect and aggregate views).
+	// Events are pushed instantly via the event bus when available.
+	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
+
+	// Subscribe to event bus for instant event delivery.
+	var eventCh chan state.Event
+	if h.eventBus != nil {
+		eventCh = h.eventBus.Subscribe()
+		defer h.eventBus.Unsubscribe(eventCh)
+	}
 
 	for {
 		select {
 		case <-ctx.Done():
 			h.closeAll()
 			return
+		case evt, ok := <-eventCh:
+			if !ok {
+				eventCh = nil
+				continue
+			}
+			h.pushEvent(ctx, evt)
 		case <-ticker.C:
 			h.broadcast(ctx)
 		}
+	}
+}
+
+// pushEvent sends a single event to all connected clients immediately.
+func (h *Hub) pushEvent(ctx context.Context, evt state.Event) {
+	msg := WSResponse{Type: "event", Data: EventSummary{
+		Type:      string(evt.Type),
+		Timestamp: evt.Timestamp.Format("15:04:05"),
+		AgentID:   evt.AgentID,
+		StoryID:   evt.StoryID,
+		Payload:   state.DecodePayload(evt.Payload),
+	}}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for conn := range h.clients {
+		wsjson.Write(ctx, conn, msg) //nolint:errcheck
 	}
 }
 

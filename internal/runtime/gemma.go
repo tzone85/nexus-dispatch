@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/tzone85/nexus-dispatch/internal/llm"
+	"github.com/tzone85/nexus-dispatch/internal/scratchboard"
 )
 
 // GemmaRuntimeConfig holds configuration for the native Gemma coding runtime.
@@ -49,9 +50,12 @@ type ProgressCallback func(ProgressEvent)
 // GemmaRuntime is a native coding runtime that uses Gemma 4's function calling
 // to make code edits directly, bypassing external CLI tools like Aider.
 type GemmaRuntime struct {
-	client     llm.Client
-	config     GemmaRuntimeConfig
-	OnProgress ProgressCallback
+	client       llm.Client
+	config       GemmaRuntimeConfig
+	OnProgress   ProgressCallback
+	Scratchboard *scratchboard.Scratchboard
+	AgentID      string // used as author when writing to scratchboard
+	StoryID      string // used as context when writing to scratchboard
 }
 
 // NewGemmaRuntime creates a new GemmaRuntime with the given LLM client and
@@ -131,6 +135,28 @@ func CodingTools() []llm.ToolDefinition {
 					"summary": {"type": "string", "description": "Summary of changes made"}
 				},
 				"required": ["summary"]
+			}`),
+		},
+		{
+			Name:        "write_scratchboard",
+			Description: "Share a discovery with other agents working in parallel. Write only high-value findings: API patterns, required configuration, common gotchas, schema requirements.",
+			Parameters: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"category": {"type": "string", "description": "Category: pattern, gotcha, schema, config, dependency"},
+					"content": {"type": "string", "description": "The discovery to share"}
+				},
+				"required": ["category", "content"]
+			}`),
+		},
+		{
+			Name:        "read_scratchboard",
+			Description: "Read discoveries shared by other parallel agents. Use this before starting work to check if others have found relevant patterns or requirements.",
+			Parameters: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"category": {"type": "string", "description": "Optional category filter (pattern, gotcha, schema, config, dependency)"}
+				}
 			}`),
 		},
 	}
@@ -342,6 +368,10 @@ func (g *GemmaRuntime) executeTool(call llm.ToolCall, workDir string) llm.ToolCa
 		// Handled in the Execute loop, but return gracefully if called directly.
 		result.Content = "task complete"
 		return result
+	case "write_scratchboard":
+		return g.execWriteScratchboard(call)
+	case "read_scratchboard":
+		return g.execReadScratchboard(call)
 	default:
 		result.IsError = true
 		result.Content = fmt.Sprintf("unknown tool: %s", call.Name)
@@ -519,5 +549,73 @@ func (g *GemmaRuntime) execRunCommand(call llm.ToolCall, workDir string) llm.Too
 	}
 
 	result.Content = string(output)
+	return result
+}
+
+// execWriteScratchboard writes a discovery to the shared scratchboard.
+func (g *GemmaRuntime) execWriteScratchboard(call llm.ToolCall) llm.ToolCallResult {
+	result := llm.ToolCallResult{CallID: call.ID}
+
+	if g.Scratchboard == nil {
+		result.Content = "scratchboard not available"
+		return result
+	}
+
+	var args struct {
+		Category string `json:"category"`
+		Content  string `json:"content"`
+	}
+	if err := json.Unmarshal(call.Arguments, &args); err != nil {
+		result.IsError = true
+		result.Content = fmt.Sprintf("invalid arguments: %v", err)
+		return result
+	}
+
+	if err := g.Scratchboard.Write(scratchboard.Entry{
+		AgentID:  g.AgentID,
+		StoryID:  g.StoryID,
+		Category: args.Category,
+		Content:  args.Content,
+	}); err != nil {
+		result.IsError = true
+		result.Content = fmt.Sprintf("write error: %v", err)
+		return result
+	}
+
+	result.Content = fmt.Sprintf("shared to scratchboard [%s]: %s", args.Category, args.Content)
+	return result
+}
+
+// execReadScratchboard reads recent entries from the shared scratchboard.
+func (g *GemmaRuntime) execReadScratchboard(call llm.ToolCall) llm.ToolCallResult {
+	result := llm.ToolCallResult{CallID: call.ID}
+
+	if g.Scratchboard == nil {
+		result.Content = "scratchboard not available"
+		return result
+	}
+
+	var args struct {
+		Category string `json:"category"`
+	}
+	json.Unmarshal(call.Arguments, &args)
+
+	entries, err := g.Scratchboard.Read(args.Category, scratchboard.MaxReadEntries)
+	if err != nil {
+		result.IsError = true
+		result.Content = fmt.Sprintf("read error: %v", err)
+		return result
+	}
+
+	if len(entries) == 0 {
+		result.Content = "no entries in scratchboard"
+		return result
+	}
+
+	var sb strings.Builder
+	for _, e := range entries {
+		sb.WriteString(fmt.Sprintf("[%s/%s] %s: %s\n", e.StoryID, e.AgentID, e.Category, e.Content))
+	}
+	result.Content = sb.String()
 	return result
 }

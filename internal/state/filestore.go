@@ -9,9 +9,10 @@ import (
 
 // FileStore is a file-based append-only event store using JSONL format.
 type FileStore struct {
-	path string
-	file *os.File
-	mu   sync.RWMutex
+	path     string
+	file     *os.File
+	mu       sync.RWMutex
+	OnAppend func(Event) // optional callback invoked after each append
 }
 
 // NewFileStore creates a new FileStore that persists events to the given path.
@@ -23,7 +24,8 @@ func NewFileStore(path string) (*FileStore, error) {
 	return &FileStore{path: path, file: f}, nil
 }
 
-// Append writes a single event to the end of the JSONL file.
+// Append writes a single event to the end of the JSONL file. If OnAppend is
+// set, the callback is invoked after a successful write.
 func (fs *FileStore) Append(event Event) error {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
@@ -32,8 +34,14 @@ func (fs *FileStore) Append(event Event) error {
 	if err != nil {
 		return err
 	}
-	_, err = fs.file.Write(append(data, '\n'))
-	return err
+	if _, err = fs.file.Write(append(data, '\n')); err != nil {
+		return err
+	}
+
+	if fs.OnAppend != nil {
+		fs.OnAppend(event)
+	}
+	return nil
 }
 
 // List reads all events from the file and returns those matching the filter.

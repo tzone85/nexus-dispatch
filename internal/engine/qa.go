@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tzone85/nexus-dispatch/internal/criteria"
 	"github.com/tzone85/nexus-dispatch/internal/state"
 )
 
@@ -43,9 +44,10 @@ func (e *ExecRunner) Run(ctx context.Context, workDir, name string, args ...stri
 
 // QAConfig describes the commands to run for each QA check.
 type QAConfig struct {
-	LintCommand  string
-	BuildCommand string
-	TestCommand  string
+	LintCommand     string
+	BuildCommand    string
+	TestCommand     string
+	SuccessCriteria []criteria.Criterion
 }
 
 // QA runs lint, build, and test commands against a worktree directory and
@@ -133,6 +135,28 @@ func (q *QA) Run(ctx context.Context, storyID, worktreePath string) (QAResult, e
 	}
 
 	return result, nil
+}
+
+// RunCriteria evaluates declarative success criteria against a worktree and
+// returns a QAResult with one check per criterion. This augments the
+// procedural Run method — call both in the pipeline.
+func (q *QA) RunCriteria(ctx context.Context, storyID, worktreePath string, crits []criteria.Criterion) QAResult {
+	if len(crits) == 0 {
+		return QAResult{Passed: true}
+	}
+
+	results := criteria.EvaluateAll(ctx, worktreePath, crits)
+	qaResult := QAResult{Passed: criteria.AllPassed(results)}
+
+	for _, r := range results {
+		qaResult.Checks = append(qaResult.Checks, QACheckResult{
+			Name:   fmt.Sprintf("criteria:%s(%s)", r.Criterion.Type, r.Criterion.Target),
+			Passed: r.Passed,
+			Output: r.Message,
+		})
+	}
+
+	return qaResult
 }
 
 // runCheck executes a single QA command and returns the result.

@@ -44,6 +44,8 @@ const (
 	EventStoryEscalated       EventType = "STORY_ESCALATED"
 	EventStoryRewritten       EventType = "STORY_REWRITTEN"
 	EventStorySplit           EventType = "STORY_SPLIT"
+	EventStoryReset           EventType = "STORY_RESET"
+	EventRecoveryCompleted    EventType = "RECOVERY_COMPLETED"
 
 	// Estimate events.
 	EventReqEstimated         EventType = "REQ_ESTIMATED"

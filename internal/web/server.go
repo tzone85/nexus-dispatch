@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/tzone85/nexus-dispatch/internal/graph"
 	"github.com/tzone85/nexus-dispatch/internal/memory"
 	"github.com/tzone85/nexus-dispatch/internal/state"
 )
@@ -29,6 +30,7 @@ type Server struct {
 	httpServer   *http.Server
 	metricsCache *MetricsCache
 	mempalace    *memory.MemPalace
+	dagExport    *graph.DAGExport
 }
 
 func NewServer(es state.EventStore, ps *state.SQLiteStore, port int, filter state.ReqFilter, stateDir string, mp *memory.MemPalace) *Server {
@@ -47,6 +49,16 @@ func NewServer(es state.EventStore, ps *state.SQLiteStore, port int, filter stat
 	}
 	s.hub = NewHub(s)
 	return s
+}
+
+// SetDAG sets the DAG export for inclusion in state snapshots.
+func (s *Server) SetDAG(dag *graph.DAGExport) {
+	s.dagExport = dag
+}
+
+// Hub returns the WebSocket hub for event bus wiring.
+func (s *Server) Hub() *Hub {
+	return s.hub
 }
 
 func (s *Server) Start(ctx context.Context) error {
