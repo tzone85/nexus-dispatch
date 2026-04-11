@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/tzone85/nexus-dispatch/internal/agent"
+	"github.com/tzone85/nexus-dispatch/internal/criteria"
 	"github.com/tzone85/nexus-dispatch/internal/engine"
 	nxdgit "github.com/tzone85/nexus-dispatch/internal/git"
 	"github.com/tzone85/nexus-dispatch/internal/graph"
@@ -18,6 +19,7 @@ import (
 	"github.com/tzone85/nexus-dispatch/internal/plugin"
 	"github.com/tzone85/nexus-dispatch/internal/runtime"
 	"github.com/tzone85/nexus-dispatch/internal/state"
+	"github.com/tzone85/nexus-dispatch/internal/tmux"
 )
 
 func newResumeCmd() *cobra.Command {
@@ -29,6 +31,7 @@ func newResumeCmd() *cobra.Command {
 		RunE:  runResume,
 	}
 	cmd.Flags().Bool("godmode", false, "skip permission prompts on LLM calls (fully autonomous)")
+	cmd.Flags().Bool("force", false, "Force override of lock file if another instance appears stuck")
 	cmd.SilenceUsage = true
 	return cmd
 }
@@ -69,6 +72,11 @@ func runResume(cmd *cobra.Command, args []string) error {
 
 	// Acquire pipeline lock to prevent concurrent runs.
 	stateDir := expandHome(s.Config.Workspace.StateDir)
+	forceFlag, _ := cmd.Flags().GetBool("force")
+	if forceFlag {
+		// Force removes any existing lock file before acquiring.
+		os.Remove(filepath.Join(stateDir, "nxd.lock"))
+	}
 	lock, err := engine.AcquireLock(stateDir)
 	if err != nil {
 		return err
@@ -145,6 +153,28 @@ func runResume(cmd *cobra.Command, args []string) error {
 	if len(completed) == len(stories) {
 		fmt.Fprintf(out, "All stories are complete.\n")
 		return nil
+	}
+
+	// Run consistency check for crash recovery.
+	_ = filepath.Join(stateDir, "checkpoint.json") // reserved for future checkpoint persistence
+	recoveryIssues := runConsistencyCheck(stories, stateDir)
+	if len(recoveryIssues) > 0 {
+		fmt.Fprintf(out, "\nRecovery: found %d inconsistent stories\n", len(recoveryIssues))
+		for _, issue := range recoveryIssues {
+			fmt.Fprintf(out, "  [RECOVERY] %s: %s\n", issue.StoryID, issue.Detail)
+			if issue.Action == engine.ActionResetToDraft {
+				evt := state.NewEvent(state.EventStoryReset, "recovery", issue.StoryID, map[string]any{
+					"reason": issue.Detail,
+				})
+				s.Events.Append(evt)
+				s.Proj.Project(evt)
+			}
+		}
+		recoveryEvt := state.NewEvent(state.EventRecoveryCompleted, "system", "", map[string]any{
+			"issues_found": len(recoveryIssues),
+		})
+		s.Events.Append(recoveryEvt)
+		s.Proj.Project(recoveryEvt)
 	}
 
 	// Dispatch next wave
@@ -234,7 +264,19 @@ func runResume(cmd *cobra.Command, args []string) error {
 		reviewer = engine.NewReviewer(llmClient, seniorModel.Provider, seniorModel.Model, seniorModel.MaxTokens, s.Events, s.Proj)
 	}
 
-	qaRunner := engine.NewQA(engine.QAConfig{}, &engine.ExecRunner{}, s.Events, s.Proj)
+	// Convert config success criteria to engine criteria.
+	var successCriteria []criteria.Criterion
+	for _, sc := range s.Config.QA.SuccessCriteria {
+		successCriteria = append(successCriteria, criteria.Criterion{
+			Type:     criteria.Type(sc.Kind),
+			Target:   sc.Path,
+			Expected: sc.Value,
+		})
+	}
+
+	qaRunner := engine.NewQA(engine.QAConfig{
+		SuccessCriteria: successCriteria,
+	}, &engine.ExecRunner{}, s.Events, s.Proj)
 
 	var merger *engine.Merger
 	if nxdgit.GHAvailable() {
@@ -332,4 +374,38 @@ func (g *ghOpsAdapter) CreatePR(repoDir, title, body, baseBranch, headBranch str
 
 func (g *ghOpsAdapter) MergePR(repoDir string, prNumber int) error {
 	return nxdgit.MergePR(repoDir, prNumber)
+}
+
+func dirExists(path string) bool {
+	fi, err := os.Stat(path)
+	return err == nil && fi.IsDir()
+}
+
+func runConsistencyCheck(stories []state.Story, stateDir string) []engine.RecoveryIssue {
+	worktreeBase := filepath.Join(stateDir, "worktrees")
+
+	var cp *engine.Checkpoint
+	checkpointPath := filepath.Join(stateDir, "checkpoint.json")
+	if read, err := engine.ReadCheckpoint(checkpointPath); err == nil {
+		cp = &read
+	}
+
+	var recoveryStories []engine.RecoveryStory
+	for _, story := range stories {
+		if story.Status != "in_progress" && story.Status != "merging" {
+			continue
+		}
+		rs := engine.RecoveryStory{
+			ID:          story.ID,
+			Status:      story.Status,
+			HasWorktree: dirExists(filepath.Join(worktreeBase, story.ID)),
+		}
+		if story.AgentID != "" {
+			sessionName := fmt.Sprintf("nxd-%s", story.ID)
+			rs.HasTmux = tmux.SessionExists(sessionName)
+		}
+		recoveryStories = append(recoveryStories, rs)
+	}
+
+	return engine.CheckConsistency(recoveryStories, cp)
 }

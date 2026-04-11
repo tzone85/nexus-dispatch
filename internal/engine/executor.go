@@ -163,6 +163,7 @@ func (e *Executor) spawn(repoDir string, a Assignment, story PlannedStory, waveS
 	}
 
 	// Build the agent prompt context
+	feedback := e.latestReviewFeedback(a.StoryID)
 	promptCtx := agent.PromptContext{
 		StoryID:            a.StoryID,
 		StoryTitle:         story.Title,
@@ -170,7 +171,7 @@ func (e *Executor) spawn(repoDir string, a Assignment, story PlannedStory, waveS
 		AcceptanceCriteria: string(story.AcceptanceCriteria),
 		RepoPath:           worktreePath,
 		Complexity:         story.Complexity,
-		ReviewFeedback:     e.latestReviewFeedback(a.StoryID),
+		ReviewFeedback:     feedback,
 	}
 
 	// Query MemPalace for prior work context.
@@ -192,6 +193,47 @@ func (e *Executor) spawn(repoDir string, a Assignment, story PlannedStory, waveS
 	// Inject wave brief for parallel story awareness.
 	promptCtx.WaveBrief = BuildWaveBrief(a.StoryID, waveStories)
 
+	// If this is a retry (feedback exists from a prior attempt), enhance
+	// the goal prompt with attempt history so the agent learns from failures.
+	var goalPrompt string
+	if feedback != "" {
+		tracker := NewAttemptTracker(e.eventStore)
+		attempts, _ := tracker.ListAttempts(a.StoryID)
+
+		priorAttempts := make([]agent.AttemptSummary, 0, len(attempts))
+		for _, att := range attempts {
+			priorAttempts = append(priorAttempts, agent.AttemptSummary{
+				Number:  att.Number,
+				Role:    att.Role,
+				Outcome: att.Outcome,
+				Error:   att.Error,
+			})
+		}
+
+		tmplCtx := agent.TemplateContext{
+			StoryID:            a.StoryID,
+			StoryTitle:         story.Title,
+			StoryDescription:   story.Description,
+			AcceptanceCriteria: string(story.AcceptanceCriteria),
+			Complexity:         story.Complexity,
+			RepoPath:           worktreePath,
+			TechStack:          promptCtx.TechStack,
+			LintCommand:        promptCtx.LintCommand,
+			BuildCommand:       promptCtx.BuildCommand,
+			TestCommand:        promptCtx.TestCommand,
+			ReviewFeedback:     feedback,
+			IsExistingCodebase: promptCtx.IsExistingCodebase,
+			IsBugFix:           promptCtx.IsBugFix,
+			IsInfrastructure:   promptCtx.IsInfrastructure,
+			IsRetry:            true,
+			RetryNumber:        len(attempts) + 1,
+			PriorAttempts:      priorAttempts,
+		}
+		goalPrompt = agent.RenderGoalWithAttempts(tmplCtx)
+	} else {
+		goalPrompt = agent.GoalPrompt(a.Role, promptCtx)
+	}
+
 	// Resolve model for this role
 	modelCfg := a.Role.ModelConfig(e.config.Models)
 
@@ -205,7 +247,7 @@ func (e *Executor) spawn(repoDir string, a Assignment, story PlannedStory, waveS
 		SessionName:  a.SessionName,
 		WorkDir:      worktreePath,
 		Model:        modelCfg.Model,
-		Goal:         agent.GoalPrompt(a.Role, promptCtx),
+		Goal:         goalPrompt,
 		SystemPrompt: agent.SystemPrompt(a.Role, promptCtx),
 		LogFile:      logFile,
 	}); err != nil {
@@ -213,12 +255,15 @@ func (e *Executor) spawn(repoDir string, a Assignment, story PlannedStory, waveS
 		return result
 	}
 
-	// Emit STORY_STARTED event
+	// Emit STORY_STARTED event with tier and role so AttemptTracker can
+	// reconstruct attempt history without reverse-engineering roles.
 	startEvt := state.NewEvent(state.EventStoryStarted, a.AgentID, a.StoryID, map[string]any{
 		"worktree_path": worktreePath,
 		"runtime":       rtName,
 		"session_name":  a.SessionName,
 		"branch":        a.Branch,
+		"tier":          tierForRole(a.Role),
+		"role":          string(a.Role),
 	})
 	if err := e.eventStore.Append(startEvt); err != nil {
 		result.Error = fmt.Errorf("emit story started: %w", err)
@@ -318,6 +363,26 @@ func execExpandHome(path string) string {
 	return filepath.Join(home, path[1:])
 }
 
+// tierForRole maps agent roles to escalation tier numbers. These values
+// align with the 5-tier escalation chain: 0 = same-role retry (junior/
+// intermediate), 1 = senior, 2 = manager diagnosis, 3 = tech_lead re-plan,
+// 4 = pause. Roles that aren't part of the execution chain (qa, supervisor)
+// default to tier 0.
+func tierForRole(role agent.Role) int {
+	switch role {
+	case agent.RoleJunior, agent.RoleIntermediate:
+		return 0
+	case agent.RoleSenior:
+		return 1
+	case agent.RoleManager:
+		return 2
+	case agent.RoleTechLead:
+		return 3
+	default:
+		return 0
+	}
+}
+
 // spawnNative runs a story using the native Gemma runtime (no tmux, no external CLI).
 // It calls the LLM directly via function calling tools.
 func (e *Executor) spawnNative(repoDir string, a Assignment, story PlannedStory, waveStories []WaveStoryInfo, worktreePath, rtName string, result SpawnResult, nativeClient llm.Client) SpawnResult {
@@ -373,9 +438,10 @@ func (e *Executor) spawnNative(repoDir string, a Assignment, story PlannedStory,
 		})
 	}
 
-	// Emit STORY_STARTED
+	// Emit STORY_STARTED with tier and role for attempt tracking.
 	startEvt := state.NewEvent(state.EventStoryStarted, a.AgentID, a.StoryID, map[string]any{
 		"worktree_path": worktreePath, "runtime": rtName, "branch": a.Branch,
+		"tier": tierForRole(a.Role), "role": string(a.Role),
 	})
 	e.eventStore.Append(startEvt)
 	e.projStore.Project(startEvt)

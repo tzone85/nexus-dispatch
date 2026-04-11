@@ -146,40 +146,27 @@ Follow these rules strictly:
 6. **Stay focused on the assigned story only.** Do not refactor unrelated code.
 `
 
-// Spawn creates a new tmux session running the CLI tool with the given
-// configuration. Output is tee'd to a log file for post-mortem diagnosis.
-func (c *CLIRuntime) Spawn(cfg SessionConfig) error {
-	// Write CLAUDE.md unconditionally to the worktree to suppress
-	// brainstorming/planning plugins that would override -p prompt
-	// instructions. This must happen on every spawn, not just the first
-	// worktree creation, because reused worktrees may have stale content.
-	if cfg.WorkDir != "" {
-		claudeMDPath := filepath.Join(cfg.WorkDir, "CLAUDE.md")
-		if err := os.WriteFile(claudeMDPath, []byte(nxdMDContent), 0o644); err != nil {
-			// Non-fatal: log and continue so the agent can still run.
-			fmt.Fprintf(os.Stderr, "warning: failed to write CLAUDE.md to %s: %v\n", cfg.WorkDir, err)
-		}
-	}
-
-	// Propagate critical API keys and host overrides (OLLAMA_HOST,
-	// ANTHROPIC_API_KEY, OPENAI_API_KEY) from the current process into
-	// the tmux global environment. This ensures agents spawned in tmux
-	// sessions pick up freshly-sourced values from ~/.zshrc rather than
-	// inheriting stale keys from a long-running tmux server.
-	tmux.PropagateCriticalEnv()
-
+// BuildCommand constructs the full shell command string for the CLI runtime.
+// It writes the prompt to a file in cfg.WorkDir and returns the assembled
+// command including environment exports. Extracted from Spawn for testability.
+func (c *CLIRuntime) BuildCommand(cfg SessionConfig) (string, error) {
 	cmdStr := c.command
 	for _, arg := range c.args {
-		cmdStr += " " + arg
+		if err := ValidateShellArg(arg); err != nil {
+			return "", fmt.Errorf("invalid runtime arg: %w", err)
+		}
+		cmdStr += " " + QuoteShellArg(arg)
 	}
 	if cfg.Model != "" {
-		cmdStr += " --model " + cfg.Model
+		if err := ValidateModelName(cfg.Model); err != nil {
+			return "", fmt.Errorf("invalid model name: %w", err)
+		}
+		cmdStr += fmt.Sprintf(" --model %q", cfg.Model)
 	}
 
 	// Write the combined prompt (system context + goal) to a file and pass
-	// it via --prompt-file if the runtime supports it, otherwise via shell
-	// argument with proper quoting. Piping via stdin does not work reliably
-	// inside tmux detached sessions.
+	// it via shell argument with proper quoting. Piping via stdin does not
+	// work reliably inside tmux detached sessions.
 	prompt := cfg.Goal
 	if cfg.SystemPrompt != "" {
 		prompt = cfg.SystemPrompt + "\n\n---\n\n" + cfg.Goal
@@ -189,7 +176,7 @@ func (c *CLIRuntime) Spawn(cfg SessionConfig) error {
 		os.MkdirAll(promptDir, 0o755)
 		promptFile := filepath.Join(promptDir, "prompt.txt")
 		if err := os.WriteFile(promptFile, []byte(prompt), 0o644); err != nil {
-			return fmt.Errorf("write prompt file: %w", err)
+			return "", fmt.Errorf("write prompt file: %w", err)
 		}
 		// Pass the prompt file contents as a shell argument using $(...) to
 		// avoid stdin pipe issues in tmux.
@@ -225,6 +212,36 @@ func (c *CLIRuntime) Spawn(cfg SessionConfig) error {
 		envExports += fmt.Sprintf("export %s=%q; ", key, val)
 	}
 	cmdStr = envExports + "unset CLAUDECODE; " + cmdStr
+
+	return cmdStr, nil
+}
+
+// Spawn creates a new tmux session running the CLI tool with the given
+// configuration. Output is tee'd to a log file for post-mortem diagnosis.
+func (c *CLIRuntime) Spawn(cfg SessionConfig) error {
+	// Write CLAUDE.md unconditionally to the worktree to suppress
+	// brainstorming/planning plugins that would override -p prompt
+	// instructions. This must happen on every spawn, not just the first
+	// worktree creation, because reused worktrees may have stale content.
+	if cfg.WorkDir != "" {
+		claudeMDPath := filepath.Join(cfg.WorkDir, "CLAUDE.md")
+		if err := os.WriteFile(claudeMDPath, []byte(nxdMDContent), 0o644); err != nil {
+			// Non-fatal: log and continue so the agent can still run.
+			fmt.Fprintf(os.Stderr, "warning: failed to write CLAUDE.md to %s: %v\n", cfg.WorkDir, err)
+		}
+	}
+
+	// Propagate critical API keys and host overrides (OLLAMA_HOST,
+	// ANTHROPIC_API_KEY, OPENAI_API_KEY) from the current process into
+	// the tmux global environment. This ensures agents spawned in tmux
+	// sessions pick up freshly-sourced values from ~/.zshrc rather than
+	// inheriting stale keys from a long-running tmux server.
+	tmux.PropagateCriticalEnv()
+
+	cmdStr, err := c.BuildCommand(cfg)
+	if err != nil {
+		return err
+	}
 
 	return tmux.CreateSession(cfg.SessionName, cfg.WorkDir, cmdStr)
 }

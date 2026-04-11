@@ -145,6 +145,29 @@ type TokenRate struct {
 	OutputPer1K float64 `yaml:"output_per_1k"`
 }
 
+// QAConfig holds quality-assurance settings including declarative success criteria.
+type QAConfig struct {
+	SuccessCriteria []SuccessCriterion `yaml:"success_criteria"`
+}
+
+// SuccessCriterion defines a single declarative success check in config YAML.
+type SuccessCriterion struct {
+	Kind    string `yaml:"kind"`
+	Value   string `yaml:"value,omitempty"`
+	Path    string `yaml:"path,omitempty"`
+	Message string `yaml:"message,omitempty"`
+}
+
+// validCriteriaKinds is the set of allowed QA criteria kinds.
+var validCriteriaKinds = map[string]bool{
+	"output_contains":     true,
+	"output_not_contains": true,
+	"file_exists":         true,
+	"file_contains":       true,
+	"file_not_empty":      true,
+	"exit_code_zero":      true,
+}
+
 // InvestigationConfig controls how the investigation agent operates.
 type InvestigationConfig struct {
 	CommandAllowlist []string `yaml:"command_allowlist"`
@@ -279,6 +302,13 @@ func (c Config) Validate() error {
 	for pts, hrs := range c.Billing.HoursPerPoint {
 		if hrs[0] > hrs[1] {
 			return fmt.Errorf("billing.hours_per_point[%d]: low (%.1f) must be <= high (%.1f)", pts, hrs[0], hrs[1])
+		}
+	}
+
+	// Validate QA success criteria kinds.
+	for i, sc := range c.QA.SuccessCriteria {
+		if !validCriteriaKinds[sc.Kind] {
+			return fmt.Errorf("qa.success_criteria[%d].kind %q is not a valid criterion kind", i, sc.Kind)
 		}
 	}
 
