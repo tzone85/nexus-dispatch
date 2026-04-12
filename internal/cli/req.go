@@ -26,6 +26,10 @@ import (
 // buildLLMClient. Set after loading plugins in runReq or runResume.
 var activePluginProviders map[string]*plugin.SubprocessInfo
 
+// buildLLMClientFunc is the function used to create LLM clients. It defaults
+// to buildLLMClientDefault but can be overridden in tests to inject mock clients.
+var buildLLMClientFunc = buildLLMClientDefault
+
 func newReqCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "req [requirement]",
@@ -258,7 +262,13 @@ func resolveRequirement(cmd *cobra.Command, args []string) (string, error) {
 // buildLLMClient creates an LLM client based on the provider name.
 // An optional godmode parameter controls whether permission prompts are skipped
 // on runtimes that support it (e.g., Claude Code, Codex).
+// It delegates to buildLLMClientFunc, which can be overridden in tests.
 func buildLLMClient(provider string, godmode ...bool) (llm.Client, error) {
+	return buildLLMClientFunc(provider, godmode...)
+}
+
+// buildLLMClientDefault is the production implementation of buildLLMClient.
+func buildLLMClientDefault(provider string, godmode ...bool) (llm.Client, error) {
 	_ = len(godmode) > 0 && godmode[0] // reserved for forward compatibility
 
 	switch provider {
