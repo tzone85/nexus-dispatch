@@ -102,6 +102,84 @@ func TestFailureSummary(t *testing.T) {
 	}
 }
 
+func TestTestPasses_RealProject(t *testing.T) {
+	// Create a minimal Go project with a passing test.
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module testproject\n\ngo 1.21\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "add.go"), []byte("package testproject\n\nfunc Add(a, b int) int { return a + b }\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "add_test.go"), []byte("package testproject\n\nimport \"testing\"\n\nfunc TestAdd(t *testing.T) {\n\tif Add(1, 2) != 3 { t.Fatal(\"wrong\") }\n}\n"), 0o644)
+
+	r := Evaluate(context.Background(), dir, Criterion{Type: TypeTestPasses, Target: "./..."})
+	if !r.Passed {
+		t.Errorf("expected tests to pass, got: %s", r.Message)
+	}
+}
+
+func TestTestPasses_FailingProject(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module testproject\n\ngo 1.21\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "fail.go"), []byte("package testproject\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "fail_test.go"), []byte("package testproject\n\nimport \"testing\"\n\nfunc TestAlwaysFails(t *testing.T) { t.Fatal(\"intentional fail\") }\n"), 0o644)
+
+	r := Evaluate(context.Background(), dir, Criterion{Type: TypeTestPasses, Target: "./..."})
+	if r.Passed {
+		t.Error("expected tests to fail")
+	}
+}
+
+func TestTestPasses_DefaultTarget(t *testing.T) {
+	// When Target is empty, it should default to "./...".
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module testproject\n\ngo 1.21\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "ok.go"), []byte("package testproject\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "ok_test.go"), []byte("package testproject\n\nimport \"testing\"\n\nfunc TestOK(t *testing.T) {}\n"), 0o644)
+
+	r := Evaluate(context.Background(), dir, Criterion{Type: TypeTestPasses})
+	if !r.Passed {
+		t.Errorf("expected pass with default target, got: %s", r.Message)
+	}
+}
+
+func TestCoverageAbove_Pass(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module testproject\n\ngo 1.21\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "add.go"), []byte("package testproject\n\nfunc Add(a, b int) int { return a + b }\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "add_test.go"), []byte("package testproject\n\nimport \"testing\"\n\nfunc TestAdd(t *testing.T) {\n\tif Add(1, 2) != 3 { t.Fatal(\"wrong\") }\n}\n"), 0o644)
+
+	// This simple project should have 100% coverage.
+	r := Evaluate(context.Background(), dir, Criterion{Type: TypeCoverageAbove, Expected: "50.0"})
+	if !r.Passed {
+		t.Errorf("expected coverage above 50%%, got: %s (actual: %s)", r.Message, r.Actual)
+	}
+}
+
+func TestCoverageAbove_Fail(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module testproject\n\ngo 1.21\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "funcs.go"), []byte("package testproject\n\nfunc A() {}\nfunc B() {}\nfunc C() {}\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "funcs_test.go"), []byte("package testproject\n\nimport \"testing\"\n\nfunc TestA(t *testing.T) { A() }\n"), 0o644)
+
+	// Only ~33% coverage — threshold of 99% should fail.
+	r := Evaluate(context.Background(), dir, Criterion{Type: TypeCoverageAbove, Expected: "99.0"})
+	if r.Passed {
+		t.Errorf("expected coverage below 99%%, got: %s", r.Actual)
+	}
+}
+
+func TestCoverageAbove_InvalidThreshold(t *testing.T) {
+	r := Evaluate(context.Background(), t.TempDir(), Criterion{Type: TypeCoverageAbove, Expected: "not-a-number"})
+	if r.Passed {
+		t.Error("expected fail for invalid threshold")
+	}
+}
+
+func TestUnknownCriterionType(t *testing.T) {
+	r := Evaluate(context.Background(), t.TempDir(), Criterion{Type: "nonexistent_type"})
+	if r.Passed {
+		t.Error("expected fail for unknown criterion type")
+	}
+}
+
 func TestParseCoverage(t *testing.T) {
 	tests := []struct {
 		input string
