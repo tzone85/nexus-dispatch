@@ -16,6 +16,7 @@ import (
 	nxdgit "github.com/tzone85/nexus-dispatch/internal/git"
 	"github.com/tzone85/nexus-dispatch/internal/llm"
 	"github.com/tzone85/nexus-dispatch/internal/memory"
+	"github.com/tzone85/nexus-dispatch/internal/repolearn"
 	"github.com/tzone85/nexus-dispatch/internal/runtime"
 	"github.com/tzone85/nexus-dispatch/internal/scratchboard"
 	"github.com/tzone85/nexus-dispatch/internal/state"
@@ -40,6 +41,12 @@ type Executor struct {
 	artifactStore *artifact.Store
 	scratchboard  *scratchboard.Scratchboard
 	controller    *Controller
+	projectDir    string // path to project state dir (for loading RepoProfile)
+}
+
+// SetProjectDir sets the project state directory for loading RepoProfile.
+func (e *Executor) SetProjectDir(dir string) {
+	e.projectDir = dir
 }
 
 // NewExecutor creates an Executor wired to the runtime registry, configuration,
@@ -165,6 +172,22 @@ func (e *Executor) spawn(repoDir string, a Assignment, story PlannedStory, waveS
 
 	// Build the agent prompt context
 	feedback := e.latestReviewFeedback(a.StoryID)
+
+	// Load RepoProfile if available to enrich prompts with pre-learned knowledge.
+	var techStackStr, lintCmd, buildCmd, testCmd string
+	if e.projectDir != "" {
+		if profile, err := repolearn.LoadProfile(e.projectDir); err == nil && profile.TechStack.PrimaryLanguage != "" {
+			techStackStr = profile.Summary()
+			lintCmd = profile.Build.LintCommand
+			buildCmd = profile.Build.BuildCommand
+			testCmd = profile.Test.TestCommand
+		}
+	}
+	if techStackStr == "" {
+		stack := nxdgit.ScanRepo(worktreePath)
+		techStackStr = fmt.Sprintf("%s (%s)", stack.Language, stack.BuildTool)
+	}
+
 	promptCtx := agent.PromptContext{
 		StoryID:            a.StoryID,
 		StoryTitle:         story.Title,
@@ -173,6 +196,10 @@ func (e *Executor) spawn(repoDir string, a Assignment, story PlannedStory, waveS
 		RepoPath:           worktreePath,
 		Complexity:         story.Complexity,
 		ReviewFeedback:     feedback,
+		TechStack:          techStackStr,
+		LintCommand:        lintCmd,
+		BuildCommand:       buildCmd,
+		TestCommand:        testCmd,
 	}
 
 	// Query MemPalace for prior work context.

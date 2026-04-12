@@ -126,6 +126,7 @@ func runReq(cmd *cobra.Command, args []string) error {
 	}
 
 	planner := engine.NewPlanner(client, s.Config, s.Events, s.Proj)
+	planner.SetProjectDir(expandHome(s.Config.Workspace.StateDir))
 
 	ctx, cancel := context.WithTimeout(cmd.Context(), 5*time.Minute)
 	defer cancel()

@@ -13,6 +13,7 @@ import (
 	nxdgit "github.com/tzone85/nexus-dispatch/internal/git"
 	"github.com/tzone85/nexus-dispatch/internal/graph"
 	"github.com/tzone85/nexus-dispatch/internal/llm"
+	"github.com/tzone85/nexus-dispatch/internal/repolearn"
 	"github.com/tzone85/nexus-dispatch/internal/state"
 )
 
@@ -44,6 +45,12 @@ type Planner struct {
 	eventStore state.EventStore
 	projStore  state.ProjectionStore
 	reqCtx     *RequirementContext
+	projectDir string // path to project state dir (for loading RepoProfile)
+}
+
+// SetProjectDir sets the project state directory for loading RepoProfile.
+func (p *Planner) SetProjectDir(dir string) {
+	p.projectDir = dir
 }
 
 // NewPlanner creates a Planner wired to the given LLM client, configuration,
@@ -80,13 +87,24 @@ func (p *Planner) Plan(ctx context.Context, reqID, requirement, repoPath string)
 		return PlanResult{}, fmt.Errorf("emit req submitted: %w", err)
 	}
 
-	// Scan repo for tech stack
-	stack := nxdgit.ScanRepo(repoPath)
+	// Scan repo for tech stack — prefer RepoProfile if available
+	var techStackStr string
+	var profileContext string
+	if p.projectDir != "" {
+		if profile, err := repolearn.LoadProfile(p.projectDir); err == nil && profile.TechStack.PrimaryLanguage != "" {
+			techStackStr = fmt.Sprintf("%s (%s)", profile.TechStack.PrimaryLanguage, profile.TechStack.PrimaryBuildTool)
+			profileContext = profile.Summary()
+		}
+	}
+	if techStackStr == "" {
+		stack := nxdgit.ScanRepo(repoPath)
+		techStackStr = fmt.Sprintf("%s (%s)", stack.Language, stack.BuildTool)
+	}
 
 	// Build Tech Lead prompt
 	promptCtx := agent.PromptContext{
 		RepoPath:  repoPath,
-		TechStack: fmt.Sprintf("%s (%s)", stack.Language, stack.BuildTool),
+		TechStack: techStackStr,
 	}
 
 	// Inject classification flags and investigation report from requirement context
@@ -126,6 +144,17 @@ IMPORTANT:
 - Keep story complexity at or below %d.
 
 Respond ONLY with the JSON array, no other text.`, requirement, p.config.Planning.MaxStoryComplexity)
+
+	// Append repo profile context if available from learning system
+	if profileContext != "" {
+		userMessage += fmt.Sprintf(`
+
+Repository Profile (pre-analysed):
+%s
+Use this profile to inform your story decomposition. Reference the correct
+build/test/lint commands in acceptance criteria. Account for the detected
+architecture and conventions when planning stories.`, profileContext)
+	}
 
 	// Build the LLM request. If the provider supports native tool calling,
 	// attach planner tool definitions so the model uses structured output.

@@ -247,6 +247,9 @@ func runResume(cmd *cobra.Command, args []string) error {
 		executor.SetScratchboard(sb)
 	}
 
+	// Wire project directory for RepoProfile loading (repo learning system).
+	executor.SetProjectDir(stateDir0)
+
 	// Initialize periodic controller for stuck agent detection.
 	controller := engine.NewController(s.Config.Controller, nil, s.Events, s.Proj)
 	executor.SetController(controller)

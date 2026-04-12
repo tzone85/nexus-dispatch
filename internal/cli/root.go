@@ -50,6 +50,7 @@ func init() {
 	rootCmd.AddCommand(newReportCmd())
 	rootCmd.AddCommand(newLogsCmd())
 	rootCmd.AddCommand(newDiffCmd())
+	rootCmd.AddCommand(newLearnCmd())
 }
 
 func Execute() error {
