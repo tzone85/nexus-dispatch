@@ -264,3 +264,211 @@ func TestSQLiteStore_SplitDepth(t *testing.T) {
 		t.Fatalf("expected split_depth 1, got %d", story.SplitDepth)
 	}
 }
+
+func TestSQLiteStore_ListRequirementsFiltered(t *testing.T) {
+	db, _ := state.NewSQLiteStore(":memory:")
+	defer db.Close()
+
+	db.Project(state.NewEvent(state.EventReqSubmitted, "system", "", map[string]any{
+		"id": "r-001", "title": "Auth", "description": "d", "repo_path": "/repo/a",
+	}))
+	db.Project(state.NewEvent(state.EventReqSubmitted, "system", "", map[string]any{
+		"id": "r-002", "title": "Dashboard", "description": "d", "repo_path": "/repo/b",
+	}))
+
+	// Unfiltered.
+	all, err := db.ListRequirementsFiltered(state.ReqFilter{})
+	if err != nil {
+		t.Fatalf("list all: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("expected 2 requirements, got %d", len(all))
+	}
+
+	// Filter by repo path.
+	filtered, err := db.ListRequirementsFiltered(state.ReqFilter{RepoPath: "/repo/a"})
+	if err != nil {
+		t.Fatalf("list filtered: %v", err)
+	}
+	if len(filtered) != 1 {
+		t.Fatalf("expected 1 requirement for /repo/a, got %d", len(filtered))
+	}
+	if filtered[0].ID != "r-001" {
+		t.Errorf("expected r-001, got %s", filtered[0].ID)
+	}
+
+	// Filter excluding archived.
+	db.ArchiveRequirement("r-001")
+	excluded, err := db.ListRequirementsFiltered(state.ReqFilter{ExcludeArchived: true})
+	if err != nil {
+		t.Fatalf("list exclude archived: %v", err)
+	}
+	if len(excluded) != 1 {
+		t.Fatalf("expected 1 non-archived, got %d", len(excluded))
+	}
+	if excluded[0].ID != "r-002" {
+		t.Errorf("expected r-002, got %s", excluded[0].ID)
+	}
+}
+
+func TestSQLiteStore_ListRequirements(t *testing.T) {
+	db, _ := state.NewSQLiteStore(":memory:")
+	defer db.Close()
+
+	db.Project(state.NewEvent(state.EventReqSubmitted, "system", "", map[string]any{
+		"id": "r-001", "title": "Auth", "description": "d",
+	}))
+
+	reqs, err := db.ListRequirements()
+	if err != nil {
+		t.Fatalf("ListRequirements: %v", err)
+	}
+	if len(reqs) != 1 {
+		t.Fatalf("expected 1 requirement, got %d", len(reqs))
+	}
+}
+
+func TestSQLiteStore_InsertAgent(t *testing.T) {
+	db, _ := state.NewSQLiteStore(":memory:")
+	defer db.Close()
+
+	err := db.InsertAgent("agent-001", "senior", "gemma4:26b", "gemma", "nxd-session-1")
+	if err != nil {
+		t.Fatalf("InsertAgent: %v", err)
+	}
+
+	agents, err := db.ListAgents(state.AgentFilter{})
+	if err != nil {
+		t.Fatalf("ListAgents: %v", err)
+	}
+	if len(agents) != 1 {
+		t.Fatalf("expected 1 agent, got %d", len(agents))
+	}
+	if agents[0].ID != "agent-001" {
+		t.Errorf("ID = %q, want agent-001", agents[0].ID)
+	}
+	if agents[0].Type != "senior" {
+		t.Errorf("Type = %q, want senior", agents[0].Type)
+	}
+	if agents[0].SessionName != "nxd-session-1" {
+		t.Errorf("SessionName = %q, want nxd-session-1", agents[0].SessionName)
+	}
+}
+
+func TestSQLiteStore_ListAgents_StatusFilter(t *testing.T) {
+	db, _ := state.NewSQLiteStore(":memory:")
+	defer db.Close()
+
+	db.InsertAgent("a-001", "senior", "gemma4", "gemma", "s1")
+	db.InsertAgent("a-002", "junior", "gemma4", "gemma", "s2")
+
+	// Both agents default to "idle" status.
+	all, _ := db.ListAgents(state.AgentFilter{})
+	if len(all) != 2 {
+		t.Fatalf("expected 2 agents, got %d", len(all))
+	}
+
+	idle, _ := db.ListAgents(state.AgentFilter{Status: "idle"})
+	if len(idle) != 2 {
+		t.Fatalf("expected 2 idle agents, got %d", len(idle))
+	}
+
+	active, _ := db.ListAgents(state.AgentFilter{Status: "active"})
+	if len(active) != 0 {
+		t.Fatalf("expected 0 active agents, got %d", len(active))
+	}
+}
+
+func TestSQLiteStore_ArchiveRequirement(t *testing.T) {
+	db, _ := state.NewSQLiteStore(":memory:")
+	defer db.Close()
+
+	db.Project(state.NewEvent(state.EventReqSubmitted, "system", "", map[string]any{
+		"id": "r-001", "title": "Auth", "description": "d",
+	}))
+
+	if err := db.ArchiveRequirement("r-001"); err != nil {
+		t.Fatalf("ArchiveRequirement: %v", err)
+	}
+
+	req, err := db.GetRequirement("r-001")
+	if err != nil {
+		t.Fatalf("GetRequirement: %v", err)
+	}
+	if req.Status != "archived" {
+		t.Errorf("expected status=archived, got %q", req.Status)
+	}
+}
+
+func TestSQLiteStore_ArchiveStoriesByReq(t *testing.T) {
+	db, _ := state.NewSQLiteStore(":memory:")
+	defer db.Close()
+
+	db.Project(state.NewEvent(state.EventStoryCreated, "tl", "s-001", map[string]any{
+		"id": "s-001", "req_id": "r-001", "title": "task1", "description": "d", "complexity": 3,
+	}))
+	db.Project(state.NewEvent(state.EventStoryCreated, "tl", "s-002", map[string]any{
+		"id": "s-002", "req_id": "r-001", "title": "task2", "description": "d", "complexity": 2,
+	}))
+
+	if err := db.ArchiveStoriesByReq("r-001"); err != nil {
+		t.Fatalf("ArchiveStoriesByReq: %v", err)
+	}
+
+	stories, _ := db.ListStories(state.StoryFilter{ReqID: "r-001"})
+	for _, s := range stories {
+		if s.Status != "archived" {
+			t.Errorf("story %s: status=%q, want archived", s.ID, s.Status)
+		}
+	}
+}
+
+func TestSQLiteStore_ListStoryDeps(t *testing.T) {
+	db, _ := state.NewSQLiteStore(":memory:")
+	defer db.Close()
+
+	db.Project(state.NewEvent(state.EventStoryCreated, "tl", "s-001", map[string]any{
+		"id": "s-001", "req_id": "r-001", "title": "scaffold", "description": "d", "complexity": 2,
+	}))
+	db.Project(state.NewEvent(state.EventStoryCreated, "tl", "s-002", map[string]any{
+		"id": "s-002", "req_id": "r-001", "title": "feature", "description": "d", "complexity": 5,
+		"depends_on": []any{"s-001"},
+	}))
+
+	deps, err := db.ListStoryDeps("r-001")
+	if err != nil {
+		t.Fatalf("ListStoryDeps: %v", err)
+	}
+	if len(deps) != 1 {
+		t.Fatalf("expected 1 dep, got %d", len(deps))
+	}
+	if deps[0].StoryID != "s-002" || deps[0].DependsOnID != "s-001" {
+		t.Errorf("dep = %+v, want s-002 -> s-001", deps[0])
+	}
+}
+
+func TestDecodePayload(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload []byte
+		wantKey string
+	}{
+		{"valid", []byte(`{"key":"value"}`), "key"},
+		{"empty", nil, ""},
+		{"invalid", []byte(`not json`), ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := state.DecodePayload(tt.payload)
+			if tt.wantKey != "" {
+				if _, ok := m[tt.wantKey]; !ok {
+					t.Errorf("expected key %q in decoded payload", tt.wantKey)
+				}
+			} else {
+				if len(m) != 0 {
+					t.Errorf("expected empty map, got %v", m)
+				}
+			}
+		})
+	}
+}
