@@ -128,7 +128,7 @@ individual components keeps the overall system comprehensible.
 
 ## Technical Constraints
 
-- **Language**: Go 1.23+ (all production code).
+- **Language**: Go 1.26+ (all production code).
 - **State backend**: SQLite for projections; file-based append-only
   event log for the source of truth.
 - **LLM abstraction**: `internal/llm` package — Ollama, Anthropic,

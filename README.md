@@ -24,14 +24,14 @@ Submit a natural-language requirement and NXD decomposes it into stories, assign
 
 - **Event-sourced state management** with append-only event log and SQLite projections
 - **Full agile team hierarchy** — Tech Lead, Senior, Intermediate, Junior, QA, Supervisor
-- **Local LLM inference** via Ollama (DeepSeek Coder V2, Qwen2.5-Coder, CodeLlama)
+- **Local LLM inference** via Ollama (Gemma 4, DeepSeek Coder V2, Qwen2.5-Coder)
 - **Pluggable runtimes** — Aider (default), Claude Code, Codex, Gemini CLI
 - **Local git merges** — no GitHub API required (optional GitHub mode available)
 - **Wave-based parallel execution** with topological dependency resolution
 
 ## Prerequisites
 
-1. **Go 1.23+** — [install](https://go.dev/dl/)
+1. **Go 1.26+** — [install](https://go.dev/dl/)
 2. **Ollama** — [install](https://ollama.com) then pull **one** model to get started:
    ```bash
    ollama pull gemma4:26b                  # ~18GB — MoE, native function calling, 256K context
@@ -101,7 +101,11 @@ See the [full getting started guide](docs/guides/getting-started.md) for a step-
 - **Fatal error detection** — non-retryable API errors (401, 403, billing exhaustion) pause the requirement instead of retrying forever
 - **Tiered cleanup** — worktree pruning, branch garbage collection with configurable retention
 - **TUI dashboard** — single-pane Bubbletea interface with agents, pipeline, stories, activity, and escalations visible at once
-- **Web dashboard** — browser-based dashboard (`nxd dashboard --web`) with real-time WebSocket updates and full control panel
+- **Web dashboard** — browser-based dashboard (`nxd dashboard --web`) with real-time WebSocket updates, DAG visualization, and full control panel
+- **Active controller** — periodic stuck detection with auto-cancel, auto-restart, or auto-reprioritize actions
+- **Declarative success criteria** — file_exists, file_contains, test_passes, coverage_above, command_succeeds checks
+- **Cost estimation** — per-token LLM cost tracking with client-facing quote generation
+- **Story trace logs** — per-story JSONL trace with LLM exchanges, tool calls, and progress events
 - **Reputation scoring** — per-agent performance tracking across assignments
 - **Optional cloud mode** — swap to Anthropic/OpenAI APIs and GitHub PRs when online
 
@@ -121,6 +125,11 @@ See the [full getting started guide](docs/guides/getting-started.md) for a step-
 | `nxd events [--type T] [--story S] [--limit N]` | List events from the event store, newest first |
 | `nxd dashboard` | Launch the live TUI dashboard (single-pane) |
 | `nxd dashboard --web [--port 8787]` | Launch the web dashboard in your browser |
+| `nxd logs <story-id>` | Show trace log for a story (LLM calls, tool executions, progress) |
+| `nxd diff <story-id>` | Show git diff for a story's worktree against the base branch |
+| `nxd estimate <requirement>` | Estimate cost and effort for a requirement |
+| `nxd report <req-id>` | Generate a client delivery report for a completed requirement |
+| `nxd doctor` | Run preflight checks (Go, git, tmux, Ollama, config) |
 
 ## Configuration
 
@@ -135,6 +144,9 @@ Run `nxd init` to generate `nxd.yaml` with sensible defaults, then customize:
 | `cleanup` | Worktree pruning strategy, branch retention days |
 | `merge` | Mode (local/github), auto-merge toggle, base branch |
 | `runtimes` | CLI runtime definitions (command, args, model list, detection patterns) |
+| `controller` | Active stuck detection: auto-restart, auto-reprioritize, cooldown |
+| `billing` | Cost estimation rates, currency, per-token LLM cost tracking |
+| `qa` | Declarative success criteria evaluated after agent task completion |
 
 ### Offline vs Cloud Mode
 
