@@ -123,7 +123,35 @@ func TestReqCmd_ReviewMode(t *testing.T) {
 	}
 }
 
-// ── runArchive ────────────────────────────────────────────────────────
+// ── runReq --dry-run (uses DryRunClient directly, no mock override) ────
+
+func TestReqCmd_DryRun(t *testing.T) {
+	env := setupTestEnv(t)
+
+	workDir := t.TempDir()
+	initTestRepo(t, workDir)
+	orig, _ := os.Getwd()
+	os.Chdir(workDir)
+	t.Cleanup(func() { os.Chdir(orig) })
+
+	// --dry-run replaces the LLM client internally, no need for withMockLLM.
+	cmd := newReqCmd()
+	out, err := execCmd(t, cmd, env.Config, "--dry-run", "Build a REST API with CRUD endpoints")
+	if err != nil {
+		t.Fatalf("req --dry-run: %v\nOutput:\n%s", err, out)
+	}
+	if !strings.Contains(out, "[DRY RUN]") {
+		t.Error("expected [DRY RUN] banner")
+	}
+	if !strings.Contains(out, "Plan created with") {
+		t.Errorf("expected plan summary, got:\n%s", out)
+	}
+	if !strings.Contains(out, "scaffold") {
+		t.Error("expected scaffold story from DryRunClient")
+	}
+}
+
+// ── runArchive ────────────────────────────────────────────────
 
 func TestArchiveCmd_Success(t *testing.T) {
 	env := setupTestEnv(t)

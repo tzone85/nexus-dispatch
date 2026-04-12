@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/tzone85/nexus-dispatch/internal/agent"
@@ -15,6 +16,7 @@ import (
 	"github.com/tzone85/nexus-dispatch/internal/engine"
 	nxdgit "github.com/tzone85/nexus-dispatch/internal/git"
 	"github.com/tzone85/nexus-dispatch/internal/graph"
+	"github.com/tzone85/nexus-dispatch/internal/llm"
 	"github.com/tzone85/nexus-dispatch/internal/memory"
 	"github.com/tzone85/nexus-dispatch/internal/metrics"
 	"github.com/tzone85/nexus-dispatch/internal/plugin"
@@ -34,6 +36,7 @@ func newResumeCmd() *cobra.Command {
 	}
 	cmd.Flags().Bool("godmode", false, "skip permission prompts on LLM calls (fully autonomous)")
 	cmd.Flags().Bool("force", false, "Force override of lock file if another instance appears stuck")
+	cmd.Flags().Bool("dry-run", false, "Simulate LLM responses for pipeline testing (no API calls)")
 	cmd.SilenceUsage = true
 	return cmd
 }
@@ -217,8 +220,15 @@ func runResume(cmd *cobra.Command, args []string) error {
 	executor := engine.NewExecutor(reg, s.Config, s.Events, s.Proj, mp)
 
 	// Provide LLM client for native runtimes (Gemma)
-	nativeClient, nativeErr := buildLLMClient(s.Config.Models.Junior.Provider)
-	if nativeErr == nil {
+	dryRun, _ := cmd.Flags().GetBool("dry-run")
+	var nativeClient llm.Client
+	if dryRun {
+		nativeClient = llm.NewDryRunClient(100 * time.Millisecond)
+		fmt.Fprintf(out, "[DRY RUN] Using simulated LLM responses\n")
+	} else {
+		nativeClient, _ = buildLLMClient(s.Config.Models.Junior.Provider)
+	}
+	if nativeClient != nil {
 		executor.SetLLMClient(nativeClient)
 	}
 
@@ -274,7 +284,13 @@ func runResume(cmd *cobra.Command, args []string) error {
 	}
 
 	var reviewer *engine.Reviewer
-	llmClient, llmErr := buildLLMClient(s.Config.Models.Senior.Provider, godmode)
+	var llmClient llm.Client
+	var llmErr error
+	if dryRun {
+		llmClient = llm.NewDryRunClient(100 * time.Millisecond)
+	} else {
+		llmClient, llmErr = buildLLMClient(s.Config.Models.Senior.Provider, godmode)
+	}
 	if llmErr != nil {
 		log.Printf("Warning: LLM client unavailable, skipping code review: %v", llmErr)
 	} else {
