@@ -2,9 +2,13 @@ package cli
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/tzone85/nexus-dispatch/internal/config"
+	"github.com/tzone85/nexus-dispatch/internal/engine"
 	"github.com/tzone85/nexus-dispatch/internal/state"
 )
 
@@ -597,7 +601,368 @@ func TestDiffCmd_NotFound(t *testing.T) {
 	}
 }
 
-// ── Command registration ────────────────────────────────────────────
+// ── Approve command ─────────────────────────────────────────
+
+func TestApproveCmd_Success(t *testing.T) {
+	env := setupTestEnv(t)
+	seedTestReq(t, env, "req-00100", "Auth module", env.Dir)
+
+	// Move to pending_review.
+	pending := state.NewEvent(state.EventReqPendingReview, "system", "", map[string]any{"id": "req-00100"})
+	env.Events.Append(pending)
+	env.Proj.Project(pending)
+
+	cmd := newApproveCmd()
+	out, err := execCmd(t, cmd, env.Config, "req-00100")
+	if err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	if !strings.Contains(out, "Approved requirement") {
+		t.Errorf("expected success message, got:\n%s", out)
+	}
+
+	req, _ := env.Proj.GetRequirement("req-00100")
+	if req.Status != "planned" {
+		t.Errorf("expected status=planned, got %q", req.Status)
+	}
+}
+
+func TestApproveCmd_NotPendingReview(t *testing.T) {
+	env := setupTestEnv(t)
+	seedTestReq(t, env, "req-00100", "Auth", env.Dir)
+
+	cmd := newApproveCmd()
+	_, err := execCmd(t, cmd, env.Config, "req-00100")
+	if err == nil {
+		t.Error("expected error when requirement is not pending_review")
+	}
+}
+
+func TestApproveCmd_NotFound(t *testing.T) {
+	env := setupTestEnv(t)
+	cmd := newApproveCmd()
+	_, err := execCmd(t, cmd, env.Config, "nonexistent")
+	if err == nil {
+		t.Error("expected error for nonexistent requirement")
+	}
+}
+
+// ── Reject command ──────────────────────────────────────────
+
+func TestRejectCmd_Success(t *testing.T) {
+	env := setupTestEnv(t)
+	seedTestReq(t, env, "req-00100", "Auth module", env.Dir)
+
+	pending := state.NewEvent(state.EventReqPendingReview, "system", "", map[string]any{"id": "req-00100"})
+	env.Events.Append(pending)
+	env.Proj.Project(pending)
+
+	cmd := newRejectCmd()
+	out, err := execCmd(t, cmd, env.Config, "req-00100")
+	if err != nil {
+		t.Fatalf("reject: %v", err)
+	}
+	if !strings.Contains(out, "Rejected requirement") {
+		t.Errorf("expected success message, got:\n%s", out)
+	}
+
+	req, _ := env.Proj.GetRequirement("req-00100")
+	if req.Status != "rejected" {
+		t.Errorf("expected status=rejected, got %q", req.Status)
+	}
+}
+
+func TestRejectCmd_NotPendingReview(t *testing.T) {
+	env := setupTestEnv(t)
+	seedTestReq(t, env, "req-00100", "Auth", env.Dir)
+
+	cmd := newRejectCmd()
+	_, err := execCmd(t, cmd, env.Config, "req-00100")
+	if err == nil {
+		t.Error("expected error when not pending_review")
+	}
+}
+
+// ── Report command ──────────────────────────────────────────
+
+func TestReportCmd_Success(t *testing.T) {
+	env := setupTestEnv(t)
+	seedTestReq(t, env, "req-00100", "Auth module", env.Dir)
+	seedTestStory(t, env, "s-00100", "req-00100", "Login endpoint", 3)
+
+	cmd := newReportCmd()
+	out, err := execCmd(t, cmd, env.Config, "req-00100")
+	if err != nil {
+		t.Fatalf("report: %v", err)
+	}
+	if !strings.Contains(out, "Auth module") {
+		t.Errorf("expected requirement title in report, got:\n%s", out)
+	}
+}
+
+func TestReportCmd_NotFound(t *testing.T) {
+	env := setupTestEnv(t)
+	cmd := newReportCmd()
+	_, err := execCmd(t, cmd, env.Config, "nonexistent")
+	if err == nil {
+		t.Error("expected error for nonexistent requirement")
+	}
+}
+
+// ── Estimate print functions ────────────────────────────────
+
+func TestPrintEstimateJSON(t *testing.T) {
+	est := engine.Estimate{
+		Requirement: "Build auth",
+		Summary: engine.EstimateSummary{
+			StoryCount:  2,
+			TotalPoints: 6,
+			HoursLow:    4,
+			HoursHigh:   8,
+			Rate:        150,
+			Currency:    "USD",
+		},
+	}
+	err := printEstimateJSON(est)
+	if err != nil {
+		t.Fatalf("printEstimateJSON: %v", err)
+	}
+}
+
+func TestPrintEstimateTable_Live(t *testing.T) {
+	est := engine.Estimate{
+		Requirement: "Build auth",
+		Stories: []engine.StoryEstimate{
+			{Title: "Login", Complexity: 3, Role: "junior", HoursLow: 2, HoursHigh: 3},
+		},
+		Summary: engine.EstimateSummary{
+			StoryCount: 1, TotalPoints: 3,
+			HoursLow: 2, HoursHigh: 3,
+			QuoteLow: 300, QuoteHigh: 450,
+			Rate: 150, Currency: "USD",
+		},
+	}
+	err := printEstimateTable(est)
+	if err != nil {
+		t.Fatalf("printEstimateTable (live): %v", err)
+	}
+}
+
+func TestPrintEstimateTable_Quick(t *testing.T) {
+	est := engine.Estimate{
+		IsQuick:     true,
+		Requirement: "Build auth",
+		Summary: engine.EstimateSummary{
+			StoryCount: 3, HoursLow: 6, HoursHigh: 12,
+			QuoteLow: 900, QuoteHigh: 1800,
+		},
+	}
+	err := printEstimateTable(est)
+	if err != nil {
+		t.Fatalf("printEstimateTable (quick): %v", err)
+	}
+}
+
+// ── Logs utility functions ──────────────────────────────────
+
+func TestFormatEntry_ToolCall(t *testing.T) {
+	var buf strings.Builder
+	line := `{"timestamp":"2026-04-12T00:00:00Z","phase":"tool_call","tool":"write_file","detail":"writing main.go"}`
+	formatEntry(&buf, line)
+	out := buf.String()
+	if !strings.Contains(out, "write_file") {
+		t.Errorf("expected tool name in output, got: %s", out)
+	}
+	if !strings.Contains(out, "writing main.go") {
+		t.Errorf("expected detail in output, got: %s", out)
+	}
+}
+
+func TestFormatEntry_Phase(t *testing.T) {
+	var buf strings.Builder
+	line := `{"timestamp":"2026-04-12T00:00:00Z","phase":"thinking","iteration":3,"detail":"iteration 3/20"}`
+	formatEntry(&buf, line)
+	out := buf.String()
+	if !strings.Contains(out, "thinking") {
+		t.Errorf("expected phase in output, got: %s", out)
+	}
+	if !strings.Contains(out, "iter=3") {
+		t.Errorf("expected iteration in output, got: %s", out)
+	}
+}
+
+func TestFormatEntry_Error(t *testing.T) {
+	var buf strings.Builder
+	line := `{"timestamp":"2026-04-12T00:00:00Z","type":"error","is_error":true,"detail":"timeout"}`
+	formatEntry(&buf, line)
+	out := buf.String()
+	if !strings.Contains(out, "[ERROR]") {
+		t.Errorf("expected [ERROR] marker, got: %s", out)
+	}
+}
+
+func TestFormatEntry_InvalidJSON(t *testing.T) {
+	var buf strings.Builder
+	formatEntry(&buf, "not json at all")
+	out := buf.String()
+	if !strings.Contains(out, "not json at all") {
+		t.Errorf("expected raw line passthrough, got: %s", out)
+	}
+}
+
+func TestTailLog(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "trace.jsonl")
+	var lines []string
+	for i := 0; i < 10; i++ {
+		lines = append(lines, `{"timestamp":"2026-04-12T00:00:00Z","type":"progress","detail":"line"}`)
+	}
+	os.WriteFile(tmpFile, []byte(strings.Join(lines, "\n")), 0o644)
+
+	var buf strings.Builder
+	err := tailLog(tmpFile, 3, true, &buf)
+	if err != nil {
+		t.Fatalf("tailLog: %v", err)
+	}
+	// Should only show last 3 lines in raw mode.
+	outLines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(outLines) != 3 {
+		t.Errorf("expected 3 lines, got %d", len(outLines))
+	}
+}
+
+// ── Models utility functions ─────────────────────────────────
+
+func TestCollectConfiguredModels(t *testing.T) {
+	cfg := config.DefaultConfig()
+	ollama, google := collectConfiguredModels(cfg)
+
+	if len(ollama) == 0 {
+		t.Error("expected at least one Ollama model")
+	}
+	// Default config uses google+ollama provider, so google models may be present.
+	_ = google // may be empty if no google_model is configured
+}
+
+// ── Resume utility functions ─────────────────────────────────
+
+func TestDirExists(t *testing.T) {
+	dir := t.TempDir()
+	if !dirExists(dir) {
+		t.Error("expected true for existing directory")
+	}
+	if dirExists(filepath.Join(dir, "nonexistent")) {
+		t.Error("expected false for nonexistent path")
+	}
+	// File is not a directory.
+	f := filepath.Join(dir, "file.txt")
+	os.WriteFile(f, []byte("x"), 0o644)
+	if dirExists(f) {
+		t.Error("expected false for file (not directory)")
+	}
+}
+
+func TestRebuildDAG(t *testing.T) {
+	env := setupTestEnv(t)
+	seedTestReq(t, env, "req-00100", "Auth", env.Dir)
+	seedTestStory(t, env, "s-00100", "req-00100", "Scaffold", 2)
+	seedTestStory(t, env, "s-00200", "req-00100", "Feature", 5)
+
+	// Add dependency: s-00200 depends on s-00100.
+	depEvt := state.NewEvent(state.EventStoryCreated, "tl", "s-00300", map[string]any{
+		"id": "s-00300", "req_id": "req-00100", "title": "Tests",
+		"description": "d", "complexity": 3,
+		"depends_on": []any{"s-00100"},
+	})
+	env.Events.Append(depEvt)
+	env.Proj.Project(depEvt)
+
+	stories, _ := env.Proj.ListStories(state.StoryFilter{ReqID: "req-00100"})
+	dag, planned, err := rebuildDAG(env.Proj, "req-00100", stories)
+	if err != nil {
+		t.Fatalf("rebuildDAG: %v", err)
+	}
+	if len(planned) != 3 {
+		t.Fatalf("expected 3 planned stories, got %d", len(planned))
+	}
+	// DAG should have the dependency edge.
+	ready := dag.ReadyNodes(map[string]bool{})
+	// s-00100 and s-00200 should be ready (no deps or deps not in DAG).
+	// s-00300 depends on s-00100, so it should NOT be ready.
+	readySet := make(map[string]bool)
+	for _, id := range ready {
+		readySet[id] = true
+	}
+	if readySet["s-00300"] {
+		t.Error("s-00300 should not be ready (depends on s-00100)")
+	}
+	if !readySet["s-00100"] {
+		t.Error("s-00100 should be ready (no dependencies)")
+	}
+}
+
+// ── ResolveRequirement ─────────────────────────────────────
+
+func TestResolveRequirement_FromArgs(t *testing.T) {
+	cmd := newReqCmd()
+	cmd.Flags().String("config", "", "")
+	text, err := resolveRequirement(cmd, []string{"Build a REST API"})
+	if err != nil {
+		t.Fatalf("resolveRequirement: %v", err)
+	}
+	if text != "Build a REST API" {
+		t.Errorf("expected 'Build a REST API', got %q", text)
+	}
+}
+
+func TestResolveRequirement_FromFile(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "req.txt")
+	os.WriteFile(tmpFile, []byte("Add health check endpoint\n"), 0o644)
+
+	cmd := newReqCmd()
+	cmd.Flags().String("config", "", "")
+	cmd.Flags().Set("file", tmpFile)
+	text, err := resolveRequirement(cmd, nil)
+	if err != nil {
+		t.Fatalf("resolveRequirement: %v", err)
+	}
+	if text != "Add health check endpoint" {
+		t.Errorf("expected 'Add health check endpoint', got %q", text)
+	}
+}
+
+func TestResolveRequirement_EmptyFile(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "empty.txt")
+	os.WriteFile(tmpFile, []byte("  \n"), 0o644)
+
+	cmd := newReqCmd()
+	cmd.Flags().String("config", "", "")
+	cmd.Flags().Set("file", tmpFile)
+	_, err := resolveRequirement(cmd, nil)
+	if err == nil {
+		t.Error("expected error for empty file")
+	}
+}
+
+func TestResolveRequirement_NoInput(t *testing.T) {
+	cmd := newReqCmd()
+	cmd.Flags().String("config", "", "")
+	_, err := resolveRequirement(cmd, nil)
+	if err == nil {
+		t.Error("expected error when no args and no --file")
+	}
+}
+
+func TestResolveRequirement_BothArgsAndFile(t *testing.T) {
+	cmd := newReqCmd()
+	cmd.Flags().String("config", "", "")
+	cmd.Flags().Set("file", "some-file.txt")
+	_, err := resolveRequirement(cmd, []string{"some text"})
+	if err == nil {
+		t.Error("expected error when both args and --file provided")
+	}
+}
+
+// ── Command registration ────────────────────────────────────────
 
 func TestAllCommandsRegistered(t *testing.T) {
 	expected := []string{
