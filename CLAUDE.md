@@ -112,12 +112,26 @@ rm -f ~/.nxd/nxd.lock ~/.nxd/events.jsonl ~/.nxd/nxd.db
 
 ## Current State (2026-04-12)
 
-- **Coverage**: 51.9% (target 80%) — largest gap is CLI commands
+- **Coverage**: 56.2% total (target 80%); CLI at 38% (up from 18%)
 - **CI**: test + vet + build pass; lint non-blocking (golangci-lint doesn't support Go 1.26 yet)
 - **Controller**: disabled by default, production-ready with reprioritize/restart/cancel + 19 tests
 - **Web dashboard**: DAG SVG visualization, review gates, metrics, recovery log, investigations
 - **Native runtime**: criteria evaluation wired from `config.QA.SuccessCriteria`, results in `STORY_COMPLETED` payload
 - **Cost estimation**: `CalculateLLMCost` and `CalculateCostWithTokens` wired into report builder with actual metrics data
+
+## Test Infrastructure
+
+CLI tests use a shared test environment (`internal/cli/testenv_test.go`):
+- `setupTestEnv(t)` — creates temp dir with `nxd.yaml`, event store, and SQLite projection store
+- `seedTestReq`, `seedTestStory`, `seedTestAgent`, `seedTestEscalation` — populate stores with test data
+- `execCmd(t, cmd, cfgPath, args...)` — Cobra testing helper that sets config flag, captures output, and executes
+- `InsertAgent` on `SQLiteStore` — direct SQL insert for agents (AGENT_SPAWNED events are not projected)
+
+40+ CLI command tests in `commands_test.go` covering: status (text + JSON), agents, events, escalations, pause, config, gc, metrics, logs, diff, and command registration. Utility function tests for `truncate`, `countByStatus`, `reverseEvents`, `formatPayload`, `validatePausable`, `expandHome`.
+
+Controller tests in `internal/engine/controller_test.go` (19 tests) covering: `decideAction` priority chain, `lastProgressTime` fallback, `cancelStory`/`resetStoryToDraft`/`reprioritizeStory`, `tick` with stuck detection/cooldown/max actions, `RunLoop` lifecycle.
+
+Web handler tests in `internal/web/server_test.go` (29 tests) covering all 11 `HandleCommand` actions.
 
 ## Event Types
 
