@@ -112,35 +112,54 @@ rm -f ~/.nxd/nxd.lock ~/.nxd/events.jsonl ~/.nxd/nxd.db
 
 ## Current State (2026-04-12)
 
-- **Coverage**: 63.6% total (target 80%); CLI 57%, web 62%, engine 64%, llm 85%
+- **Coverage**: 65.3% total (target 80%); 7 packages above 80%
 - **CI**: test + vet + build pass; lint non-blocking (golangci-lint doesn't support Go 1.26 yet)
+- **DryRunClient**: `--dry-run` flag on `nxd req` and `nxd resume` simulates full pipeline without API calls
 - **Controller**: disabled by default, production-ready with reprioritize/restart/cancel + 19 tests
 - **Web dashboard**: DAG SVG visualization, review gates, metrics, recovery log, investigations
 - **Native runtime**: criteria evaluation wired from `config.QA.SuccessCriteria`, results in `STORY_COMPLETED` payload
 - **Cost estimation**: `CalculateLLMCost` and `CalculateCostWithTokens` wired into report builder with actual metrics data
-- **Remaining gap to 80%**: primarily functions requiring external processes (tmux, git CLI, Ollama) — monitor pipeline methods, runtime spawn/detect, git/github PR operations
+
+### Per-Package Coverage
+
+Above 80%: graph (96%), plugin (93%), llm (92%), criteria (88%), agent (86%), scratchboard (85%), artifact (82%)
+Approaching 80%: state (79%), config (77%)
+Below 80%: runtime (69%), engine (65%), tmux (65%), web (61%), cli (57%), git (44%)
+Remaining gap: functions requiring external processes (tmux sessions, git rebase/PR, Ollama API)
 
 ## Test Infrastructure
 
-CLI tests use a shared test environment (`internal/cli/testenv_test.go`):
+### LLM Test Clients
+- `llm.ReplayClient` — returns pre-configured responses in sequence; used for component-level tests
+- `llm.DryRunClient` — inspects system prompts to return role-appropriate canned responses (classify, investigate, plan, review, manager, supervisor); used for E2E pipeline tests and `--dry-run` CLI flag
+- `llm.ErrorClient` — always returns configured error; used for error path tests
+- `buildLLMClientFunc` — package-level function variable; tests override it to inject mock clients without API keys
+
+### CLI Test Helpers (`internal/cli/testenv_test.go`)
 - `setupTestEnv(t)` — creates temp dir with `nxd.yaml`, event store, and SQLite projection store
 - `seedTestReq`, `seedTestStory`, `seedTestAgent`, `seedTestEscalation` — populate stores with test data
 - `execCmd(t, cmd, cfgPath, args...)` — Cobra testing helper that sets config flag, captures output, and executes
-- `InsertAgent` on `SQLiteStore` — direct SQL insert for agents (AGENT_SPAWNED events are not projected)
-- `withMockLLM(t, responses...)` — injects `ReplayClient` via `buildLLMClientFunc` for testing orchestration commands without API access
+- `withMockLLM(t, responses...)` — injects `ReplayClient` via `buildLLMClientFunc`
 - `initTestRepo(t, dir)` — creates minimal git repo with one commit for commands that need worktrees
 
-Test files and counts:
-- `cli/commands_test.go` — 40+ tests: status (text+JSON), agents, events, escalations, pause, approve, reject, report, config, gc, metrics, logs, diff, registration, and utility functions
-- `cli/orchestration_test.go` — 11 tests: runReq (greenfield+review), archive, buildLLMClient providers (ollama, anthropic, openai, google, google+ollama, unsupported), watch with context cancellation
-- `engine/controller_test.go` — 19 tests: decideAction priority chain, lastProgressTime, cancelStory, resetStoryToDraft, reprioritizeStory, tick with stuck detection/cooldown/max actions, RunLoop lifecycle
-- `engine/helpers_test.go` — 12 tests: stripCodeFences, truncateDiff, tierForRole (7 roles), configCriteriaToRuntime, executor setters
-- `llm/errors_test.go` — 20+ tests: IsFatalAPIError, IsInsufficientBalance, IsRateLimited, IsOverloaded, IsRetryable, RetryAfterSeconds, APIError.Error, QuotaError
-- `web/server_test.go` — 29 tests: all 11 HandleCommand actions with success/error paths
-- `web/data_test.go` — 10 tests: BuildSnapshot (empty/data/pipeline/gates/events), SnapshotJSON, mapStatusToBucket, intFromPayload
-- `web/eventbus_test.go` — 5 tests: subscribe+publish, multiple subscribers, unsubscribe, slow consumer drop, no subscribers
-- `web/metrics_test.go` — 3 tests: convertSummary, zero calls safety, MemPalaceCheck nil
-- `state/sqlite_test.go` — extended with: ListRequirementsFiltered, ListRequirements, InsertAgent, ListAgents, ArchiveRequirement, ArchiveStoriesByReq, ListStoryDeps, DecodePayload
+### Test Files
+- `cli/commands_test.go` — 40+ tests: status, agents, events, escalations, pause, approve, reject, report, config, gc, metrics, logs, diff, registration, utilities
+- `cli/orchestration_test.go` — 12 tests: runReq (greenfield, review, dry-run), archive, buildLLMClient providers, watch
+- `engine/controller_test.go` — 19 tests: decideAction, lastProgressTime, cancelStory, resetStoryToDraft, reprioritizeStory, tick, RunLoop
+- `engine/helpers_test.go` — 12 tests: stripCodeFences, truncateDiff, tierForRole, configCriteriaToRuntime, executor setters
+- `llm/dryrun_test.go` — 15 tests: all response types, delay, cancellation, call tracking, model passthrough, usage, interface
+- `llm/errors_test.go` — 20+ tests: all error classification functions
+- `runtime/tools_test.go` — 24 tests: safePath, execReadFile, execWriteFile, execEditFile, execRunCommand, scratchboard ops, executeTool, CodingTools
+- `web/server_test.go` — 29 tests: all HandleCommand actions
+- `web/data_test.go` — 10 tests: BuildSnapshot, SnapshotJSON, mapStatusToBucket, intFromPayload
+- `web/eventbus_test.go` — 5 tests: pub/sub, unsubscribe, slow consumer
+- `web/metrics_test.go` — 3 tests: convertSummary, MemPalaceCheck
+- `agent/prompts_plugin_test.go` — 12 tests: SetPluginState, plugin overrides, playbook injection, GoalPrompt branches
+- `criteria/evaluator_test.go` — extended with: evalTestPasses (real Go projects), evalCoverageAbove, unknown type
+- `git/conflict_test.go` — 8 tests: ConflictError, IsConflict, isConflict patterns
+- `state/filestore_append_test.go` — 3 tests: After filter, OnAppend callback, empty list
+- `state/sqlite_test.go` — extended with: ListRequirementsFiltered, InsertAgent, ListAgents, Archive, ListStoryDeps, DecodePayload
+- `test/dryrun_test.go` — 2 tests: full planner pipeline with DryRunClient, dispatch wave ordering
 
 ## Event Types
 
