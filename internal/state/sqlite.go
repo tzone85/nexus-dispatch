@@ -618,6 +618,16 @@ func (s *SQLiteStore) BackfillAcceptanceCriteria(events []Event) {
 	}
 }
 
+// InsertAgent inserts an agent record directly into the agents table.
+// This is used by test helpers since AGENT_SPAWNED events are not projected.
+func (s *SQLiteStore) InsertAgent(id, agentType, model, runtime, sessionName string) error {
+	_, err := s.db.Exec(
+		`INSERT OR IGNORE INTO agents (id, type, model, runtime, status, session_name) VALUES (?, ?, ?, ?, 'idle', ?)`,
+		id, agentType, model, runtime, sessionName,
+	)
+	return err
+}
+
 // ArchiveRequirement sets a requirement's status to "archived".
 func (s *SQLiteStore) ArchiveRequirement(reqID string) error {
 	_, err := s.db.Exec(
