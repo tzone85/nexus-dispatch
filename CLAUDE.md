@@ -112,12 +112,13 @@ rm -f ~/.nxd/nxd.lock ~/.nxd/events.jsonl ~/.nxd/nxd.db
 
 ## Current State (2026-04-12)
 
-- **Coverage**: 56.2% total (target 80%); CLI at 38% (up from 18%)
+- **Coverage**: 63.6% total (target 80%); CLI 57%, web 62%, engine 64%, llm 85%
 - **CI**: test + vet + build pass; lint non-blocking (golangci-lint doesn't support Go 1.26 yet)
 - **Controller**: disabled by default, production-ready with reprioritize/restart/cancel + 19 tests
 - **Web dashboard**: DAG SVG visualization, review gates, metrics, recovery log, investigations
 - **Native runtime**: criteria evaluation wired from `config.QA.SuccessCriteria`, results in `STORY_COMPLETED` payload
 - **Cost estimation**: `CalculateLLMCost` and `CalculateCostWithTokens` wired into report builder with actual metrics data
+- **Remaining gap to 80%**: primarily functions requiring external processes (tmux, git CLI, Ollama) — monitor pipeline methods, runtime spawn/detect, git/github PR operations
 
 ## Test Infrastructure
 
@@ -126,12 +127,20 @@ CLI tests use a shared test environment (`internal/cli/testenv_test.go`):
 - `seedTestReq`, `seedTestStory`, `seedTestAgent`, `seedTestEscalation` — populate stores with test data
 - `execCmd(t, cmd, cfgPath, args...)` — Cobra testing helper that sets config flag, captures output, and executes
 - `InsertAgent` on `SQLiteStore` — direct SQL insert for agents (AGENT_SPAWNED events are not projected)
+- `withMockLLM(t, responses...)` — injects `ReplayClient` via `buildLLMClientFunc` for testing orchestration commands without API access
+- `initTestRepo(t, dir)` — creates minimal git repo with one commit for commands that need worktrees
 
-40+ CLI command tests in `commands_test.go` covering: status (text + JSON), agents, events, escalations, pause, config, gc, metrics, logs, diff, and command registration. Utility function tests for `truncate`, `countByStatus`, `reverseEvents`, `formatPayload`, `validatePausable`, `expandHome`.
-
-Controller tests in `internal/engine/controller_test.go` (19 tests) covering: `decideAction` priority chain, `lastProgressTime` fallback, `cancelStory`/`resetStoryToDraft`/`reprioritizeStory`, `tick` with stuck detection/cooldown/max actions, `RunLoop` lifecycle.
-
-Web handler tests in `internal/web/server_test.go` (29 tests) covering all 11 `HandleCommand` actions.
+Test files and counts:
+- `cli/commands_test.go` — 40+ tests: status (text+JSON), agents, events, escalations, pause, approve, reject, report, config, gc, metrics, logs, diff, registration, and utility functions
+- `cli/orchestration_test.go` — 11 tests: runReq (greenfield+review), archive, buildLLMClient providers (ollama, anthropic, openai, google, google+ollama, unsupported), watch with context cancellation
+- `engine/controller_test.go` — 19 tests: decideAction priority chain, lastProgressTime, cancelStory, resetStoryToDraft, reprioritizeStory, tick with stuck detection/cooldown/max actions, RunLoop lifecycle
+- `engine/helpers_test.go` — 12 tests: stripCodeFences, truncateDiff, tierForRole (7 roles), configCriteriaToRuntime, executor setters
+- `llm/errors_test.go` — 20+ tests: IsFatalAPIError, IsInsufficientBalance, IsRateLimited, IsOverloaded, IsRetryable, RetryAfterSeconds, APIError.Error, QuotaError
+- `web/server_test.go` — 29 tests: all 11 HandleCommand actions with success/error paths
+- `web/data_test.go` — 10 tests: BuildSnapshot (empty/data/pipeline/gates/events), SnapshotJSON, mapStatusToBucket, intFromPayload
+- `web/eventbus_test.go` — 5 tests: subscribe+publish, multiple subscribers, unsubscribe, slow consumer drop, no subscribers
+- `web/metrics_test.go` — 3 tests: convertSummary, zero calls safety, MemPalaceCheck nil
+- `state/sqlite_test.go` — extended with: ListRequirementsFiltered, ListRequirements, InsertAgent, ListAgents, ArchiveRequirement, ArchiveStoriesByReq, ListStoryDeps, DecodePayload
 
 ## Event Types
 
