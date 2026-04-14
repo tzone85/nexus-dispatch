@@ -554,6 +554,11 @@ func (m *Monitor) rebaseAndMerge(ctx context.Context, storyID, branch, repoDir, 
 
 	log.Printf("[pipeline] fetching %s and rebasing %s for %s", baseBranch, branch, storyID)
 
+	// Safety net: commit any unstaged changes before rebasing.
+	// Native runtime agents (e.g., Gemma) may leave uncommitted files
+	// after execution, which causes "cannot rebase: unstaged changes."
+	autoCommit(worktreePath, storyID)
+
 	if err := nxdgit.FetchBranch(repoDir, baseBranch); err != nil {
 		return MergeResult{}, fmt.Errorf("fetch %s: %w", baseBranch, err)
 	}
