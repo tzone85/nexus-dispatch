@@ -3,6 +3,7 @@ package tmux
 import (
 	"log"
 	"os"
+	"strings"
 )
 
 // criticalEnvVars lists environment variables that must be propagated into the
@@ -10,9 +11,9 @@ import (
 // tmux server may hold stale values from the time it was first started,
 // causing agents to authenticate with expired or wrong API keys.
 var criticalEnvVars = []string{
-	"OLLAMA_HOST",
 	"ANTHROPIC_API_KEY",
 	"OPENAI_API_KEY",
+	"OLLAMA_HOST",
 }
 
 // PropagateEnv reads the listed environment variables from the current process
@@ -27,14 +28,30 @@ func PropagateEnv(vars []string) {
 		val, ok := os.LookupEnv(key)
 		if ok {
 			if err := run("set-environment", "-g", key, val); err != nil {
-				log.Printf("tmux: warning: failed to set-environment %s: %v", key, err)
+				// Suppress warnings when no tmux server is running yet —
+				// CreateSession will start the server and the env vars will
+				// be passed directly to the session command.
+				if !isNoServerError(err) {
+					log.Printf("tmux: warning: failed to set-environment %s: %v", key, err)
+				}
 			}
 		} else {
 			// Remove stale value from tmux global env; ignore errors
-			// (e.g. variable was never set in tmux).
+			// (e.g. variable was never set in tmux, or no server running).
 			_ = run("set-environment", "-g", "-u", key)
 		}
 	}
+}
+
+// isNoServerError returns true if the error indicates no tmux server is running.
+func isNoServerError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "no server running") ||
+		strings.Contains(msg, "no current session") ||
+		strings.Contains(msg, "server not found")
 }
 
 // PropagateCriticalEnv is a convenience wrapper that propagates all

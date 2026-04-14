@@ -136,12 +136,15 @@ Respond with a JSON array of stories. Each story must have:
 - wave_hint: either "sequential" or "parallel" — use "sequential" for stories that modify shared config, lock files, or core infrastructure
 
 IMPORTANT:
-- The first story (s-001) MUST establish the project directory structure and scaffold empty placeholder files.
-- All subsequent stories MUST reference specific file paths in their descriptions.
+- Every story MUST produce code changes (new files or modifications to existing files). Do NOT create read-only "assessment" or "analysis" stories — agents that produce no code changes will be marked as failed.
+- For existing codebases: skip scaffolding. The first story should write actual code.
+- For new projects: the first story (s-001) should create the directory structure and initial files.
+- All stories MUST reference specific file paths in their descriptions.
 - Distribute work across different files to minimize merge conflicts between parallel agents.
 - Each file path MUST appear in exactly ONE story's owned_files — no overlapping file ownership between stories.
 - Use explicit relative paths from the project root (e.g., "src/api/handler.go", not just "handler.go").
 - Keep story complexity at or below %d.
+- For simple requirements (1-2 files), prefer fewer stories (1-2) over many small ones.
 
 Respond ONLY with the JSON array, no other text.`, requirement, p.config.Planning.MaxStoryComplexity)
 

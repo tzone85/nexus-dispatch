@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/tzone85/nexus-dispatch/internal/artifact"
+	"github.com/tzone85/nexus-dispatch/internal/codegraph"
 	"github.com/tzone85/nexus-dispatch/internal/config"
 	nxdgit "github.com/tzone85/nexus-dispatch/internal/git"
 	"github.com/tzone85/nexus-dispatch/internal/graph"
@@ -46,6 +47,9 @@ type Monitor struct {
 	// QA results) for post-mortem inspection.
 	artifactStore *artifact.Store
 
+	// codeGraph enables blast-radius analysis before code review.
+	codeGraph *codegraph.Runner
+
 	// planner enables tier-3 (tech lead) re-planning. When set, the
 	// monitor can decompose failing stories into smaller replacements.
 	planner *Planner
@@ -55,6 +59,10 @@ type Monitor struct {
 	// the user to manually run "nxd resume" between waves.
 	dispatcher *Dispatcher
 	executor   *Executor
+
+	// dryRun causes the post-execution pipeline to simulate a successful
+	// agent diff instead of checking the real worktree.
+	dryRun bool
 
 	// mergeMu serializes the rebase-push-merge cycle so that each story
 	// rebases onto the latest main before merging, preventing conflicts
@@ -102,6 +110,11 @@ func (m *Monitor) SetArtifactStore(store *artifact.Store) {
 	m.artifactStore = store
 }
 
+// SetCodeGraph enables blast-radius analysis before code review.
+func (m *Monitor) SetCodeGraph(cg *codegraph.Runner) {
+	m.codeGraph = cg
+}
+
 // SetConflictResolver enables LLM-based automatic conflict resolution during
 // rebase. Without this, rebase conflicts cause the story to be reset to draft.
 func (m *Monitor) SetConflictResolver(cr *ConflictResolver) {
@@ -128,6 +141,13 @@ func (m *Monitor) SetManager(mgr *Manager) {
 // Planner's RePlan method.
 func (m *Monitor) SetPlanner(p *Planner) {
 	m.planner = p
+}
+
+// SetDryRun enables dry-run mode. In this mode, the post-execution pipeline
+// writes a simulated change to the worktree so the pipeline can exercise
+// the full review->QA->merge flow without real agent output.
+func (m *Monitor) SetDryRun(enabled bool) {
+	m.dryRun = enabled
 }
 
 // RunContext carries the state needed for auto-resume across waves.
@@ -300,6 +320,12 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 	// the work before checking the diff.
 	autoCommit(ag.WorktreePath, storyID)
 
+	// In dry-run mode, simulate a successful agent by writing a placeholder
+	// file and committing it.
+	if m.dryRun {
+		simulateDryRunChanges(ag.WorktreePath, storyID)
+	}
+
 	// Check if agent produced any changes.
 	// Distinguish between git infrastructure errors (which count toward
 	// the retry limit) and genuinely empty diffs so that broken worktrees
@@ -345,7 +371,20 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 
 	// 1. Code Review
 	if m.reviewer != nil {
-		result, err := m.reviewer.Review(ctx, storyID, storyTitle, storyAC, diff)
+		// Run blast-radius analysis if codegraph is available.
+		blastRadius := ""
+		if m.codeGraph != nil && m.codeGraph.Available() {
+			impact, cgErr := m.codeGraph.DetectChanges(ctx, ag.WorktreePath, "HEAD~1")
+			if cgErr != nil {
+				log.Printf("[pipeline] codegraph detect-changes warning for %s: %v", storyID, cgErr)
+			} else if !impact.Empty() {
+				blastRadius = impact.FormatMarkdown()
+				log.Printf("[pipeline] codegraph: risk=%.2f, %d changed functions, %d test gaps for %s",
+					impact.RiskScore, len(impact.ChangedFunctions), len(impact.TestGaps), storyID)
+			}
+		}
+
+		result, err := m.reviewer.Review(ctx, storyID, storyTitle, storyAC, diff, blastRadius)
 		if err != nil {
 			// Fatal API errors (auth failures, billing exhaustion,
 			// permission denied) will never succeed on retry -- pause
@@ -677,6 +716,8 @@ func (m *Monitor) dispatchNextWave(ctx context.Context, rc *RunContext, repoDir 
 			storyLookup[ps.ID] = ps
 		}
 
+		handledThisWave := make(map[string]bool)
+
 		for _, id := range readyIDs {
 			if completed[id] {
 				continue
@@ -696,8 +737,7 @@ func (m *Monitor) dispatchNextWave(ctx context.Context, rc *RunContext, repoDir 
 				continue
 			}
 
-			// Mark as completed so DispatchWave skips this story.
-			completed[id] = true
+			handledThisWave[id] = true
 
 			switch tier {
 			case 2:
@@ -707,6 +747,11 @@ func (m *Monitor) dispatchNextWave(ctx context.Context, rc *RunContext, repoDir 
 				log.Printf("[auto-resume] intercepting tier-%d story %s for tech-lead escalation", tier, id)
 				m.handleTechLeadEscalation(ctx, story, repoDir, rc)
 			}
+		}
+
+		// Mark handled stories as completed for this wave only.
+		for id := range handledThisWave {
+			completed[id] = true
 		}
 	}
 
@@ -1070,6 +1115,27 @@ func marshalReviewComments(comments []ReviewComment) string {
 		return "[]"
 	}
 	return string(data)
+}
+
+// simulateDryRunChanges writes a placeholder file and commits it so the
+// post-execution pipeline has a non-empty diff to work with in dry-run mode.
+func simulateDryRunChanges(worktreePath, storyID string) {
+	simFile := filepath.Join(worktreePath, "dry-run-simulation.txt")
+	content := fmt.Sprintf("[DRY RUN] Simulated changes for story %s\n", storyID)
+	if err := os.WriteFile(simFile, []byte(content), 0o644); err != nil {
+		log.Printf("[dry-run] failed to write simulation file: %v", err)
+		return
+	}
+	addCmd := exec.Command("git", "add", "dry-run-simulation.txt")
+	addCmd.Dir = worktreePath
+	if err := addCmd.Run(); err != nil {
+		log.Printf("[dry-run] git add failed: %v", err)
+		return
+	}
+	commitCmd := exec.Command("git", "commit", "-m", fmt.Sprintf("[dry-run] simulated changes for %s", storyID))
+	commitCmd.Dir = worktreePath
+	commitCmd.Run()
+	log.Printf("[dry-run] simulated changes committed for %s", storyID)
 }
 
 // autoCommit stages and commits any uncommitted changes in the worktree.

@@ -59,16 +59,22 @@ func NewReviewer(client llm.Client, provider, model string, maxTokens int, es st
 // contains parseable JSON text, the text path is attempted without an
 // additional LLM call. A separate text-only LLM call is made only when
 // the provider does not support tools.
-func (r *Reviewer) Review(ctx context.Context, storyID, title, acceptanceCriteria, diff string) (ReviewResult, error) {
+func (r *Reviewer) Review(ctx context.Context, storyID, title, acceptanceCriteria, diff string, extra ...string) (ReviewResult, error) {
 	if diff == "" {
 		return ReviewResult{}, fmt.Errorf("empty diff for story %s", storyID)
+	}
+
+	// Build optional blast-radius context from codegraph analysis.
+	blastRadiusCtx := ""
+	if len(extra) > 0 && extra[0] != "" {
+		blastRadiusCtx = "\n" + extra[0] + "\n"
 	}
 
 	prompt := fmt.Sprintf(`Review this code change for the following story:
 
 Story: %s
 Acceptance Criteria: %s
-
+%s
 Diff:
 %s
 
@@ -77,7 +83,8 @@ Review the code for:
 2. Code quality - clean, readable, well-structured?
 3. Test coverage - are changes tested?
 4. Security - any vulnerabilities?
-5. Performance - any obvious issues?`, title, acceptanceCriteria, diff)
+5. Performance - any obvious issues?
+6. Blast radius - if blast radius analysis is provided above, check whether high-risk callers or dependents might break.`, title, acceptanceCriteria, blastRadiusCtx, diff)
 
 	systemPrompt := "You are a Senior code reviewer. Review code changes and provide structured feedback."
 

@@ -2,12 +2,16 @@ package repolearn
 
 import (
 	"bufio"
+	"database/sql"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
+
+	_ "github.com/mattn/go-sqlite3"
 )
 
 // sourceExtensions maps file extensions to their language name.
@@ -634,6 +638,48 @@ func detectSignals(profile *RepoProfile, repoPath string) {
 			return nil
 		})
 	}
+
+	// Code review graph: if .code-review-graph/graph.db exists, read stats
+	detectCodeGraphSignals(profile, repoPath)
+}
+
+// detectCodeGraphSignals checks for an existing code-review-graph database
+// and adds graph statistics as signals to the profile.
+func detectCodeGraphSignals(profile *RepoProfile, repoPath string) {
+	dbPath := filepath.Join(repoPath, ".code-review-graph", "graph.db")
+	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+		return
+	}
+	db, err := sql.Open("sqlite3", dbPath+"?mode=ro")
+	if err != nil {
+		return
+	}
+	defer db.Close()
+
+	var nodeCount, edgeCount, fileCount int
+	if err := db.QueryRow("SELECT COUNT(*) FROM nodes").Scan(&nodeCount); err != nil {
+		return
+	}
+	db.QueryRow("SELECT COUNT(*) FROM edges").Scan(&edgeCount)
+	db.QueryRow("SELECT COUNT(DISTINCT file_path) FROM nodes").Scan(&fileCount)
+
+	var langs []string
+	rows, err := db.Query("SELECT DISTINCT language FROM nodes WHERE language IS NOT NULL AND language != ''")
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var lang string
+			if rows.Scan(&lang) == nil {
+				langs = append(langs, lang)
+			}
+		}
+	}
+
+	msg := fmt.Sprintf("Code graph: %d nodes, %d edges across %d files", nodeCount, edgeCount, fileCount)
+	if len(langs) > 0 {
+		msg += fmt.Sprintf(" (%s)", strings.Join(langs, ", "))
+	}
+	profile.AddSignal("codegraph_stats", msg, ".code-review-graph/graph.db")
 }
 
 // --------------------------------------------------------------------------

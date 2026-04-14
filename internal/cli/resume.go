@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/tzone85/nexus-dispatch/internal/agent"
 	"github.com/tzone85/nexus-dispatch/internal/artifact"
+	"github.com/tzone85/nexus-dispatch/internal/codegraph"
 	"github.com/tzone85/nexus-dispatch/internal/criteria"
 	"github.com/tzone85/nexus-dispatch/internal/engine"
 	nxdgit "github.com/tzone85/nexus-dispatch/internal/git"
@@ -337,6 +338,13 @@ func runResume(cmd *cobra.Command, args []string) error {
 	monitor.SetMemPalace(mp)
 	if artStore != nil {
 		monitor.SetArtifactStore(artStore)
+	}
+
+	// Enable blast-radius analysis via code-review-graph (optional).
+	cg := codegraph.NewRunner()
+	if cg.Available() {
+		monitor.SetCodeGraph(cg)
+		log.Printf("[resume] codegraph enabled: %s", cg.BinPath)
 	}
 
 	// Enable LLM-powered conflict resolution during rebase.

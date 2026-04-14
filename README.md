@@ -75,7 +75,7 @@ nxd dashboard
 
 ### Demo
 
-![NXD Demo](https://vhs.charm.sh/vhs-5X10kL0rERu1j68LI50kNt.gif)
+![NXD Demo](https://vhs.charm.sh/vhs-5mraO4n9IyQSvr2M9Eq1Vf.gif)
 
 To regenerate the demo locally, you'll need [VHS](https://github.com/charmbracelet/vhs) with `ffmpeg` and `ttyd`. On macOS:
 
