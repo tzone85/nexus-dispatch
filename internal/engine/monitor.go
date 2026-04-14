@@ -1249,8 +1249,27 @@ func gitDiff(worktreePath string) (string, error) {
 	return string(out), nil
 }
 
-// isGitignoreOnlyDiff returns true when the only file changed between
-// mergeBase and HEAD is .gitignore.
+// nxdArtifactPatterns are files created by NXD infrastructure, not by the
+// agent's actual work.
+var nxdArtifactPatterns = []string{
+	".gitignore",
+	"CLAUDE.md",
+	".nxd-prompts/",
+	".serena/",
+	"dry-run-simulation.txt",
+}
+
+func isArtifactFile(path string) bool {
+	for _, pattern := range nxdArtifactPatterns {
+		if path == pattern || strings.HasPrefix(path, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+// isGitignoreOnlyDiff returns true when the only files changed between
+// mergeBase and HEAD are NXD infrastructure artifacts (not real code).
 func isGitignoreOnlyDiff(worktreePath, mergeBase string) bool {
 	cmd := exec.Command("git", "diff", "--name-only", mergeBase, "HEAD")
 	cmd.Dir = worktreePath
@@ -1260,10 +1279,14 @@ func isGitignoreOnlyDiff(worktreePath, mergeBase string) bool {
 	}
 	files := strings.TrimSpace(string(out))
 	if files == "" {
-		return false // no files changed -- caller already handles empty diff
+		return false
 	}
 	for _, f := range strings.Split(files, "\n") {
-		if strings.TrimSpace(f) != ".gitignore" {
+		f = strings.TrimSpace(f)
+		if f == "" {
+			continue
+		}
+		if !isArtifactFile(f) {
 			return false
 		}
 	}

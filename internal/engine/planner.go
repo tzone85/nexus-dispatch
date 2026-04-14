@@ -318,25 +318,43 @@ architecture and conventions when planning stories.`, profileContext)
 // emit REQ_SUBMITTED or REQ_PLANNED events -- the caller is responsible for
 // emitting STORY_SPLIT and mutating the DAG.
 func (p *Planner) RePlan(ctx context.Context, storyID, reqID, failureContext string) ([]PlannedStory, error) {
+	// Look up original context to prevent hallucinated sub-stories.
+	var reqTitle, storyTitle, storyDesc string
+	if req, err := p.projStore.GetRequirement(reqID); err == nil {
+		reqTitle = req.Title
+	}
+	if story, err := p.projStore.GetStory(storyID); err == nil {
+		storyTitle = story.Title
+		storyDesc = story.Description
+	}
+
 	prompt := fmt.Sprintf(`A story has failed multiple times and needs re-planning.
 
+Original Requirement: %s
 Story ID: %s
-Requirement ID: %s
+Story Title: %s
+Story Description: %s
 Failure Context:
 %s
 
-Decompose this into smaller, more focused replacement stories.
+CRITICAL CONSTRAINTS:
+- Sub-stories MUST be directly related to the original requirement and story above.
+- Do NOT introduce new features, tools, or concepts not mentioned in the requirement.
+- Every sub-story MUST produce code changes (no read-only analysis stories).
+- Sub-stories should be smaller pieces of the SAME work, not different work.
+
+Decompose this into 2-3 smaller, more focused replacement stories.
 Return a JSON array of story objects with fields: id, title, description, acceptance_criteria, complexity, owned_files.
 Each story ID should use the parent ID as prefix with a letter suffix (e.g., "%s-a", "%s-b").
 Keep complexity at or below 5.
 
-Respond ONLY with the JSON array, no other text.`, storyID, reqID, failureContext, storyID, storyID)
+Respond ONLY with the JSON array, no other text.`, reqTitle, storyID, storyTitle, storyDesc, failureContext, storyID, storyID)
 
 	model := p.config.Models.TechLead
 	resp, err := p.llmClient.Complete(ctx, llm.CompletionRequest{
 		Model:     model.Model,
 		MaxTokens: model.MaxTokens,
-		System:    "You are a technical lead re-planning a failed story. Break it into smaller, more focused sub-stories that are easier to implement correctly.",
+		System:    "You are a technical lead re-planning a failed story. Break it into smaller pieces of the SAME work. Stay strictly within the scope of the original requirement. Do NOT introduce unrelated features.",
 		Messages:  []llm.Message{{Role: llm.RoleUser, Content: prompt}},
 	})
 	if err != nil {
@@ -349,7 +367,23 @@ Respond ONLY with the JSON array, no other text.`, storyID, reqID, failureContex
 		return nil, fmt.Errorf("parse replan stories: %w (response: %s)", err, resp.Content)
 	}
 
-	return stories, nil
+	if len(stories) == 0 {
+		return nil, fmt.Errorf("replan produced no sub-stories")
+	}
+
+	var valid []PlannedStory
+	for _, s := range stories {
+		if len(s.OwnedFiles) == 0 && s.Description == "" {
+			log.Printf("[replan] skipping empty sub-story %s", s.ID)
+			continue
+		}
+		valid = append(valid, s)
+	}
+	if len(valid) == 0 {
+		return nil, fmt.Errorf("replan produced no valid sub-stories (all filtered)")
+	}
+
+	return valid, nil
 }
 
 // parseStoriesFromText extracts PlannedStory values from a plain-text JSON
