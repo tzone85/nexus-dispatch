@@ -1,6 +1,7 @@
 package runtime_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/tzone85/nexus-dispatch/internal/config"
@@ -91,6 +92,112 @@ func TestRegistry_InvalidPattern(t *testing.T) {
 	_, err := runtime.NewRegistry(cfg)
 	if err == nil {
 		t.Fatal("expected error for invalid regex pattern")
+	}
+}
+
+func TestRegistry_IsNative_True(t *testing.T) {
+	cfg := map[string]config.RuntimeConfig{
+		"gemma": {Native: true, Models: []string{"gemma4"}},
+	}
+	reg, err := runtime.NewRegistry(cfg)
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	if !reg.IsNative("gemma") {
+		t.Error("expected gemma to be native")
+	}
+	if reg.IsNative("nonexistent") {
+		t.Error("expected nonexistent to not be native")
+	}
+}
+
+func TestRegistry_NativeConfig_Found(t *testing.T) {
+	cfg := map[string]config.RuntimeConfig{
+		"gemma": {
+			Native:  true,
+			Models:  []string{"gemma4"},
+			Command: "ollama",
+		},
+	}
+	reg, err := runtime.NewRegistry(cfg)
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	rc, ok := reg.NativeConfig("gemma")
+	if !ok {
+		t.Fatal("expected to find native config for gemma")
+	}
+	if !rc.Native {
+		t.Error("expected rc.Native to be true")
+	}
+}
+
+func TestRegistry_NativeConfig_NotFound(t *testing.T) {
+	reg, err := runtime.NewRegistry(map[string]config.RuntimeConfig{})
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	_, ok := reg.NativeConfig("nonexistent")
+	if ok {
+		t.Error("expected NativeConfig to return false for nonexistent runtime")
+	}
+}
+
+func TestRegistry_List_IncludesNative(t *testing.T) {
+	cfg := map[string]config.RuntimeConfig{
+		"gemma":       {Native: true},
+		"claude-code": {Command: "claude"},
+	}
+	reg, err := runtime.NewRegistry(cfg)
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	names := reg.List()
+	found := make(map[string]bool)
+	for _, n := range names {
+		found[n] = true
+	}
+	if !found["gemma"] {
+		t.Error("expected 'gemma' in List()")
+	}
+	if !found["claude-code"] {
+		t.Error("expected 'claude-code' in List()")
+	}
+}
+
+func TestRegistry_InvalidPermissionPattern(t *testing.T) {
+	cfg := map[string]config.RuntimeConfig{
+		"bad": {
+			Command: "bad",
+			Detection: config.RuntimeDetection{
+				PermissionPattern: "[invalid",
+			},
+		},
+	}
+	_, err := runtime.NewRegistry(cfg)
+	if err == nil {
+		t.Fatal("expected error for invalid permission pattern")
+	}
+	if !strings.Contains(err.Error(), "permission pattern") {
+		t.Errorf("error = %v, expected 'permission pattern'", err)
+	}
+}
+
+func TestRegistry_InvalidPlanModePattern(t *testing.T) {
+	cfg := map[string]config.RuntimeConfig{
+		"bad": {
+			Command: "bad",
+			Detection: config.RuntimeDetection{
+				PlanModePattern: "[invalid",
+			},
+		},
+	}
+	_, err := runtime.NewRegistry(cfg)
+	if err == nil {
+		t.Fatal("expected error for invalid plan mode pattern")
+	}
+	if !strings.Contains(err.Error(), "plan mode pattern") {
+		t.Errorf("error = %v, expected 'plan mode pattern'", err)
 	}
 }
 

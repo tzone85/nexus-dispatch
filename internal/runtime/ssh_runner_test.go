@@ -318,3 +318,104 @@ func TestSSHRunner_ScpTo_WithoutKey(t *testing.T) {
 		t.Errorf("args = %q, should not contain -i when no key file", joined)
 	}
 }
+
+func TestSSHRunner_Run_MkdirFails(t *testing.T) {
+	callCount := 0
+	original := sshExecCommand
+	sshExecCommand = func(name string, args ...string) *exec.Cmd {
+		callCount++
+		// First call is mkdir -p which should fail.
+		return exec.Command("false")
+	}
+	defer func() { sshExecCommand = original }()
+
+	r := NewSSHRunner(SSHConfig{Host: "user@host"})
+	pe := PreparedExecution{
+		Command:     "claude -p 'test'",
+		WorkDir:     t.TempDir(),
+		SessionName: "fail-session",
+		SetupFiles:  map[string]string{},
+		Env:         map[string]string{},
+	}
+
+	err := r.Run(pe)
+	if err == nil {
+		t.Fatal("expected error when ssh mkdir fails")
+	}
+	if !strings.Contains(err.Error(), "create remote dir") {
+		t.Errorf("error = %v, expected 'create remote dir'", err)
+	}
+}
+
+func TestSSHRunner_Run_WithSetupFiles(t *testing.T) {
+	callCount := 0
+	original := sshExecCommand
+	sshExecCommand = func(name string, args ...string) *exec.Cmd {
+		callCount++
+		if callCount == 1 {
+			// mkdir succeeds
+			return exec.Command("true")
+		}
+		if name == "scp" {
+			// scp fails
+			return exec.Command("false")
+		}
+		return exec.Command("true")
+	}
+	defer func() { sshExecCommand = original }()
+
+	tmpDir := t.TempDir()
+	// Use a real temp file as setup file source.
+	setupLocalPath := tmpDir + "/CLAUDE.md"
+
+	r := NewSSHRunner(SSHConfig{Host: "user@host"})
+	pe := PreparedExecution{
+		Command:     "claude",
+		WorkDir:     tmpDir,
+		SessionName: "scp-fail-session",
+		SetupFiles:  map[string]string{setupLocalPath: "# agent"},
+		Env:         map[string]string{},
+	}
+
+	err := r.Run(pe)
+	if err == nil {
+		t.Fatal("expected error when scp fails")
+	}
+	if !strings.Contains(err.Error(), "scp setup file") {
+		t.Errorf("error = %v, expected 'scp setup file'", err)
+	}
+}
+
+func TestSSHRunner_ReadOutput_Fails(t *testing.T) {
+	original := sshExecCommand
+	sshExecCommand = func(name string, args ...string) *exec.Cmd {
+		return exec.Command("false")
+	}
+	defer func() { sshExecCommand = original }()
+
+	r := NewSSHRunner(SSHConfig{Host: "user@host", RemoteDir: "/opt/nxd"})
+	_, err := r.ReadOutput("bad-session", 10)
+	if err == nil {
+		t.Fatal("expected error when ssh tail fails")
+	}
+	if !strings.Contains(err.Error(), "ssh tail") {
+		t.Errorf("error = %v, expected 'ssh tail'", err)
+	}
+}
+
+func TestSSHRunner_ScpTo_Fails(t *testing.T) {
+	original := sshExecCommand
+	sshExecCommand = func(name string, args ...string) *exec.Cmd {
+		return exec.Command("false")
+	}
+	defer func() { sshExecCommand = original }()
+
+	r := NewSSHRunner(SSHConfig{Host: "user@host"})
+	err := r.scpTo("/tmp/local.txt", "/remote/file.txt")
+	if err == nil {
+		t.Fatal("expected error when scp fails")
+	}
+	if !strings.Contains(err.Error(), "scp:") {
+		t.Errorf("error = %v, expected 'scp:'", err)
+	}
+}

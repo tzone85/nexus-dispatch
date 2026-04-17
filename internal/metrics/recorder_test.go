@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -77,6 +78,44 @@ func TestRecorder_EmptyFile(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Errorf("expected 0, got %d", len(entries))
+	}
+}
+
+func TestRecorder_Record_OpenFileError(t *testing.T) {
+	// Point recorder at a non-existent nested path to force os.OpenFile to fail.
+	rec := NewRecorder(filepath.Join(t.TempDir(), "nonexistent-dir", "metrics.jsonl"))
+	err := rec.Record(MetricEntry{
+		ReqID:     "req-err",
+		Phase:     "plan",
+		Timestamp: time.Now(),
+		Success:   true,
+	})
+	if err == nil {
+		t.Fatal("expected error when parent directory does not exist, got nil")
+	}
+}
+
+func TestRecorder_ReadAll_NonNotExistError(t *testing.T) {
+	// Using a directory path causes os.Open to succeed but reading from it fails
+	// in a way that is NOT os.IsNotExist; instead, use a path inside a file
+	// (file-as-directory) to produce a genuine open error that is not IsNotExist.
+	dir := t.TempDir()
+	// Create a regular file, then try to use it as if it were a directory.
+	filePath := filepath.Join(dir, "not-a-dir")
+	if err := os.WriteFile(filePath, []byte("x"), 0644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	// Path like "<file>/child" cannot be opened — error is not IsNotExist on Linux/macOS.
+	rec := NewRecorder(filepath.Join(filePath, "metrics.jsonl"))
+	entries, err := rec.ReadAll()
+	if err == nil && entries != nil {
+		// On some systems this may still succeed (unlikely); skip rather than fail.
+		t.Skip("os.Open did not return an error for this path on this platform")
+	}
+	// We expect either an error or nil,nil (file-not-found treated as empty).
+	// The key thing is it must not panic and must not return junk data.
+	if entries != nil && len(entries) > 0 {
+		t.Errorf("expected no entries for bad path, got %d", len(entries))
 	}
 }
 

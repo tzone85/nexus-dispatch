@@ -260,3 +260,69 @@ func TestDockerRunner_IsAlive_NoContainer(t *testing.T) {
 		t.Error("IsAlive should return false when docker inspect fails")
 	}
 }
+
+func TestDockerRunner_Run_DockerCmdFails(t *testing.T) {
+	original := execCommand
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		// Return a command that fails.
+		return exec.Command("false")
+	}
+	defer func() { execCommand = original }()
+
+	r := NewDockerRunner(DockerConfig{Image: "test:latest"})
+	pe := PreparedExecution{
+		Command:     "claude -p 'test'",
+		WorkDir:     t.TempDir(),
+		SessionName: "fail-session",
+		SetupFiles:  map[string]string{},
+	}
+
+	err := r.Run(pe)
+	if err == nil {
+		t.Fatal("expected error when docker run fails")
+	}
+	if !strings.Contains(err.Error(), "docker run") {
+		t.Errorf("error = %v, expected 'docker run'", err)
+	}
+}
+
+func TestDockerRunner_Terminate_RmFails(t *testing.T) {
+	callCount := 0
+	original := execCommand
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		callCount++
+		if callCount == 1 {
+			// stop succeeds
+			return exec.Command("true")
+		}
+		// rm fails
+		return exec.Command("false")
+	}
+	defer func() { execCommand = original }()
+
+	r := NewDockerRunner(DockerConfig{Image: "test:latest"})
+	err := r.Terminate("bad-session")
+	if err == nil {
+		t.Fatal("expected error when docker rm fails")
+	}
+	if !strings.Contains(err.Error(), "docker rm") {
+		t.Errorf("error = %v, expected 'docker rm'", err)
+	}
+}
+
+func TestDockerRunner_ReadOutput_Fails(t *testing.T) {
+	original := execCommand
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		return exec.Command("false")
+	}
+	defer func() { execCommand = original }()
+
+	r := NewDockerRunner(DockerConfig{Image: "test:latest"})
+	_, err := r.ReadOutput("missing-session", 10)
+	if err == nil {
+		t.Fatal("expected error when docker logs fails")
+	}
+	if !strings.Contains(err.Error(), "docker logs") {
+		t.Errorf("error = %v, expected 'docker logs'", err)
+	}
+}

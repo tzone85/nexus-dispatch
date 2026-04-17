@@ -415,3 +415,149 @@ func TestValidate_ValidRegexPatterns(t *testing.T) {
 		t.Fatalf("expected valid regex patterns to pass, got: %v", err)
 	}
 }
+
+// --- Validation: worktree_prune and log_archive ---
+
+func TestValidation_InvalidWorktreePrune(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Cleanup.WorktreePrune = "never"
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for invalid worktree_prune value")
+	}
+}
+
+func TestValidation_InvalidLogArchive(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Cleanup.LogArchive = "s3"
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for invalid log_archive value")
+	}
+}
+
+// --- Validation: intermediate_max_complexity upper bound ---
+
+func TestValidation_IntermediateMaxComplexityAbove13(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Routing.JuniorMaxComplexity = 5
+	cfg.Routing.IntermediateMaxComplexity = 14
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for intermediate_max_complexity > 13")
+	}
+}
+
+// --- Validation: billing ---
+
+func TestValidation_NegativeBillingDefaultRate(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Billing.DefaultRate = -1.0
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for negative billing.default_rate")
+	}
+}
+
+func TestValidation_EmptyBillingCurrency(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Billing.Currency = ""
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for empty billing.currency")
+	}
+}
+
+func TestValidation_InvalidLLMCostMode(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Billing.LLMCosts.Mode = "flat_fee"
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for invalid billing.llm_costs.mode")
+	}
+}
+
+func TestValidation_HoursPerPoint_LowGtHigh(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Billing.HoursPerPoint = map[int][2]float64{
+		3: {5.0, 2.0}, // low > high — invalid
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error when hours_per_point low > high")
+	}
+}
+
+func TestValidation_HoursPerPoint_EqualLowHigh(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Billing.HoursPerPoint = map[int][2]float64{
+		3: {3.0, 3.0}, // low == high — valid
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("expected equal low/high to pass validation, got: %v", err)
+	}
+}
+
+// --- Validation: QA success criteria ---
+
+func TestValidation_InvalidQACriteriaKind(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.QA.SuccessCriteria = []config.SuccessCriterion{
+		{Kind: "file_exists", Path: "go.mod"},
+		{Kind: "unknown_kind", Value: "whatever"},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for invalid qa.success_criteria kind")
+	}
+}
+
+func TestValidation_ValidQACriteriaKinds(t *testing.T) {
+	validKinds := []string{
+		"output_contains", "output_not_contains",
+		"file_exists", "file_contains", "file_not_empty", "exit_code_zero",
+	}
+	for _, kind := range validKinds {
+		cfg := config.DefaultConfig()
+		cfg.QA.SuccessCriteria = []config.SuccessCriterion{{Kind: kind}}
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("kind %q should be valid, got: %v", kind, err)
+		}
+	}
+}
+
+// --- Validation: native runtime constraints ---
+
+func TestValidation_NativeRuntime_ZeroMaxIterations(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Runtimes = map[string]config.RuntimeConfig{
+		"my-native": {
+			Native:           true,
+			MaxIterations:    0,
+			CommandAllowlist: []string{"go build"},
+		},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for native runtime with max_iterations = 0")
+	}
+}
+
+func TestValidation_NativeRuntime_EmptyCommandAllowlist(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Runtimes = map[string]config.RuntimeConfig{
+		"my-native": {
+			Native:           true,
+			MaxIterations:    10,
+			CommandAllowlist: []string{},
+		},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for native runtime with empty command_allowlist")
+	}
+}
+
+// --- LoadFromFile: invalid YAML content ---
+
+func TestLoadFromFile_InvalidYAML(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bad.yaml")
+	// Tab-indented YAML is structurally invalid and triggers a parse error.
+	os.WriteFile(path, []byte("workspace:\n\t backend: sqlite\n"), 0644)
+
+	_, err := config.LoadFromFile(path)
+	if err == nil {
+		t.Fatal("expected error for invalid YAML content")
+	}
+}
