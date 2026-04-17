@@ -4,6 +4,7 @@ package config
 
 import (
 	"fmt"
+	"log"
 	"regexp"
 	"strings"
 )
@@ -314,6 +315,22 @@ func (c Config) Validate() error {
 	for i, sc := range c.QA.SuccessCriteria {
 		if !validCriteriaKinds[sc.Kind] {
 			return fmt.Errorf("qa.success_criteria[%d].kind %q is not a valid criterion kind", i, sc.Kind)
+		}
+	}
+
+	// Warn when the review model matches coding models. Same-model review
+	// creates blind-spot loops — the reviewer shares the same knowledge gaps
+	// and confidence patterns as the coding agent, reducing review effectiveness.
+	seniorModel := c.Models.Senior.Model
+	for _, role := range []struct {
+		name  string
+		model string
+	}{
+		{"junior", c.Models.Junior.Model},
+		{"intermediate", c.Models.Intermediate.Model},
+	} {
+		if seniorModel != "" && role.model == seniorModel {
+			log.Printf("[config] WARNING: models.senior.model (%s) == models.%s.model — same-model review reduces hallucination detection. Consider using a stronger model for review.", seniorModel, role.name)
 		}
 	}
 

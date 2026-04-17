@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 
 	"github.com/tzone85/nexus-dispatch/internal/llm"
 	"github.com/tzone85/nexus-dispatch/internal/state"
@@ -178,12 +179,28 @@ func (r *Reviewer) reviewWithTools(ctx context.Context, systemPrompt, userPrompt
 
 		// Last resort: infer verdict from text content. Some models (e.g.
 		// gemma4 via Ollama) respond with natural language instead of JSON
-		// or tool calls. We treat this as a pass with the text as summary,
-		// since a model that doesn't say "reject" is implicitly approving.
-		log.Printf("[reviewer] text fallback: model returned plain text, treating as pass")
+		// or tool calls. Scan for explicit rejection signals before deciding.
+		lower := strings.ToLower(resp.Content)
+		rejected := strings.Contains(lower, "reject") ||
+			strings.Contains(lower, "not acceptable") ||
+			strings.Contains(lower, "fail") ||
+			strings.Contains(lower, "does not compile") ||
+			strings.Contains(lower, "does not build") ||
+			strings.Contains(lower, "broken") ||
+			strings.Contains(lower, "critical issue")
+
+		if rejected {
+			log.Printf("[reviewer] text fallback: detected rejection signals in plain text response")
+			return ReviewResult{
+				Passed:  false,
+				Summary: truncateReviewSummary(resp.Content, 500),
+			}, nil
+		}
+
+		log.Printf("[reviewer] WARNING: text fallback — model returned plain text with no rejection signals, treating as pass (degraded review)")
 		return ReviewResult{
 			Passed:  true,
-			Summary: truncateReviewSummary(resp.Content, 500),
+			Summary: "DEGRADED REVIEW: " + truncateReviewSummary(resp.Content, 500),
 		}, nil
 	}
 

@@ -100,6 +100,13 @@ func DefaultConfig() Config {
 				"docker ps", "docker-compose config",
 			},
 		},
+		QA: QAConfig{
+			SuccessCriteria: []SuccessCriterion{
+				{Kind: "command_succeeds", Value: "go build ./..."},
+				{Kind: "command_succeeds", Value: "go vet ./..."},
+				{Kind: "test_passes", Value: "go test ./..."},
+			},
+		},
 		Plugins: PluginConfig{},
 		Runtimes: map[string]RuntimeConfig{
 			"aider": {
