@@ -21,6 +21,7 @@ import (
 	"github.com/tzone85/nexus-dispatch/internal/memory"
 	"github.com/tzone85/nexus-dispatch/internal/metrics"
 	"github.com/tzone85/nexus-dispatch/internal/plugin"
+	"github.com/tzone85/nexus-dispatch/internal/routing"
 	"github.com/tzone85/nexus-dispatch/internal/runtime"
 	"github.com/tzone85/nexus-dispatch/internal/scratchboard"
 	"github.com/tzone85/nexus-dispatch/internal/state"
@@ -183,8 +184,18 @@ func runResume(cmd *cobra.Command, args []string) error {
 		s.Proj.Project(recoveryEvt)
 	}
 
+	// Initialize Bayesian router for adaptive routing.
+	bayesianRouter := routing.NewBayesianRouter()
+	priorsPath := filepath.Join(expandHome(s.Config.Workspace.StateDir), "bayesian_priors.json")
+	if err := bayesianRouter.Load(priorsPath); err != nil {
+		// No prior data yet — start with defaults. This is the normal path
+		// on first run or after clearing state.
+		bayesianRouter.InitDefaults()
+	}
+
 	// Dispatch next wave
 	dispatcher := engine.NewDispatcher(s.Config, s.Events, s.Proj)
+	dispatcher.SetBayesianRouter(bayesianRouter)
 	waveNumber := maxWave + 1
 	assignments, err := dispatcher.DispatchWave(dag, completed, reqID, plannedStories, waveNumber)
 	if err != nil {
@@ -336,6 +347,7 @@ func runResume(cmd *cobra.Command, args []string) error {
 
 	monitor := engine.NewMonitor(reg, watchdog, reviewer, qaRunner, merger, s.Config, s.Events, s.Proj)
 	monitor.SetMemPalace(mp)
+	monitor.SetBayesianRouter(bayesianRouter)
 	if artStore != nil {
 		monitor.SetArtifactStore(artStore)
 	}
@@ -370,6 +382,13 @@ func runResume(cmd *cobra.Command, args []string) error {
 
 	if err := monitor.RunWithContext(ctx, activeAgents, repoDir, rc); err != nil {
 		return err
+	}
+
+	// Save Bayesian priors with decay applied (outcomes from this run
+	// are fresh, older observations decay toward neutral).
+	bayesianRouter.ApplyDecay()
+	if err := bayesianRouter.Save(priorsPath); err != nil {
+		log.Printf("[bayesian] failed to save priors: %v", err)
 	}
 
 	// Print completion summary if the requirement finished.

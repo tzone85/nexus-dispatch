@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tzone85/nexus-dispatch/internal/agent"
 	"github.com/tzone85/nexus-dispatch/internal/artifact"
 	"github.com/tzone85/nexus-dispatch/internal/codegraph"
 	"github.com/tzone85/nexus-dispatch/internal/config"
@@ -19,6 +20,7 @@ import (
 	"github.com/tzone85/nexus-dispatch/internal/graph"
 	"github.com/tzone85/nexus-dispatch/internal/llm"
 	"github.com/tzone85/nexus-dispatch/internal/memory"
+	"github.com/tzone85/nexus-dispatch/internal/routing"
 	"github.com/tzone85/nexus-dispatch/internal/runtime"
 	"github.com/tzone85/nexus-dispatch/internal/state"
 )
@@ -59,6 +61,10 @@ type Monitor struct {
 	// the user to manually run "nxd resume" between waves.
 	dispatcher *Dispatcher
 	executor   *Executor
+
+	// bayesian records story outcomes for adaptive routing. When set,
+	// the monitor calls RecordOutcome after QA pass/fail/escalation.
+	bayesian *routing.BayesianRouter
 
 	// dryRun causes the post-execution pipeline to simulate a successful
 	// agent diff instead of checking the real worktree.
@@ -108,6 +114,12 @@ func (m *Monitor) SetMemPalace(mp *memory.MemPalace) {
 // SetArtifactStore enables per-story artifact persistence (diffs, reviews, QA).
 func (m *Monitor) SetArtifactStore(store *artifact.Store) {
 	m.artifactStore = store
+}
+
+// SetBayesianRouter enables adaptive routing feedback. When set, the monitor
+// records story outcomes (success/failure/partial) to update Beta priors.
+func (m *Monitor) SetBayesianRouter(r *routing.BayesianRouter) {
+	m.bayesian = r
 }
 
 // SetCodeGraph enables blast-radius analysis before code review.
@@ -487,6 +499,10 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 		log.Printf("[pipeline] QA passed for %s", storyID)
 	}
 
+	// Record Bayesian outcome: QA passed. Check if this was a retry
+	// (partial credit) or first attempt (full success).
+	m.recordBayesianSuccess(storyID, ag.Assignment.Role)
+
 	// 3. Merge (serialized: rebase onto latest main, then push + merge)
 	if m.config.Merge.ReviewBeforeMerge {
 		evt := state.NewEvent(state.EventStoryMergeReady, "", storyID, nil)
@@ -651,6 +667,10 @@ func (m *Monitor) resetStoryToDraft(storyID, fromAgent, reason string) {
 		})
 		m.eventStore.Append(escEvt)
 		m.projStore.Project(escEvt)
+
+		// Record Bayesian outcome: escalation is a failure for the current role.
+		m.recordBayesianEscalation(storyID, currentTier)
+
 		// Also reset to draft so the dispatcher picks it up at the new tier.
 		resetEvt := state.NewEvent(state.EventStoryReviewFailed, fromAgent, storyID, map[string]any{
 			"reason": fmt.Sprintf("escalated to tier %d: %s", nextTier, reason),
@@ -1318,4 +1338,70 @@ func truncateDiff(s string, max int) string {
 		return s
 	}
 	return s[:max] + "\n... (truncated)"
+}
+
+// ── Bayesian outcome recording ──────────────────────────────────────
+
+// recordBayesianSuccess records a successful story outcome for adaptive routing.
+// If the story had prior failed attempts (review/QA failures), it counts as a
+// partial success (retry succeeded). Otherwise it's a full success.
+func (m *Monitor) recordBayesianSuccess(storyID string, role agent.Role) {
+	if m.bayesian == nil {
+		return
+	}
+
+	story, err := m.projStore.GetStory(storyID)
+	if err != nil {
+		return
+	}
+
+	// Check for prior failures on this story to distinguish partial from full success.
+	failEvents, _ := m.eventStore.List(state.EventFilter{
+		Type:    state.EventStoryReviewFailed,
+		StoryID: storyID,
+	})
+
+	outcome := routing.OutcomeSuccess
+	if len(failEvents) > 0 {
+		outcome = routing.OutcomePartial
+	}
+
+	m.bayesian.RecordOutcome(role, story.Complexity, outcome)
+	log.Printf("[bayesian] recorded %v for role=%s complexity=%d story=%s",
+		outcome, role, story.Complexity, storyID)
+}
+
+// recordBayesianEscalation records a failure outcome when a story is escalated
+// to a higher tier. The role at the current tier gets a failure mark.
+func (m *Monitor) recordBayesianEscalation(storyID string, currentTier int) {
+	if m.bayesian == nil {
+		return
+	}
+
+	story, err := m.projStore.GetStory(storyID)
+	if err != nil {
+		return
+	}
+
+	role := roleForTier(currentTier)
+	m.bayesian.RecordOutcome(role, story.Complexity, routing.OutcomeFailure)
+	log.Printf("[bayesian] recorded failure for role=%s complexity=%d story=%s (escalated from tier %d)",
+		role, story.Complexity, storyID, currentTier)
+}
+
+// roleForTier maps an escalation tier back to the agent role that was working
+// at that tier. Mirrors tierForRole in executor.go.
+func roleForTier(tier int) agent.Role {
+	switch tier {
+	case 0:
+		return agent.RoleJunior // or intermediate, but junior is the default tier-0
+	case 1:
+		return agent.RoleSenior
+	case 2:
+		return agent.RoleManager
+	case 3:
+		return agent.RoleTechLead
+	default:
+		return agent.RoleSenior
+	}
 }

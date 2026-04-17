@@ -9,6 +9,7 @@ import (
 	"github.com/tzone85/nexus-dispatch/internal/agent"
 	"github.com/tzone85/nexus-dispatch/internal/config"
 	"github.com/tzone85/nexus-dispatch/internal/graph"
+	"github.com/tzone85/nexus-dispatch/internal/routing"
 	"github.com/tzone85/nexus-dispatch/internal/state"
 )
 
@@ -28,11 +29,19 @@ type Assignment struct {
 }
 
 // Dispatcher routes ready stories to agent roles based on complexity and
-// emits assignment events.
+// emits assignment events. When a BayesianRouter is set, it uses adaptive
+// routing based on observed outcomes; otherwise it falls back to static
+// complexity-based routing via RouteByComplexity.
 type Dispatcher struct {
 	config     config.Config
 	eventStore state.EventStore
 	projStore  state.ProjectionStore
+	bayesian   *routing.BayesianRouter
+}
+
+// SetBayesianRouter enables adaptive routing for this dispatcher.
+func (d *Dispatcher) SetBayesianRouter(r *routing.BayesianRouter) {
+	d.bayesian = r
 }
 
 // NewDispatcher creates a Dispatcher wired to the given configuration, event
@@ -241,6 +250,12 @@ func (d *Dispatcher) routeStory(story PlannedStory) agent.Role {
 		case maxTier == 1:
 			return agent.RoleSenior
 		}
+	}
+	// Use Bayesian routing if available; fall back to static thresholds.
+	if d.bayesian != nil {
+		role := d.bayesian.Route(story.Complexity)
+		log.Printf("[dispatcher] bayesian route: complexity=%d → %s", story.Complexity, role)
+		return role
 	}
 	return agent.RouteByComplexity(story.Complexity, d.config.Routing)
 }
