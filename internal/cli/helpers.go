@@ -27,6 +27,11 @@ func loadStores(cfgPath string) (stores, error) {
 
 	stateDir := expandHome(cfg.Workspace.StateDir)
 
+	// Ensure state directory exists (first run creates it).
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		return stores{}, fmt.Errorf("create state directory %s: %w", stateDir, err)
+	}
+
 	es, err := state.NewFileStore(filepath.Join(stateDir, "events.jsonl"))
 	if err != nil {
 		return stores{}, fmt.Errorf("open event store: %w", err)

@@ -160,6 +160,7 @@ type SuccessCriterion struct {
 }
 
 // validCriteriaKinds is the set of allowed QA criteria kinds.
+// Must stay in sync with criteria.Type constants in internal/criteria/types.go.
 var validCriteriaKinds = map[string]bool{
 	"output_contains":     true,
 	"output_not_contains": true,
@@ -167,6 +168,9 @@ var validCriteriaKinds = map[string]bool{
 	"file_contains":       true,
 	"file_not_empty":      true,
 	"exit_code_zero":      true,
+	"test_passes":         true,
+	"coverage_above":      true,
+	"command_succeeds":    true,
 }
 
 // InvestigationConfig controls how the investigation agent operates.

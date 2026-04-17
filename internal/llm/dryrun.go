@@ -75,14 +75,16 @@ func (d *DryRunClient) generateResponse(req CompletionRequest) string {
 		return d.classifyResponse()
 	}
 
+	// Tech Lead planning — check BEFORE investigation because the planner
+	// prompt may contain an injected investigation report (which includes
+	// "investigation" in the text), causing a false match.
+	if strings.Contains(system, "tech lead") || strings.Contains(system, "decompose") {
+		return d.planningResponse(user)
+	}
+
 	// Codebase investigation (NXD's Investigator)
 	if strings.Contains(system, "investigat") || strings.Contains(system, "codebase analysis") {
 		return d.investigationResponse()
-	}
-
-	// Tech Lead planning — return story decomposition
-	if strings.Contains(system, "tech lead") || strings.Contains(system, "decompose") {
-		return d.planningResponse(user)
 	}
 
 	// Code review / QA
