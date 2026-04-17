@@ -440,6 +440,47 @@ func TestGemmaRuntime_Execute_CriteriaPassFirstTime(t *testing.T) {
 	}
 }
 
+func TestGemmaRuntime_Execute_CriteriaBudgetExhausted_Escalates(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Write a permanently broken Go file that the agent can't fix
+	os.WriteFile(filepath.Join(tmpDir, "broken.go"), []byte("func main() {}"), 0o644)
+
+	completeArgs, _ := json.Marshal(map[string]string{"summary": "I tried"})
+
+	// Agent calls task_complete 4 times — all will be rejected.
+	// With MaxCriteriaRetries=2, the 3rd rejection should escalate.
+	responses := make([]llm.CompletionResponse, 4)
+	for idx := range responses {
+		responses[idx] = llm.CompletionResponse{
+			ToolCalls: []llm.ToolCall{
+				{ID: fmt.Sprintf("c%d", idx), Name: "task_complete", Arguments: completeArgs},
+			},
+		}
+	}
+
+	client := llm.NewReplayClient(responses...)
+	rt := NewGemmaRuntime(client, GemmaRuntimeConfig{
+		MaxIterations:      10,
+		MaxCriteriaRetries: 2,
+	})
+	rt.Criteria = []criteria.Criterion{
+		{Type: criteria.TypeCommandSucceeds, Target: "go build " + filepath.Join(tmpDir, "broken.go")},
+	}
+
+	result := rt.Execute(context.Background(), tmpDir, "gemma4", "", "fix")
+
+	if result.Error == nil {
+		t.Fatal("expected escalation error after budget exhausted")
+	}
+	if !strings.Contains(result.Error.Error(), "budget exhausted") {
+		t.Errorf("expected 'budget exhausted' in error, got: %v", result.Error)
+	}
+	if !strings.Contains(result.Error.Error(), "escalate") {
+		t.Errorf("expected 'escalate' in error, got: %v", result.Error)
+	}
+}
+
 // ── execWriteFile — invalid args path ────────────────────────────────
 
 func TestExecWriteFile_InvalidJSON(t *testing.T) {

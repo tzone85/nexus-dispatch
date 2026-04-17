@@ -17,8 +17,9 @@ import (
 
 // GemmaRuntimeConfig holds configuration for the native Gemma coding runtime.
 type GemmaRuntimeConfig struct {
-	MaxIterations    int
-	CommandAllowlist []string
+	MaxIterations      int
+	MaxCriteriaRetries int // max times agent can retry after criteria rejection (default: 2)
+	CommandAllowlist   []string
 }
 
 // ProgressPhase identifies what stage a progress event represents.
@@ -183,6 +184,8 @@ func (g *GemmaRuntime) Execute(ctx context.Context, workDir, model, systemPrompt
 		{Role: llm.RoleUser, Content: goal},
 	}
 
+	criteriaRejections := 0 // tracks how many times task_complete was rejected by criteria
+
 	for i := 0; i < g.config.MaxIterations; i++ {
 		// Coarse progress: iteration started, model is thinking.
 		g.emitProgress(ProgressEvent{
@@ -247,31 +250,74 @@ func (g *GemmaRuntime) Execute(ctx context.Context, workDir, model, systemPrompt
 				// If criteria fail, feed the error back to the agent so it
 				// can self-correct within the current iteration loop instead
 				// of failing the story and restarting from scratch.
+				//
+				// Budget: after MaxCriteriaRetries rejections, STOP and
+				// escalate instead of letting the agent thrash. Without this,
+				// a weak model might "game" the criteria by deleting tests,
+				// adding t.Skip(), or modifying production code to match
+				// hallucinated tests — optimizing for gate-passing instead
+				// of code quality.
 				if len(g.Criteria) > 0 {
 					criteriaResult := criteria.EvaluateAll(ctx, workDir, g.Criteria)
 					if !criteria.AllPassed(criteriaResult) {
+						criteriaRejections++
 						failSummary := criteria.FailureSummary(criteriaResult)
+
+						maxRetries := g.config.MaxCriteriaRetries
+						if maxRetries <= 0 {
+							maxRetries = 2 // default: 2 self-correction attempts
+						}
+
+						// Budget exceeded — escalate instead of thrashing.
+						if criteriaRejections > maxRetries {
+							log.Printf("[native-runtime] %s: criteria rejection budget exhausted (%d/%d), escalating",
+								g.StoryID, criteriaRejections, maxRetries)
+							g.emitProgress(ProgressEvent{
+								Iteration: i + 1,
+								MaxIter:   g.config.MaxIterations,
+								Phase:     PhaseError,
+								Tool:      "task_complete",
+								IsError:   true,
+								Detail:    fmt.Sprintf("criteria rejection budget exhausted (%d attempts) — escalating to higher tier", criteriaRejections),
+							})
+							return ExecuteResult{
+								Summary:        args.Summary,
+								Iterations:     i + 1,
+								CriteriaResult: criteriaResult,
+								Error: fmt.Errorf("criteria rejection budget exhausted after %d attempts: %s — escalate to a stronger model or human review",
+									criteriaRejections, failSummary),
+							}
+						}
+
 						g.emitProgress(ProgressEvent{
 							Iteration: i + 1,
 							MaxIter:   g.config.MaxIterations,
 							Phase:     PhaseError,
 							Tool:      "task_complete",
 							IsError:   true,
-							Detail:    fmt.Sprintf("criteria failed, agent must fix: %s", failSummary),
+							Detail:    fmt.Sprintf("criteria failed (%d/%d retries), agent must fix: %s", criteriaRejections, maxRetries, failSummary),
 						})
 
-						// Tell the agent what failed so it can fix the issue.
+						// Tell the agent what failed. Include the retry budget
+						// so it knows urgency and avoids hacky workarounds.
 						// Note: the assistant message was already appended above
 						// (before the tool-call loop), so we only append the
 						// rejection tool result here.
 						messages = append(messages, llm.Message{
-							Role:       llm.RoleTool,
-							Content:    fmt.Sprintf("COMPLETION REJECTED — criteria check failed. Fix these issues before calling task_complete again:\n\n%s", failSummary),
+							Role: llm.RoleTool,
+							Content: fmt.Sprintf(
+								"COMPLETION REJECTED (attempt %d of %d) — criteria check failed.\n\n"+
+									"Fix these issues before calling task_complete again:\n%s\n\n"+
+									"IMPORTANT: Fix the ROOT CAUSE. Do NOT delete tests, skip assertions, "+
+									"or modify production code just to pass the gate. If you cannot fix the "+
+									"issue properly, call task_complete with a summary explaining what you "+
+									"could not resolve — it will be escalated to a senior agent.",
+								criteriaRejections, maxRetries, failSummary),
 							ToolCallID: tc.ID,
 						})
 
-						log.Printf("[native-runtime] %s: task_complete rejected, criteria failed: %s", g.StoryID, failSummary)
-						// Continue the iteration loop — agent gets another chance.
+						log.Printf("[native-runtime] %s: task_complete rejected (%d/%d): %s",
+							g.StoryID, criteriaRejections, maxRetries, failSummary)
 						goto nextIteration
 					}
 
