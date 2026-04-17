@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/tzone85/nexus-dispatch/internal/criteria"
 	"github.com/tzone85/nexus-dispatch/internal/llm"
 	"github.com/tzone85/nexus-dispatch/internal/scratchboard"
 )
@@ -347,6 +348,95 @@ func TestGemmaRuntime_Execute_WithSystemPrompt(t *testing.T) {
 	}
 	if result.Summary != "done with system prompt" {
 		t.Errorf("summary = %q", result.Summary)
+	}
+}
+
+// ── Criteria-gated completion (self-correction) ──────────────────────
+
+func TestGemmaRuntime_Execute_CriteriaFailedSelfCorrects(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Write a Go file that won't compile (missing package declaration)
+	os.WriteFile(filepath.Join(tmpDir, "bad.go"), []byte("func main() {}"), 0o644)
+
+	completeArgs1, _ := json.Marshal(map[string]string{"summary": "done but broken"})
+	// After criteria rejection, agent writes a fixed file then completes again.
+	fixArgs, _ := json.Marshal(map[string]string{
+		"path":    "bad.go",
+		"content": "package main\n\nfunc main() {}\n",
+	})
+	completeArgs2, _ := json.Marshal(map[string]string{"summary": "fixed and done"})
+
+	client := llm.NewReplayClient(
+		// Iteration 1: agent calls task_complete (will be rejected by criteria)
+		llm.CompletionResponse{
+			ToolCalls: []llm.ToolCall{
+				{ID: "c1", Name: "task_complete", Arguments: completeArgs1},
+			},
+		},
+		// Iteration 2: agent fixes the file then completes
+		llm.CompletionResponse{
+			ToolCalls: []llm.ToolCall{
+				{ID: "c2", Name: "write_file", Arguments: fixArgs},
+			},
+		},
+		// Iteration 3: agent calls task_complete again (criteria now pass)
+		llm.CompletionResponse{
+			ToolCalls: []llm.ToolCall{
+				{ID: "c3", Name: "task_complete", Arguments: completeArgs2},
+			},
+		},
+	)
+
+	rt := NewGemmaRuntime(client, GemmaRuntimeConfig{MaxIterations: 5})
+	rt.Criteria = []criteria.Criterion{
+		{Type: criteria.TypeCommandSucceeds, Target: "go build " + filepath.Join(tmpDir, "bad.go")},
+	}
+
+	result := rt.Execute(context.Background(), tmpDir, "gemma4", "", "fix the code")
+
+	// The agent should have self-corrected: first task_complete rejected,
+	// then fixed the file, then completed successfully.
+	if result.Error != nil {
+		t.Fatalf("expected self-correction to succeed, got error: %v", result.Error)
+	}
+	if result.Summary != "fixed and done" {
+		t.Errorf("expected 'fixed and done', got %q", result.Summary)
+	}
+	if result.Iterations < 2 {
+		t.Errorf("expected at least 2 iterations (reject + fix), got %d", result.Iterations)
+	}
+}
+
+func TestGemmaRuntime_Execute_CriteriaPassFirstTime(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Write a valid Go file
+	os.WriteFile(filepath.Join(tmpDir, "good.go"), []byte("package main\n\nfunc main() {}\n"), 0o644)
+
+	completeArgs, _ := json.Marshal(map[string]string{"summary": "all good"})
+	client := llm.NewReplayClient(
+		llm.CompletionResponse{
+			ToolCalls: []llm.ToolCall{
+				{ID: "c1", Name: "task_complete", Arguments: completeArgs},
+			},
+		},
+	)
+
+	rt := NewGemmaRuntime(client, GemmaRuntimeConfig{MaxIterations: 5})
+	rt.Criteria = []criteria.Criterion{
+		{Type: criteria.TypeCommandSucceeds, Target: "go build " + filepath.Join(tmpDir, "good.go")},
+	}
+
+	result := rt.Execute(context.Background(), tmpDir, "gemma4", "", "verify")
+	if result.Error != nil {
+		t.Fatalf("expected pass, got: %v", result.Error)
+	}
+	if result.Summary != "all good" {
+		t.Errorf("expected 'all good', got %q", result.Summary)
+	}
+	if len(result.CriteriaResult) == 0 {
+		t.Error("expected criteria results to be populated")
 	}
 }
 

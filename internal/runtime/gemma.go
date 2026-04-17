@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -241,6 +242,55 @@ func (g *GemmaRuntime) Execute(ctx context.Context, workDir, model, systemPrompt
 					Summary string `json:"summary"`
 				}
 				json.Unmarshal(tc.Arguments, &args)
+
+				// Run criteria evaluation BEFORE accepting completion.
+				// If criteria fail, feed the error back to the agent so it
+				// can self-correct within the current iteration loop instead
+				// of failing the story and restarting from scratch.
+				if len(g.Criteria) > 0 {
+					criteriaResult := criteria.EvaluateAll(ctx, workDir, g.Criteria)
+					if !criteria.AllPassed(criteriaResult) {
+						failSummary := criteria.FailureSummary(criteriaResult)
+						g.emitProgress(ProgressEvent{
+							Iteration: i + 1,
+							MaxIter:   g.config.MaxIterations,
+							Phase:     PhaseError,
+							Tool:      "task_complete",
+							IsError:   true,
+							Detail:    fmt.Sprintf("criteria failed, agent must fix: %s", failSummary),
+						})
+
+						// Tell the agent what failed so it can fix the issue.
+						// Note: the assistant message was already appended above
+						// (before the tool-call loop), so we only append the
+						// rejection tool result here.
+						messages = append(messages, llm.Message{
+							Role:       llm.RoleTool,
+							Content:    fmt.Sprintf("COMPLETION REJECTED — criteria check failed. Fix these issues before calling task_complete again:\n\n%s", failSummary),
+							ToolCallID: tc.ID,
+						})
+
+						log.Printf("[native-runtime] %s: task_complete rejected, criteria failed: %s", g.StoryID, failSummary)
+						// Continue the iteration loop — agent gets another chance.
+						goto nextIteration
+					}
+
+					// All criteria passed — accept completion.
+					g.emitProgress(ProgressEvent{
+						Iteration: i + 1,
+						MaxIter:   g.config.MaxIterations,
+						Phase:     PhaseCompleted,
+						Tool:      "task_complete",
+						Detail:    args.Summary,
+					})
+					return ExecuteResult{
+						Summary:        args.Summary,
+						Iterations:     i + 1,
+						CriteriaResult: criteriaResult,
+					}
+				}
+
+				// No criteria configured — accept immediately.
 				g.emitProgress(ProgressEvent{
 					Iteration: i + 1,
 					MaxIter:   g.config.MaxIterations,
@@ -248,22 +298,10 @@ func (g *GemmaRuntime) Execute(ctx context.Context, workDir, model, systemPrompt
 					Tool:      "task_complete",
 					Detail:    args.Summary,
 				})
-
-				result := ExecuteResult{
+				return ExecuteResult{
 					Summary:    args.Summary,
 					Iterations: i + 1,
 				}
-
-				// Run criteria evaluation if criteria are configured.
-				if len(g.Criteria) > 0 {
-					result.CriteriaResult = criteria.EvaluateAll(ctx, workDir, g.Criteria)
-					if !criteria.AllPassed(result.CriteriaResult) {
-						result.Error = fmt.Errorf("criteria check failed: %s",
-							criteria.FailureSummary(result.CriteriaResult))
-					}
-				}
-
-				return result
 			}
 
 			// Fine progress: about to execute a tool call.
@@ -298,6 +336,7 @@ func (g *GemmaRuntime) Execute(ctx context.Context, workDir, model, systemPrompt
 				ToolCallID: result.CallID,
 			})
 		}
+	nextIteration:
 	}
 
 	g.emitProgress(ProgressEvent{
