@@ -128,7 +128,9 @@ func runReq(cmd *cobra.Command, args []string) error {
 	planner := engine.NewPlanner(client, s.Config, s.Events, s.Proj)
 	planner.SetProjectDir(expandHome(s.Config.Workspace.StateDir))
 
-	ctx, cancel := context.WithTimeout(cmd.Context(), 5*time.Minute)
+	// Allow generous timeout for planning: investigation (up to 20 LLM calls)
+	// + planning (1-2 calls) can take 10+ minutes on local GPU models.
+	ctx, cancel := context.WithTimeout(cmd.Context(), 15*time.Minute)
 	defer cancel()
 
 	fmt.Fprintf(out, "Planning requirement: %s\n", requirement)
