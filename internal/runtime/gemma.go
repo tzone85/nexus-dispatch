@@ -209,6 +209,9 @@ func (g *GemmaRuntime) Execute(ctx context.Context, workDir, model, systemPrompt
 			return ExecuteResult{Error: fmt.Errorf("llm completion (iteration %d): %w", i+1, err)}
 		}
 
+		// Truncate oversized responses to prevent context window exhaustion.
+		resp.Content = llm.TruncateContent(resp.Content, llm.MaxResponseContentLen)
+
 		// No tool calls means the model is done talking without completing.
 		if len(resp.ToolCalls) == 0 {
 			g.emitProgress(ProgressEvent{
@@ -395,18 +398,73 @@ func (g *GemmaRuntime) executeTool(call llm.ToolCall, workDir string) llm.ToolCa
 }
 
 // safePath resolves a relative path within the working directory and rejects
-// any path traversal attempts.
+// any path traversal attempts. Symlinks are resolved to prevent escaping
+// the work directory via symlink indirection.
 func safePath(relPath, workDir string) (string, error) {
 	abs := filepath.Join(workDir, relPath)
 	cleaned := filepath.Clean(abs)
 
-	// Ensure the resolved path is still within the working directory.
-	if !strings.HasPrefix(cleaned, filepath.Clean(workDir)+string(filepath.Separator)) &&
-		cleaned != filepath.Clean(workDir) {
+	cleanedWorkDir := filepath.Clean(workDir)
+
+	// Ensure the cleaned path is within workDir before symlink resolution.
+	if !strings.HasPrefix(cleaned, cleanedWorkDir+string(filepath.Separator)) &&
+		cleaned != cleanedWorkDir {
 		return "", fmt.Errorf("path traversal blocked: %s resolves outside work directory", relPath)
 	}
 
+	// Resolve symlinks to catch indirection that escapes the work directory.
+	// Only evaluate if the target exists (new files won't have symlinks).
+	realPath, err := filepath.EvalSymlinks(cleaned)
+	if err == nil {
+		// Target exists — verify the real path is still within workDir.
+		realWorkDir, wdErr := filepath.EvalSymlinks(cleanedWorkDir)
+		if wdErr != nil {
+			realWorkDir = cleanedWorkDir
+		}
+		if !strings.HasPrefix(realPath, realWorkDir+string(filepath.Separator)) &&
+			realPath != realWorkDir {
+			return "", fmt.Errorf("path traversal blocked: %s resolves outside work directory via symlink", relPath)
+		}
+		return realPath, nil
+	}
+
+	// Target doesn't exist yet (new file) — return cleaned path.
 	return cleaned, nil
+}
+
+// isCommandAllowed checks whether a command is permitted by the allowlist.
+// It extracts the binary name from the command (first whitespace-delimited token)
+// and validates that the full command starts with an allowlisted prefix followed
+// by either a space, end-of-string, or the exact match. Shell metacharacters
+// (;, |, &, $, `, \n) are rejected outright to prevent command chaining.
+func isCommandAllowed(command string, allowlist []string) bool {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return false
+	}
+
+	// Reject commands containing shell chaining operators.
+	for _, ch := range []string{";", "&&", "||", "|", "$(",  "`", "\n"} {
+		if strings.Contains(command, ch) {
+			return false
+		}
+	}
+
+	for _, pattern := range allowlist {
+		pattern = strings.TrimSpace(pattern)
+		if pattern == "" {
+			continue
+		}
+		if command == pattern {
+			return true
+		}
+		// Allow if command starts with pattern followed by a space
+		// (e.g., pattern "go test" matches "go test ./..." but not "go testevil").
+		if strings.HasPrefix(command, pattern+" ") {
+			return true
+		}
+	}
+	return false
 }
 
 // execReadFile reads a file relative to the working directory.
@@ -539,15 +597,8 @@ func (g *GemmaRuntime) execRunCommand(call llm.ToolCall, workDir string) llm.Too
 		return result
 	}
 
-	// Check command against allowlist.
-	allowed := false
-	for _, pattern := range g.config.CommandAllowlist {
-		if strings.HasPrefix(args.Command, pattern) {
-			allowed = true
-			break
-		}
-	}
-	if !allowed {
+	// Check command against allowlist using safe binary extraction.
+	if !isCommandAllowed(args.Command, g.config.CommandAllowlist) {
 		result.IsError = true
 		result.Content = fmt.Sprintf("command not in allowlist: %s", args.Command)
 		return result

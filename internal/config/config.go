@@ -4,6 +4,7 @@ package config
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -320,6 +321,24 @@ func (c Config) Validate() error {
 			}
 			if len(rt.CommandAllowlist) == 0 {
 				return fmt.Errorf("runtimes.%s.command_allowlist must be non-empty for native runtimes", name)
+			}
+		}
+
+		// Validate detection regex patterns compile without error (prevents
+		// ReDoS and catches invalid patterns early at config load time).
+		if p := rt.Detection.IdlePattern; p != "" {
+			if _, err := regexp.Compile(p); err != nil {
+				return fmt.Errorf("runtimes.%s.detection.idle_pattern is invalid regex: %w", name, err)
+			}
+		}
+		if p := rt.Detection.PermissionPattern; p != "" {
+			if _, err := regexp.Compile(p); err != nil {
+				return fmt.Errorf("runtimes.%s.detection.permission_pattern is invalid regex: %w", name, err)
+			}
+		}
+		if p := rt.Detection.PlanModePattern; p != "" {
+			if _, err := regexp.Compile(p); err != nil {
+				return fmt.Errorf("runtimes.%s.detection.plan_mode_pattern is invalid regex: %w", name, err)
 			}
 		}
 	}

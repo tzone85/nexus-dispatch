@@ -50,3 +50,17 @@ type Usage struct {
 type Client interface {
 	Complete(ctx context.Context, req CompletionRequest) (CompletionResponse, error)
 }
+
+// MaxResponseContentLen is the maximum number of characters allowed in an LLM
+// response content field. Responses exceeding this limit are truncated to
+// prevent context window exhaustion from unexpectedly large outputs.
+const MaxResponseContentLen = 200_000
+
+// TruncateContent truncates s to maxLen characters if it exceeds the limit,
+// appending a truncation notice. Returns s unchanged if within limits.
+func TruncateContent(s string, maxLen int) string {
+	if maxLen <= 0 || len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "\n... [truncated: response exceeded limit]"
+}

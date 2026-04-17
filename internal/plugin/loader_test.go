@@ -272,18 +272,28 @@ func TestShouldInject_EmptyRoles_AllowsAll(t *testing.T) {
 	}
 }
 
-func TestResolvePath_Absolute(t *testing.T) {
-	got := resolvePath("/plugins", "playbooks", "/absolute/path.md")
-	if got != "/absolute/path.md" {
-		t.Errorf("expected absolute path unchanged, got %q", got)
+func TestResolvePath_Absolute_Rejected(t *testing.T) {
+	_, err := resolvePath("/plugins", "playbooks", "/absolute/path.md")
+	if err == nil {
+		t.Error("expected error for absolute plugin path, got nil")
 	}
 }
 
 func TestResolvePath_Relative(t *testing.T) {
-	got := resolvePath("/plugins", "playbooks", "test.md")
+	got, err := resolvePath("/plugins", "playbooks", "test.md")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	want := filepath.Join("/plugins", "playbooks", "test.md")
 	if got != want {
 		t.Errorf("expected %q, got %q", want, got)
+	}
+}
+
+func TestResolvePath_Traversal_Rejected(t *testing.T) {
+	_, err := resolvePath("/plugins", "playbooks", "../../etc/passwd")
+	if err == nil {
+		t.Error("expected error for path traversal, got nil")
 	}
 }
 

@@ -351,3 +351,67 @@ func TestDefaultConfig_SafetyDefaults(t *testing.T) {
 		t.Error("expected non-empty Investigation.CommandAllowlist by default")
 	}
 }
+
+// SG-8 security: regex pattern validation
+
+func TestValidate_InvalidIdlePattern(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Runtimes = map[string]config.RuntimeConfig{
+		"test": {
+			Command: "test",
+			Detection: config.RuntimeDetection{
+				IdlePattern: "[invalid(regex",
+			},
+		},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for invalid idle_pattern regex")
+	}
+}
+
+func TestValidate_InvalidPermissionPattern(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Runtimes = map[string]config.RuntimeConfig{
+		"test": {
+			Command: "test",
+			Detection: config.RuntimeDetection{
+				PermissionPattern: "(?P<invalid",
+			},
+		},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for invalid permission_pattern regex")
+	}
+}
+
+func TestValidate_InvalidPlanModePattern(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Runtimes = map[string]config.RuntimeConfig{
+		"test": {
+			Command: "test",
+			Detection: config.RuntimeDetection{
+				PlanModePattern: "*badpattern",
+			},
+		},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for invalid plan_mode_pattern regex")
+	}
+}
+
+func TestValidate_ValidRegexPatterns(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Runtimes = map[string]config.RuntimeConfig{
+		"test": {
+			Command: "test",
+			Detection: config.RuntimeDetection{
+				IdlePattern:       `^\$\s*$`,
+				PermissionPattern: `\[Y/n\]`,
+				PlanModePattern:   "Plan mode",
+			},
+		},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected valid regex patterns to pass, got: %v", err)
+	}
+}

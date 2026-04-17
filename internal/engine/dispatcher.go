@@ -4,12 +4,17 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
+	"regexp"
 
 	"github.com/tzone85/nexus-dispatch/internal/agent"
 	"github.com/tzone85/nexus-dispatch/internal/config"
 	"github.com/tzone85/nexus-dispatch/internal/graph"
 	"github.com/tzone85/nexus-dispatch/internal/state"
 )
+
+// safeStoryIDPattern matches only alphanumeric characters, hyphens, underscores,
+// and dots — safe for use in git branch names and file paths.
+var safeStoryIDPattern = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
 
 // Assignment represents a story routed to a specific agent role with session
 // and branch metadata.
@@ -76,6 +81,10 @@ func (d *Dispatcher) DispatchWave(dag *graph.DAG, completed map[string]bool, req
 	agentCounter := 0
 
 	for _, story := range dispatchable {
+		if !safeStoryIDPattern.MatchString(story.ID) {
+			return nil, fmt.Errorf("story ID %q contains unsafe characters for branch names", story.ID)
+		}
+
 		role := d.routeStory(story)
 		agentCounter++
 		agentID := fmt.Sprintf("%s-%s-%d", role, reqID, agentCounter)

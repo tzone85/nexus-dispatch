@@ -266,3 +266,74 @@ func TestDispatchWave_RejectsOverlap(t *testing.T) {
 		t.Fatalf("expected 1 assignment (overlap filtering), got %d", len(assignments))
 	}
 }
+
+// SG-3 security: story ID validation in dispatch
+func TestDispatchWave_RejectsUnsafeStoryID(t *testing.T) {
+	es, ps, cleanup := newTestStores(t)
+	defer cleanup()
+
+	cfg := config.Config{
+		Routing: config.RoutingConfig{
+			JuniorMaxComplexity:       3,
+			IntermediateMaxComplexity: 5,
+		},
+	}
+	dispatcher := engine.NewDispatcher(cfg, es, ps)
+
+	unsafeIDs := []string{
+		"story;evil",
+		"story$(cmd)",
+		"story`cmd`",
+		"story&evil",
+		"story|pipe",
+		"story\nnewline",
+		"story evil",  // space
+		"../traversal",
+	}
+
+	for _, id := range unsafeIDs {
+		stories := []engine.PlannedStory{
+			{ID: id, Title: "test", Complexity: 1, WaveHint: "parallel"},
+		}
+		dag := graph.New()
+		dag.AddNode(id)
+
+		_, err := dispatcher.DispatchWave(dag, map[string]bool{}, "r-001", stories, 1)
+		if err == nil {
+			t.Errorf("expected error for unsafe story ID %q, got nil", id)
+		}
+	}
+}
+
+func TestDispatchWave_AcceptsSafeStoryID(t *testing.T) {
+	es, ps, cleanup := newTestStores(t)
+	defer cleanup()
+
+	cfg := config.Config{
+		Routing: config.RoutingConfig{
+			JuniorMaxComplexity:       3,
+			IntermediateMaxComplexity: 5,
+		},
+	}
+	dispatcher := engine.NewDispatcher(cfg, es, ps)
+
+	safeIDs := []string{
+		"story-001",
+		"story_002",
+		"story.003",
+		"STORY-Alpha-1",
+	}
+
+	for _, id := range safeIDs {
+		stories := []engine.PlannedStory{
+			{ID: id, Title: "test", Complexity: 1, WaveHint: "parallel"},
+		}
+		dag := graph.New()
+		dag.AddNode(id)
+
+		_, err := dispatcher.DispatchWave(dag, map[string]bool{}, "r-001", stories, 1)
+		if err != nil {
+			t.Errorf("expected safe story ID %q to pass, got: %v", id, err)
+		}
+	}
+}

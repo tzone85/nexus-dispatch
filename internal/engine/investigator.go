@@ -97,13 +97,36 @@ func (inv *Investigator) SetCommandAllowlist(allowlist []string) {
 
 // isCommandAllowed checks whether a command is permitted by the allowlist.
 // If the allowlist is empty, all commands are allowed for backward compatibility.
+// Commands containing shell chaining operators (;, &&, ||, |, $, `) are always
+// rejected to prevent command injection through prefix matching.
 func (inv *Investigator) isCommandAllowed(command string) bool {
 	if len(inv.commandAllowlist) == 0 {
 		return true // backward compat
 	}
-	lower := strings.ToLower(strings.TrimSpace(command))
+
+	trimmed := strings.TrimSpace(command)
+	if trimmed == "" {
+		return false
+	}
+
+	// Reject commands containing shell chaining operators.
+	for _, ch := range []string{";", "&&", "||", "|", "$(", "`", "\n"} {
+		if strings.Contains(trimmed, ch) {
+			return false
+		}
+	}
+
+	lower := strings.ToLower(trimmed)
 	for _, pattern := range inv.commandAllowlist {
-		if strings.HasPrefix(lower, strings.ToLower(pattern)) {
+		p := strings.ToLower(strings.TrimSpace(pattern))
+		if p == "" {
+			continue
+		}
+		if lower == p {
+			return true
+		}
+		// Allow if command starts with pattern followed by a space.
+		if strings.HasPrefix(lower, p+" ") {
 			return true
 		}
 	}

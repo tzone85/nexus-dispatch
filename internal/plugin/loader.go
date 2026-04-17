@@ -56,7 +56,10 @@ func LoadPlugins(cfg config.PluginConfig, pluginDir string) (*PluginManager, err
 // loadPlaybooks reads each playbook's markdown file from the playbooks subdir.
 func loadPlaybooks(mgr *PluginManager, cfgs []config.PluginPlaybookConfig, pluginDir string) error {
 	for _, pc := range cfgs {
-		resolved := resolvePath(pluginDir, "playbooks", pc.File)
+		resolved, err := resolvePath(pluginDir, "playbooks", pc.File)
+		if err != nil {
+			return fmt.Errorf("playbook %q: %w", pc.Name, err)
+		}
 		content, err := readNonEmptyFile(resolved)
 		if err != nil {
 			return fmt.Errorf("playbook %q: %w", pc.Name, err)
@@ -75,7 +78,10 @@ func loadPlaybooks(mgr *PluginManager, cfgs []config.PluginPlaybookConfig, plugi
 // loadPrompts reads each prompt override file from the prompts subdir.
 func loadPrompts(mgr *PluginManager, prompts map[string]string, pluginDir string) error {
 	for key, file := range prompts {
-		resolved := resolvePath(pluginDir, "prompts", file)
+		resolved, err := resolvePath(pluginDir, "prompts", file)
+		if err != nil {
+			return fmt.Errorf("prompt %q: %w", key, err)
+		}
 		content, err := readNonEmptyFile(resolved)
 		if err != nil {
 			return fmt.Errorf("prompt %q: %w", key, err)
@@ -88,7 +94,10 @@ func loadPrompts(mgr *PluginManager, prompts map[string]string, pluginDir string
 // loadQAChecks resolves each QA check script path and validates it exists.
 func loadQAChecks(mgr *PluginManager, cfgs []config.PluginQAConfig, pluginDir string) error {
 	for _, qc := range cfgs {
-		resolved := resolvePath(pluginDir, "qa", qc.File)
+		resolved, err := resolvePath(pluginDir, "qa", qc.File)
+		if err != nil {
+			return fmt.Errorf("qa check %q: %w", qc.Name, err)
+		}
 		if _, err := os.Stat(resolved); err != nil {
 			return fmt.Errorf("qa check %q: %w", qc.Name, err)
 		}
@@ -112,13 +121,23 @@ func loadProviders(mgr *PluginManager, providers map[string]config.PluginProvide
 	}
 }
 
-// resolvePath builds an absolute path for a plugin file. If file is already
-// absolute it is returned as-is; otherwise it is joined with pluginDir/subdir.
-func resolvePath(pluginDir, subdir, file string) string {
+// resolvePath builds an absolute path for a plugin file within the plugin
+// directory. Absolute paths are rejected to prevent loading files from
+// arbitrary locations. The resolved path must remain under pluginDir.
+func resolvePath(pluginDir, subdir, file string) (string, error) {
 	if filepath.IsAbs(file) {
-		return file
+		return "", fmt.Errorf("absolute plugin paths are not allowed: %s", file)
 	}
-	return filepath.Join(pluginDir, subdir, file)
+
+	resolved := filepath.Clean(filepath.Join(pluginDir, subdir, file))
+	base := filepath.Clean(pluginDir)
+
+	// Ensure resolved path stays within the plugin directory.
+	if !strings.HasPrefix(resolved, base+string(filepath.Separator)) && resolved != base {
+		return "", fmt.Errorf("plugin path traversal blocked: %s resolves outside plugin directory", file)
+	}
+
+	return resolved, nil
 }
 
 // readNonEmptyFile reads the file at path and returns an error if the file
