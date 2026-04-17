@@ -2295,40 +2295,53 @@ Operations
 
 ## 22. Current Limitations
 
-> **Status: IMPLEMENTED** — Honest assessment of what doesn't work yet
+> **Status:** Updated 2026-04-17. Many items from the original list have been resolved.
 
 ### 22.1 Functional Limitations
 
-| Limitation | Impact | Planned Resolution |
-|-----------|--------|-------------------|
-| **No adaptive routing** | Static complexity thresholds; scoring infrastructure unused | Bayesian model (Section 5) |
-| **Single-machine only** | Can't distribute agents across multiple machines | Phase 2 team server |
-| **No IDE integration** | CLI-only workflow; no VS Code/JetBrains extension | Phase 2 extension |
-| **No incremental re-planning** | If a story fails repeatedly, entire requirement must be re-planned manually | Auto re-plan on Tier 3 escalation (partial) |
-| **No partial execution resume** | If NXD crashes mid-wave, must re-run from last completed wave | Checkpoint events exist but resume logic incomplete |
-| **Coverage at 65.3%** | 15% below 80% target; git package at 44% | Active coverage push |
+| Limitation | Impact | Status |
+|-----------|--------|:---:|
+| ~~No adaptive routing~~ | ~~Static complexity thresholds~~ | ✅ Resolved — Bayesian routing with Beta priors (Section 5) |
+| **Single-machine only** | Can't distribute agents across multiple machines | 🔄 Phase 2 team server |
+| **No IDE integration** | CLI-only workflow | 🔄 Phase 2 extension |
+| **No incremental re-planning** | Entire requirement must be re-planned on repeated failure | Partial — Tier 3 auto re-plan exists |
+| ~~No partial execution resume~~ | ~~Must re-run from last completed wave~~ | ✅ Resolved — auto-resume dispatches next wave after merge |
+| **Coverage at 73.8%** | 6.2% below 80% target | Active push — 15 packages above 80% |
+| **CLI runtime agents lack self-correction** | Only native (Gemma) agents get criteria-gated completion; CLI agents (aider/claude/codex) can't self-correct | Post-execution QA still catches, but no feedback loop |
 
 ### 22.2 Security Limitations
 
 | Limitation | Severity | Status |
-|-----------|:---:|-----------|
-| Command allowlist prefix matching bypassable | **Critical** | ✅ Resolved — shell metacharacters rejected + boundary match |
-| Plugin absolute paths accepted | **Critical** | ✅ Resolved — `filepath.IsAbs()` rejected + confinement check |
-| Story IDs not validated as branch names | **High** | ✅ Resolved — regex-validated before use |
-| LLM tool call arguments untyped | **High** | ✅ Resolved — JSON Schema type validation |
-| No symlink resolution in safePath | **Medium** | ✅ Resolved — `EvalSymlinks()` + re-check confinement |
-| No LLM response length limit | **Medium** | ✅ Resolved — 200K char truncation |
-| Config regex patterns unvalidated | **Medium** | ✅ Resolved — compiled at load time |
-| **API keys in plaintext memory** | **Medium** | 🔄 Deferred to Phase 2 (secrets manager) |
+|-----------|:---:|:---:|
+| Command allowlist prefix matching | **Critical** | ✅ Resolved |
+| Plugin absolute paths | **Critical** | ✅ Resolved |
+| Story IDs unvalidated as branch names | **High** | ✅ Resolved |
+| LLM tool call arguments untyped | **High** | ✅ Resolved |
+| No symlink resolution in safePath | **Medium** | ✅ Resolved |
+| No LLM response length limit | **Medium** | ✅ Resolved |
+| Config regex patterns unvalidated | **Medium** | ✅ Resolved |
+| **API keys in plaintext memory** | **Medium** | 🔄 Phase 2 — Infisical recommended (Section 11.7) |
 
-### 22.3 Scalability Limitations
+### 22.3 Quality Assurance Improvements (2026-04-17)
+
+| Feature | Description | Status |
+|---------|------------|:---:|
+| **Criteria-gated completion** | Agents cannot declare "done" until go test/vet/build pass | ✅ Implemented |
+| **Self-correction loop** | Failed criteria fed back to agent for in-session fix | ✅ Implemented |
+| **Rejection budget** | Max 2 retries before escalation (prevents test-gaming) | ✅ Implemented |
+| **Anti-gaming prompt** | Agent told: "fix ROOT CAUSE, don't delete tests or skip assertions" | ✅ Implemented |
+| **Reviewer rejection scanning** | Plain-text responses scanned for rejection keywords | ✅ Implemented |
+| **Same-model review warning** | Config warns when review model = coding model | ✅ Implemented |
+| **Default QA criteria** | go build + go vet + go test in defaults (not just go build) | ✅ Implemented |
+
+### 22.4 Scalability Limitations
 
 | Limitation | Threshold | Resolution |
-|-----------|-----------|-----------|
-| SQLite single-writer lock | ~100 writes/sec | PostgreSQL (Phase 2) |
-| JSONL file scan for metrics | O(n) on file size | Indexed storage or time-partitioned files |
-| SemaphoreClient is per-wave, not global | Multiple waves could exceed GPU capacity | Global concurrency manager |
-| No job queue for requirements | Can't queue multiple requirements | Redis queue (Phase 2) |
+|-----------|-----------|:---:|
+| SQLite single-writer lock | ~100 writes/sec | 🔄 PostgreSQL (Phase 2) |
+| JSONL file scan for metrics | O(n) on file size | 🔄 Indexed storage |
+| SemaphoreClient is per-wave, not global | Multiple waves could exceed GPU | 🔄 Global concurrency manager |
+| No job queue for requirements | Can't queue multiple requirements | 🔄 Redis queue (Phase 2) |
 
 ---
 

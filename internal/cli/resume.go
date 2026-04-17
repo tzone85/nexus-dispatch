@@ -30,10 +30,10 @@ import (
 
 func newResumeCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "resume <req-id>",
+		Use:   "resume [req-id]",
 		Short: "Resume a paused requirement pipeline",
-		Long:  "Loads existing state for a requirement, dispatches the next wave of ready stories, spawns agents in tmux sessions, and monitors progress through review, QA, and merge.",
-		Args:  cobra.ExactArgs(1),
+		Long:  "Loads existing state for a requirement, dispatches the next wave of ready stories, spawns agents in tmux sessions, and monitors progress through review, QA, and merge.\n\nIf req-id is omitted and only one active (non-archived, non-completed) requirement exists, it is selected automatically.",
+		Args:  cobra.MaximumNArgs(1),
 		RunE:  runResume,
 	}
 	cmd.Flags().Bool("godmode", false, "skip permission prompts on LLM calls (fully autonomous)")
@@ -44,14 +44,42 @@ func newResumeCmd() *cobra.Command {
 }
 
 func runResume(cmd *cobra.Command, args []string) error {
-	reqID := args[0]
-
 	cfgPath, _ := cmd.Flags().GetString("config")
 	s, err := loadStores(cfgPath)
 	if err != nil {
 		return err
 	}
 	defer s.Close()
+
+	// Auto-select the requirement if only one active (non-archived, non-completed) exists.
+	var reqID string
+	if len(args) > 0 {
+		reqID = args[0]
+	} else {
+		reqs, listErr := s.Proj.ListRequirementsFiltered(state.ReqFilter{ExcludeArchived: true})
+		if listErr != nil {
+			return fmt.Errorf("list requirements: %w", listErr)
+		}
+		var active []state.Requirement
+		for _, r := range reqs {
+			if r.Status != "completed" && r.Status != "archived" {
+				active = append(active, r)
+			}
+		}
+		switch len(active) {
+		case 0:
+			return fmt.Errorf("no active requirements found — run 'nxd req' first")
+		case 1:
+			reqID = active[0].ID
+			fmt.Fprintf(cmd.OutOrStdout(), "Auto-selected requirement: %s\n", active[0].Title)
+		default:
+			fmt.Fprintf(cmd.OutOrStdout(), "Multiple active requirements:\n")
+			for _, r := range active {
+				fmt.Fprintf(cmd.OutOrStdout(), "  [%s] %s (%s)\n", r.ID[:8], r.Title, r.Status)
+			}
+			return fmt.Errorf("specify which requirement to resume: nxd resume <req-id>")
+		}
+	}
 
 	out := cmd.OutOrStdout()
 

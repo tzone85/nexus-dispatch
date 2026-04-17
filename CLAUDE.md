@@ -23,7 +23,8 @@ nxd resume → dispatcher → executor → agents (parallel per wave)
 | `internal/engine/controller.go` | Periodic active controller with cancel/restart/reprioritize for stuck agents, emits `CONTROLLER_STUCK_DETECTED` events |
 | `internal/engine/cost.go` | Cost estimation: `CalculateCost`, `CalculateLLMCost`, `CalculateCostWithTokens` with per-token billing |
 | `internal/engine/report.go` | Client delivery reports with actual token cost via `sumTokenUsage()` from metrics.jsonl |
-| `internal/runtime/gemma.go` | Native coding runtime with tool-calling loop, progress callbacks, scratchboard tools, criteria evaluation |
+| `internal/runtime/gemma.go` | Native coding runtime with tool-calling loop, criteria-gated completion, self-correction, rejection budget, scratchboard tools |
+| `internal/routing/bayesian.go` | Bayesian adaptive routing: Beta distribution priors per role/complexity, update rules, decay, persistence |
 | `internal/llm/semaphore.go` | Concurrency limiter wrapping `llm.Client` (default 1 for single-GPU Ollama) |
 | `internal/artifact/store.go` | Per-story artifact persistence (launch config, trace JSONL, diffs, QA/review results) |
 | `internal/scratchboard/` | Cross-agent knowledge sharing (JSONL-backed, per-requirement) |
@@ -80,11 +81,13 @@ billing:
         output_per_1k: 0.0
 
 qa:
-  success_criteria:          # auto-evaluated by native runtime after task_complete
-    - kind: file_exists
-      path: go.mod
+  success_criteria:          # evaluated BEFORE accepting task_complete (criteria-gated)
     - kind: command_succeeds
       value: go build ./...
+    - kind: command_succeeds
+      value: go vet ./...
+    - kind: test_passes
+      value: go test ./...
 ```
 
 ## Conventions
@@ -110,22 +113,25 @@ kill <stale-pid>
 rm -f ~/.nxd/nxd.lock ~/.nxd/events.jsonl ~/.nxd/nxd.db
 ```
 
-## Current State (2026-04-12)
+## Current State (2026-04-17)
 
-- **Coverage**: 65.3% total (target 80%); 7 packages above 80%
+- **Coverage**: 73.8% total (target 80%); 15 packages above 80%
 - **CI**: test + vet + build pass; lint non-blocking (golangci-lint doesn't support Go 1.26 yet)
 - **DryRunClient**: `--dry-run` flag on `nxd req` and `nxd resume` simulates full pipeline without API calls
 - **Controller**: disabled by default, production-ready with reprioritize/restart/cancel + 19 tests
 - **Web dashboard**: DAG SVG visualization, review gates, metrics, recovery log, investigations
-- **Native runtime**: criteria evaluation wired from `config.QA.SuccessCriteria`, results in `STORY_COMPLETED` payload
+- **Native runtime**: criteria-gated completion with self-correction loop; agents cannot declare "done" until `go test`/`go vet`/`go build` pass in worktree
 - **Cost estimation**: `CalculateLLMCost` and `CalculateCostWithTokens` wired into report builder with actual metrics data
+- **Bayesian routing**: adaptive role assignment based on Beta distribution priors; persisted to `bayesian_priors.json`; wired to dispatcher and monitor
+- **Security**: 7/8 vulnerabilities resolved (command injection, path traversal, input validation); SG-7 (secrets manager) deferred to Phase 2
+- **Anti-hallucination**: criteria-gated completion + rejection budget (max 2 retries) + escalation; reviewer text fallback scans for rejection keywords; same-model review warning
+- **Live-tested**: full end-to-end pipeline validated on `tzone85/project-x` with gemma4 — requirement → PR #25 merged in 3 minutes
 
 ### Per-Package Coverage
 
-Above 80%: graph (96%), plugin (93%), llm (92%), criteria (88%), agent (86%), scratchboard (85%), artifact (82%)
-Approaching 80%: state (79%), config (77%)
-Below 80%: runtime (69%), engine (65%), tmux (65%), web (61%), cli (57%), git (44%)
-Remaining gap: functions requiring external processes (tmux sessions, git rebase/PR, Ollama API)
+Above 80%: memory (99%), config (97%), metrics (97%), graph (96%), plugin (90%), llm (91%), routing (89%), criteria (88%), runtime (87%), agent (86%), codegraph (86%), scratchboard (85%), git (82%), artifact (82%), repolearn (81%), state (81%), web (81%)
+Below 80%: engine (72%), update (68%), tmux (59%), dashboard (57%), cli (56%)
+Remaining gap: cli/dashboard (Cobra/Bubbletea coupling), tmux (requires live sessions), engine (monitor paths needing full pipeline)
 
 ## Test Infrastructure
 
