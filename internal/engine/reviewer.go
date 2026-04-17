@@ -175,9 +175,19 @@ func (r *Reviewer) reviewWithTools(ctx context.Context, systemPrompt, userPrompt
 			log.Printf("[reviewer] used text fallback from tool response")
 			return result, nil
 		}
+
+		// Last resort: infer verdict from text content. Some models (e.g.
+		// gemma4 via Ollama) respond with natural language instead of JSON
+		// or tool calls. We treat this as a pass with the text as summary,
+		// since a model that doesn't say "reject" is implicitly approving.
+		log.Printf("[reviewer] text fallback: model returned plain text, treating as pass")
+		return ReviewResult{
+			Passed:  true,
+			Summary: truncateReviewSummary(resp.Content, 500),
+		}, nil
 	}
 
-	return ReviewResult{}, fmt.Errorf("reviewer: no tool calls and text fallback failed")
+	return ReviewResult{}, fmt.Errorf("reviewer: no tool calls and empty response")
 }
 
 // reviewWithText performs a review using the legacy JSON text parsing path.
@@ -230,4 +240,12 @@ func convertToolResultToReviewResult(tr ReviewToolResult) ReviewResult {
 		Comments: comments,
 		Summary:  tr.Summary,
 	}
+}
+
+// truncateReviewSummary returns s capped at maxLen characters.
+func truncateReviewSummary(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }

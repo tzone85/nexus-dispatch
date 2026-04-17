@@ -324,6 +324,12 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 	storyID := ag.Assignment.StoryID
 	branch := ag.Assignment.Branch
 
+	// Wrap context with a 5-minute timeout to prevent pipeline LLM calls
+	// (review, QA, conflict resolution) from blocking indefinitely.
+	pipelineCtx, pipelineCancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer pipelineCancel()
+	ctx = pipelineCtx
+
 	log.Printf("[pipeline] starting post-execution for %s", storyID)
 
 	// Auto-commit any uncommitted work left by the agent.
