@@ -1058,11 +1058,19 @@ func (m *Monitor) handleTechLeadEscalation(ctx context.Context, story PlannedSto
 	}
 
 	// Build SplitChild list from replacements.
+	// Derive Suffix from child ID: if the child ID starts with the parent ID,
+	// the suffix is everything after the parent prefix + "-". Otherwise use
+	// the full child ID as the suffix (guarantees uniqueness).
 	storyData, _ := m.projStore.GetStory(storyID)
 	children := make([]SplitChild, 0, len(replacements))
 	for _, r := range replacements {
+		suffix := r.ID
+		if strings.HasPrefix(r.ID, storyID+"-") {
+			suffix = r.ID[len(storyID)+1:]
+		}
 		children = append(children, SplitChild{
 			ID:                 r.ID,
+			Suffix:             suffix,
 			Title:              r.Title,
 			Description:        r.Description,
 			AcceptanceCriteria: string(r.AcceptanceCriteria),
@@ -1239,7 +1247,7 @@ func ensureGitignorePatterns(worktreePath string) {
 // repos that have no "origin/main".
 func gitDiff(worktreePath string) (string, error) {
 	// Try merge-base candidates in order of preference.
-	candidates := []string{"origin/main", "main"}
+	candidates := []string{"origin/main", "origin/master", "main", "master"}
 	var mbOut []byte
 	var mbErr error
 	for _, ref := range candidates {

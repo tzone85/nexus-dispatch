@@ -251,8 +251,8 @@ func TestValidateSplit_OverlappingFiles(t *testing.T) {
 	esc := NewEscalationMachine(fs, defaultRoutingConfig())
 
 	children := []SplitChild{
-		{OwnedFiles: []string{"src/main.go"}, Complexity: 2},
-		{OwnedFiles: []string{"src/main.go"}, Complexity: 2},
+		{Suffix: "a", OwnedFiles: []string{"src/main.go"}, Complexity: 2},
+		{Suffix: "b", OwnedFiles: []string{"src/main.go"}, Complexity: 2},
 	}
 	if err := esc.ValidateSplit(0, children, 5); err == nil {
 		t.Error("expected error for overlapping files")
@@ -284,8 +284,8 @@ func TestValidateSplit_Valid(t *testing.T) {
 	esc := NewEscalationMachine(fs, defaultRoutingConfig())
 
 	children := []SplitChild{
-		{OwnedFiles: []string{"src/a.go"}, Complexity: 3},
-		{OwnedFiles: []string{"src/b.go"}, Complexity: 2},
+		{Suffix: "a", OwnedFiles: []string{"src/a.go"}, Complexity: 3},
+		{Suffix: "b", OwnedFiles: []string{"src/b.go"}, Complexity: 2},
 	}
 	if err := esc.ValidateSplit(0, children, 5); err != nil {
 		t.Errorf("expected valid split, got error: %v", err)

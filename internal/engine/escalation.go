@@ -143,6 +143,14 @@ func (e *EscalationMachine) ValidateSplit(parentSplitDepth int, children []Split
 		return fmt.Errorf("max split depth (%d) reached", maxSplitDepth)
 	}
 
+	suffixSet := make(map[string]bool, len(children))
+	for _, child := range children {
+		if suffixSet[child.Suffix] {
+			return fmt.Errorf("duplicate child suffix: %q", child.Suffix)
+		}
+		suffixSet[child.Suffix] = true
+	}
+
 	ownedFiles := make(map[string]bool)
 	for _, child := range children {
 		for _, f := range child.OwnedFiles {
