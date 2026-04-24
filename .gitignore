@@ -40,3 +40,13 @@ nxd.yaml
 # Environment
 .env
 .env.local
+
+# VXD agent artifacts (auto-added)
+CLAUDE.md
+.vxd-prompts/
+.serena/
+
+# VXD agent artifacts (auto-added)
+WAVE_CONTEXT.md
+REQUIREMENT.md
+vxd.yaml
