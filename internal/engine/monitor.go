@@ -338,6 +338,30 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 	// the work before checking the diff.
 	autoCommit(ag.WorktreePath, storyID)
 
+	// Scrub hallucinations from the worktree after auto-commit.
+	if cleanedCount := scrubHallucinationsFromWorktree(ag.WorktreePath); cleanedCount > 0 {
+		log.Printf("[pipeline] scrubbed %d hallucinated files for %s", cleanedCount, storyID)
+	}
+
+	// Validate no conflict markers remain in the worktree.
+	if validateNoConflictMarkers(ag.WorktreePath) {
+		log.Printf("[pipeline] WARNING: conflict markers detected for %s", storyID)
+		// Emit event to notify monitoring systems
+		conflictEvt := state.NewEvent(
+			state.EventStoryReviewFailed,
+			"monitor",
+			storyID,
+			map[string]any{"reason": "conflict markers detected in worktree"},
+		)
+		m.eventStore.Append(conflictEvt)
+		m.projStore.Project(conflictEvt)
+	}
+
+	// Validate build (non-blocking - just log warnings).
+	if err := validateBuild(ag.WorktreePath); err != nil {
+		log.Printf("[pipeline] WARNING: build validation failed for %s: %v", storyID, err)
+	}
+
 	// In dry-run mode, simulate a successful agent by writing a placeholder
 	// file and committing it.
 	if m.dryRun {
@@ -402,7 +426,10 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 			}
 		}
 
-		result, err := m.reviewer.Review(ctx, storyID, storyTitle, storyAC, diff, blastRadius)
+		// Capture file tree for reviewer context
+		fileTree := captureFileTree(ag.WorktreePath)
+
+		result, err := m.reviewer.Review(ctx, storyID, storyTitle, storyAC, diff, blastRadius, fileTree)
 		if err != nil {
 			// Fatal API errors (auth failures, billing exhaustion,
 			// permission denied) will never succeed on retry -- pause
@@ -1222,6 +1249,10 @@ func ensureGitignorePatterns(worktreePath string) {
 		"CLAUDE.md",
 		".nxd-prompts/",
 		".serena/",
+		"WAVE_CONTEXT.md",
+		"REQUIREMENT.md",
+		"nxd.yaml",
+		".nxd-fix-gaps.md",
 	}
 
 	giPath := worktreePath + "/.gitignore"
@@ -1296,6 +1327,10 @@ var nxdArtifactPatterns = []string{
 	".nxd-prompts/",
 	".serena/",
 	"dry-run-simulation.txt",
+	"WAVE_CONTEXT.md",
+	"REQUIREMENT.md",
+	"nxd.yaml",
+	".nxd-fix-gaps.md",
 }
 
 func isArtifactFile(path string) bool {
@@ -1418,4 +1453,148 @@ func roleForTier(tier int) agent.Role {
 	default:
 		return agent.RoleSenior
 	}
+}
+
+// ── Guardrail functions ──────────────────────────────────────
+
+// scrubHallucinationsFromWorktree removes potential hallucinated files and
+// returns the count of cleaned files.
+func scrubHallucinationsFromWorktree(worktreePath string) int {
+	// Look for common hallucinated file patterns that agents sometimes create
+	hallucinatedPatterns := []string{
+		"*.tmp",
+		"*.backup",
+		"*~",
+		".DS_Store",
+		"Thumbs.db",
+		"*.swp",
+		"*.swo",
+		"*.orig",
+		"*.rej",
+	}
+
+	cleanedCount := 0
+	for _, pattern := range hallucinatedPatterns {
+		matches, err := filepath.Glob(filepath.Join(worktreePath, pattern))
+		if err != nil {
+			continue
+		}
+		for _, match := range matches {
+			if err := os.Remove(match); err == nil {
+				cleanedCount++
+			}
+		}
+	}
+
+	// Also check for obvious hallucinated directories
+	hallucinatedDirs := []string{
+		filepath.Join(worktreePath, ".vscode"),
+		filepath.Join(worktreePath, ".idea"),
+		filepath.Join(worktreePath, "node_modules"),
+		filepath.Join(worktreePath, "__pycache__"),
+	}
+
+	for _, dir := range hallucinatedDirs {
+		if stat, err := os.Stat(dir); err == nil && stat.IsDir() {
+			if err := os.RemoveAll(dir); err == nil {
+				cleanedCount++
+			}
+		}
+	}
+
+	return cleanedCount
+}
+
+// validateNoConflictMarkers scans for Git conflict markers in the worktree.
+// Returns true if conflict markers are found.
+func validateNoConflictMarkers(worktreePath string) bool {
+	conflictMarkers := []string{"<<<<<<<", "=======", ">>>>>>>"}
+
+	// Get list of text files to check
+	cmd := exec.Command("find", ".", "-type", "f", "-name", "*.go", "-o", "-name", "*.py", "-o", "-name", "*.js", "-o", "-name", "*.ts", "-o", "-name", "*.md", "-o", "-name", "*.txt", "-o", "-name", "*.yml", "-o", "-name", "*.yaml")
+	cmd.Dir = worktreePath
+	out, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+
+	files := strings.Split(strings.TrimSpace(string(out)), "\n")
+	for _, file := range files {
+		if file == "" {
+			continue
+		}
+
+		fullPath := filepath.Join(worktreePath, file)
+		content, err := os.ReadFile(fullPath)
+		if err != nil {
+			continue
+		}
+
+		contentStr := string(content)
+		for _, marker := range conflictMarkers {
+			if strings.Contains(contentStr, marker) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// validateBuild attempts to build the project and returns an error if it fails.
+// This is a non-blocking validation that logs warnings on failure.
+func validateBuild(worktreePath string) error {
+	// Try Go build first
+	if _, err := os.Stat(filepath.Join(worktreePath, "go.mod")); err == nil {
+		cmd := exec.Command("go", "build", "./...")
+		cmd.Dir = worktreePath
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("go build failed: %v\nOutput: %s", err, string(out))
+		}
+		return nil
+	}
+
+	// Try npm/yarn if package.json exists
+	if _, err := os.Stat(filepath.Join(worktreePath, "package.json")); err == nil {
+		// Try npm first
+		cmd := exec.Command("npm", "run", "build")
+		cmd.Dir = worktreePath
+		if _, err := cmd.CombinedOutput(); err == nil {
+			return nil
+		}
+
+		// Try yarn
+		cmd = exec.Command("yarn", "build")
+		cmd.Dir = worktreePath
+		if _, err := cmd.CombinedOutput(); err == nil {
+			return nil
+		}
+
+		return fmt.Errorf("npm/yarn build failed")
+	}
+
+	// Try make if Makefile exists
+	if _, err := os.Stat(filepath.Join(worktreePath, "Makefile")); err == nil {
+		cmd := exec.Command("make")
+		cmd.Dir = worktreePath
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("make failed: %v\nOutput: %s", err, string(out))
+		}
+		return nil
+	}
+
+	// No build system detected, skip validation
+	return nil
+}
+
+// captureFileTree runs git ls-files in the worktree and returns trimmed output.
+// Returns empty string on error.
+func captureFileTree(worktreePath string) string {
+	cmd := exec.Command("git", "ls-files")
+	cmd.Dir = worktreePath
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
