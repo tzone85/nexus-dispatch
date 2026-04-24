@@ -793,7 +793,26 @@ func (m *Monitor) dispatchNextWave(ctx context.Context, rc *RunContext, repoDir 
 		return nil
 	}
 	if len(assignments) == 0 {
-		log.Printf("[auto-resume] no stories ready for next wave (dependencies not met)")
+		// Stall detection: check if stories remain but none are dispatchable
+		pendingCount := 0
+		for _, s := range stories {
+			if s.Status != "merged" && s.Status != "split" && s.Status != "pr_submitted" {
+				pendingCount++
+			}
+		}
+		if pendingCount > 0 {
+			log.Printf("[STALL] requirement %s has %d unfinished stories but none are dispatchable — all escalation tiers exhausted or dependencies unmet", rc.ReqID, pendingCount)
+			log.Printf("[STALL] run 'nxd status --req %s' to inspect, then 'nxd resume %s --godmode' to retry", rc.ReqID, rc.ReqID)
+			stallEvt := state.NewEvent("PIPELINE_STALLED", "monitor", "", map[string]any{
+				"req_id":        rc.ReqID,
+				"pending_count": pendingCount,
+				"total_stories": len(stories),
+				"reason":        "no dispatchable stories — escalation tiers exhausted",
+			})
+			m.eventStore.Append(stallEvt)
+		} else {
+			log.Printf("[auto-resume] no stories ready for next wave (dependencies not met)")
+		}
 		return nil
 	}
 
