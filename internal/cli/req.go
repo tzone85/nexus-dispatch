@@ -125,6 +125,14 @@ func runReq(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("determine working directory: %w", err)
 	}
 
+	// ZeeSpec adoption: if a .spec/ folder exists in the target repo,
+	// prepend its assembled content to the requirement so the planner sees
+	// structured 5W1H context. Reduces hallucination on greenfield setup.
+	if specCtx := LoadSpecForRequirement(repoPath); specCtx != "" {
+		fmt.Fprintf(out, "[spec] augmenting requirement with .spec/ context (%d bytes)\n", len(specCtx))
+		requirement = specCtx + "\n---\n\n# User requirement\n\n" + requirement
+	}
+
 	planner := engine.NewPlanner(client, s.Config, s.Events, s.Proj)
 	planner.SetProjectDir(expandHome(s.Config.Workspace.StateDir))
 

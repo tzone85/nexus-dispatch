@@ -51,6 +51,7 @@ func init() {
 	rootCmd.AddCommand(newLogsCmd())
 	rootCmd.AddCommand(newDiffCmd())
 	rootCmd.AddCommand(newLearnCmd())
+	rootCmd.AddCommand(newSpecCmd())
 }
 
 func Execute() error {
