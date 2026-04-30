@@ -2,8 +2,104 @@ package engine
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 )
+
+// stripJSONComments removes `// ...` line comments and trailing commas from
+// LLM-generated JSON. Strict JSON forbids both, but small models commonly
+// emit them. Comments inside string literals are preserved.
+//
+// This is a forgiving pre-processor — it makes a best effort, then the
+// caller still validates with json.Valid.
+func stripJSONComments(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	inString := false
+	escape := false
+	i := 0
+	for i < len(s) {
+		c := s[i]
+		if inString {
+			b.WriteByte(c)
+			if escape {
+				escape = false
+			} else if c == '\\' {
+				escape = true
+			} else if c == '"' {
+				inString = false
+			}
+			i++
+			continue
+		}
+		if c == '"' {
+			inString = true
+			b.WriteByte(c)
+			i++
+			continue
+		}
+		// Strip // comments to end of line.
+		if c == '/' && i+1 < len(s) && s[i+1] == '/' {
+			j := i + 2
+			for j < len(s) && s[j] != '\n' {
+				j++
+			}
+			i = j
+			continue
+		}
+		// Strip /* ... */ block comments.
+		if c == '/' && i+1 < len(s) && s[i+1] == '*' {
+			j := i + 2
+			for j+1 < len(s) && !(s[j] == '*' && s[j+1] == '/') {
+				j++
+			}
+			i = j + 2
+			continue
+		}
+		b.WriteByte(c)
+		i++
+	}
+	out := b.String()
+	// Trailing commas before } or ] are illegal in JSON; remove them.
+	out = trailingCommaRe.ReplaceAllString(out, "$1")
+	return out
+}
+
+// trailingCommaRe matches `,` followed by optional whitespace and a closing
+// bracket. Used by stripJSONComments to clean up LLM-emitted trailing commas.
+var trailingCommaRe = mustCompileTrailingCommaRe()
+
+func mustCompileTrailingCommaRe() trailingCommaPattern {
+	return trailingCommaPattern{}
+}
+
+// Tiny inline matcher to avoid pulling in regexp at the very top of the
+// engine package's init for one pattern. We just look for `,<ws>}` or
+// `,<ws>]` and rewrite. Implemented as a small struct with a method to
+// keep the API symmetric with regexp.
+type trailingCommaPattern struct{}
+
+func (trailingCommaPattern) ReplaceAllString(in, _ string) string {
+	var b strings.Builder
+	b.Grow(len(in))
+	i := 0
+	for i < len(in) {
+		if in[i] == ',' {
+			j := i + 1
+			for j < len(in) && (in[j] == ' ' || in[j] == '\t' || in[j] == '\n' || in[j] == '\r') {
+				j++
+			}
+			if j < len(in) && (in[j] == '}' || in[j] == ']') {
+				// skip the comma
+				i++
+				continue
+			}
+		}
+		b.WriteByte(in[i])
+		i++
+	}
+	return b.String()
+}
 
 // extractJSON strips markdown code fences and conversational preambles
 // from LLM responses so the content can be passed to json.Unmarshal.
@@ -11,6 +107,10 @@ import (
 //  1. Pure JSON: returned as-is
 //  2. Code-fenced JSON (```json ... ```): fence stripped, optional preamble OK
 //  3. Preamble + JSON (e.g. "Here you go: [...]"): preamble stripped
+//
+// Also strips `//` line comments and `/* */` block comments which small
+// models routinely insert despite "JSON only" instructions, and removes
+// trailing commas before } or ].
 func extractJSON(raw string) string {
 	s := strings.TrimSpace(raw)
 	if s == "" {
@@ -28,7 +128,7 @@ func extractJSON(raw string) string {
 		if fenceEnd := strings.Index(inner, "```"); fenceEnd != -1 {
 			inner = inner[:fenceEnd]
 		}
-		return strings.TrimSpace(inner)
+		return stripJSONComments(strings.TrimSpace(inner))
 	}
 
 	// Pattern 3: depth-aware bracket matching (handles nested objects/arrays
@@ -101,6 +201,11 @@ func extractJSON(raw string) string {
 			if json.Valid([]byte(candidate)) {
 				return candidate
 			}
+			// Try after stripping LLM-style line comments / trailing commas.
+			cleaned := stripJSONComments(candidate)
+			if json.Valid([]byte(cleaned)) {
+				return cleaned
+			}
 		}
 		// This candidate didn't balance or wasn't valid JSON — try the next
 		// openCh occurrence.
@@ -136,4 +241,48 @@ func (f *FlexibleString) UnmarshalJSON(data []byte) error {
 	// Fallback: store raw
 	*f = FlexibleString(string(data))
 	return nil
+}
+
+// FlexibleStringSlice unmarshals either a JSON array of strings, a single
+// string (split on commas), or null into a []string. Live-test discovery:
+// small models routinely emit owned_files / depends_on as a single string
+// like "src/foo.go, src/bar.go" instead of the requested array, blowing up
+// strict json.Unmarshal.
+type FlexibleStringSlice []string
+
+func (f *FlexibleStringSlice) UnmarshalJSON(data []byte) error {
+	// Null / empty → empty slice.
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "null" || trimmed == "" {
+		*f = nil
+		return nil
+	}
+
+	// Try array of strings (the canonical shape).
+	var arr []string
+	if err := json.Unmarshal(data, &arr); err == nil {
+		*f = arr
+		return nil
+	}
+
+	// Try single string — split on commas.
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		if strings.TrimSpace(s) == "" {
+			*f = nil
+			return nil
+		}
+		parts := strings.Split(s, ",")
+		out := make([]string, 0, len(parts))
+		for _, p := range parts {
+			p = strings.TrimSpace(p)
+			if p != "" {
+				out = append(out, p)
+			}
+		}
+		*f = out
+		return nil
+	}
+
+	return fmt.Errorf("FlexibleStringSlice: cannot decode %s", string(data))
 }

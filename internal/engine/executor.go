@@ -585,16 +585,46 @@ func (e *Executor) spawnNative(ctx context.Context, repoDir string, a Assignment
 
 // configCriteriaToRuntime converts config.SuccessCriterion slice to
 // criteria.Criterion slice for use by the native runtime.
+//
+// Live-test discovery (LB6): for `command_succeeds` and `test_passes` the
+// Target IS the command (e.g. "go build ./..."). Config users typically put
+// it in `value:`. Earlier code mapped only `path → Target`, which produced
+// an empty Target for command-style criteria and made every story fail
+// with "command rejected by allowlist:" before even running.
+//
+// Mapping rules:
+//   - command_succeeds / test_passes: command lives in value, fall back to path
+//   - file_exists / file_contains: path is the target
+//   - coverage_above: path = package, value = threshold
 func configCriteriaToRuntime(cfgCriteria []config.SuccessCriterion) []criteria.Criterion {
 	if len(cfgCriteria) == 0 {
 		return nil
 	}
 	result := make([]criteria.Criterion, 0, len(cfgCriteria))
 	for _, c := range cfgCriteria {
+		var target, expected string
+		switch c.Kind {
+		case "command_succeeds", "test_passes":
+			target = c.Value
+			if target == "" {
+				target = c.Path // backwards compat for misconfigured YAML
+			}
+		case "file_contains":
+			target = c.Path
+			expected = c.Value
+		case "coverage_above":
+			target = c.Path
+			expected = c.Value
+		case "file_exists":
+			target = c.Path
+		default:
+			target = c.Path
+			expected = c.Value
+		}
 		result = append(result, criteria.Criterion{
 			Type:     criteria.Type(c.Kind),
-			Target:   c.Path,
-			Expected: c.Value,
+			Target:   target,
+			Expected: expected,
 		})
 	}
 	return result

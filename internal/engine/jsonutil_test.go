@@ -87,3 +87,30 @@ func TestFlexibleString(t *testing.T) {
 		})
 	}
 }
+
+func TestExtractJSON_StripsLineComments(t *testing.T) {
+	in := `[
+		{"id": "s-001", "title": "x"} // first story
+		,{"id": "s-002", "title": "y"}, // trailing comma!
+	]`
+	got := extractJSON(in)
+	if !json.Valid([]byte(got)) {
+		t.Errorf("expected valid JSON after stripping, got: %s", got)
+	}
+}
+
+func TestExtractJSON_StripsBlockComments(t *testing.T) {
+	in := `{"a": 1 /* inline */, "b": 2}`
+	got := extractJSON(in)
+	if !json.Valid([]byte(got)) {
+		t.Errorf("expected valid JSON, got: %s", got)
+	}
+}
+
+func TestExtractJSON_StripsTrailingComma(t *testing.T) {
+	in := `{"a": 1, "b": 2,}`
+	got := extractJSON(in)
+	if !json.Valid([]byte(got)) {
+		t.Errorf("expected valid JSON, got: %s", got)
+	}
+}

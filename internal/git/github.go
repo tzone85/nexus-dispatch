@@ -120,8 +120,33 @@ func RemoveWorktree(repoDir, worktreePath, branch string) error {
 	return nil
 }
 
-// FetchBranch fetches a single branch from origin.
+// HasRemote reports whether the given remote exists in repoDir.
+func HasRemote(repoDir, remote string) bool {
+	cmd := exec.Command("git", "remote")
+	cmd.Dir = repoDir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.TrimSpace(line) == remote {
+			return true
+		}
+	}
+	return false
+}
+
+// FetchBranch fetches a single branch from origin. If the repo has no
+// `origin` remote (local-only setup), the fetch is skipped without error
+// — the rebase target falls back to the local branch.
 func FetchBranch(repoDir, branch string) error {
+	// Live-test discovery (LB7): local-only repos (no `origin` remote) hit
+	// `fatal: 'origin' does not appear to be a git repository`. Detect that
+	// up-front and skip the fetch — the rebase will use the local main.
+	if !HasRemote(repoDir, "origin") {
+		return nil
+	}
+
 	cmd := exec.Command("git", "fetch", "origin", branch)
 	cmd.Dir = repoDir
 	out, err := cmd.CombinedOutput()

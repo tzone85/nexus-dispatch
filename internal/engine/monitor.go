@@ -646,7 +646,12 @@ func (m *Monitor) rebaseAndMerge(ctx context.Context, storyID, branch, repoDir, 
 		return MergeResult{}, fmt.Errorf("fetch %s: %w", baseBranch, err)
 	}
 
+	// LB7: prefer origin/<base> when remote exists, fall back to local
+	// <base> for local-only repos.
 	upstream := "origin/" + baseBranch
+	if !nxdgit.HasRemote(repoDir, "origin") {
+		upstream = baseBranch
+	}
 
 	if m.conflictResolver != nil {
 		// Use LLM-powered conflict resolution during rebase.

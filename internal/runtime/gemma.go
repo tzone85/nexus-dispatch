@@ -574,6 +574,12 @@ func (g *GemmaRuntime) execReadFile(call llm.ToolCall, workDir string) llm.ToolC
 		return result
 	}
 
+	if strings.TrimSpace(args.Path) == "" {
+		result.IsError = true
+		result.Content = "read_file requires a non-empty path argument"
+		return result
+	}
+
 	absPath, err := safePath(args.Path, workDir)
 	if err != nil {
 		result.IsError = true
@@ -603,6 +609,15 @@ func (g *GemmaRuntime) execWriteFile(call llm.ToolCall, workDir string) llm.Tool
 	if err := json.Unmarshal(call.Arguments, &args); err != nil {
 		result.IsError = true
 		result.Content = fmt.Sprintf("invalid arguments: %v", err)
+		return result
+	}
+
+	// Live-test discovery: small models sometimes call write_file with an
+	// empty path (or just whitespace), producing an error message of "wrote
+	// : failed". Reject early with an actionable message.
+	if strings.TrimSpace(args.Path) == "" {
+		result.IsError = true
+		result.Content = "write_file requires a non-empty path argument (e.g. \"path\": \"internal/game/board.go\")"
 		return result
 	}
 
@@ -694,7 +709,25 @@ func (g *GemmaRuntime) execRunCommand(call llm.ToolCall, workDir string) llm.Too
 	// Check command against allowlist using safe binary extraction.
 	if !isCommandAllowed(args.Command, g.config.CommandAllowlist) {
 		result.IsError = true
-		result.Content = fmt.Sprintf("command not in allowlist: %s", args.Command)
+		// Live-test discovery: small models default to `mkdir -p X` to set up
+		// directories, but write_file already auto-creates parents. Steer the
+		// model to the right tool instead of just rejecting.
+		hint := ""
+		trimmed := strings.TrimSpace(args.Command)
+		switch {
+		case strings.HasPrefix(trimmed, "mkdir"),
+			strings.HasPrefix(trimmed, "touch"),
+			strings.HasPrefix(trimmed, "cd "),
+			trimmed == "cd",
+			strings.HasPrefix(trimmed, "pwd"),
+			strings.HasPrefix(trimmed, "ls"):
+			hint = "\nhint: use the write_file tool — it creates parent directories automatically. mkdir/touch/cd/ls/pwd are not needed."
+		case strings.HasPrefix(trimmed, "rm"),
+			strings.HasPrefix(trimmed, "mv"),
+			strings.HasPrefix(trimmed, "cp"):
+			hint = "\nhint: file mutation is intentionally blocked. Use write_file or edit_file. To delete a file, write empty content."
+		}
+		result.Content = fmt.Sprintf("command not in allowlist: %s%s", args.Command, hint)
 		return result
 	}
 

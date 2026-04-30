@@ -243,16 +243,27 @@ func TestRemoveWorktree_InvalidPath(t *testing.T) {
 	}
 }
 
-// TestFetchBranch_NoRemote tests FetchBranch when there is no remote.
+// TestFetchBranch_NoRemote verifies FetchBranch is a no-op for local-only
+// repos (LB7 fix). Previously this test asserted an error was returned;
+// after the live-test fix, FetchBranch returns nil so callers (rebaseAndMerge)
+// can fall back to the local base branch instead of failing.
 func TestFetchBranch_NoRemote(t *testing.T) {
 	dir := helperInitRepo(t)
 
-	err := FetchBranch(dir, "main")
-	if err == nil {
-		t.Fatal("FetchBranch should fail when no remote is configured")
+	if err := FetchBranch(dir, "main"); err != nil {
+		t.Fatalf("FetchBranch should be a no-op for local-only repos, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "git fetch") {
-		t.Errorf("error should mention 'git fetch', got: %v", err)
+}
+
+// TestHasRemote covers the helper added alongside FetchBranch (LB7).
+func TestHasRemote(t *testing.T) {
+	dir := helperInitRepo(t)
+	if HasRemote(dir, "origin") {
+		t.Error("expected no origin in fresh local repo")
+	}
+	helperRun(t, dir, "git", "remote", "add", "origin", "/tmp/fake-remote")
+	if !HasRemote(dir, "origin") {
+		t.Error("expected origin to be detected after add")
 	}
 }
 

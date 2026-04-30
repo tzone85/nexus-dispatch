@@ -82,19 +82,28 @@ func TestConfigCriteriaToRuntime_Converts(t *testing.T) {
 	input := []config.SuccessCriterion{
 		{Kind: "file_exists", Path: "go.mod"},
 		{Kind: "command_succeeds", Value: "go build ./..."},
+		{Kind: "test_passes", Value: "go test ./..."},
+		{Kind: "file_contains", Path: "main.go", Value: "package main"},
 	}
 	result := configCriteriaToRuntime(input)
-	if len(result) != 2 {
-		t.Fatalf("expected 2 criteria, got %d", len(result))
+	if len(result) != 4 {
+		t.Fatalf("expected 4 criteria, got %d", len(result))
 	}
-	if string(result[0].Type) != "file_exists" {
-		t.Errorf("criteria[0].Type = %q, want file_exists", result[0].Type)
+	// file_exists: path → target
+	if string(result[0].Type) != "file_exists" || result[0].Target != "go.mod" {
+		t.Errorf("criteria[0] = %+v, want file_exists/go.mod", result[0])
 	}
-	if result[0].Target != "go.mod" {
-		t.Errorf("criteria[0].Target = %q, want go.mod", result[0].Target)
+	// command_succeeds: value → target (LB6 fix; was Expected before)
+	if result[1].Target != "go build ./..." {
+		t.Errorf("criteria[1].Target = %q, want 'go build ./...'", result[1].Target)
 	}
-	if result[1].Expected != "go build ./..." {
-		t.Errorf("criteria[1].Expected = %q, want 'go build ./...'", result[1].Expected)
+	// test_passes: value → target
+	if result[2].Target != "go test ./..." {
+		t.Errorf("criteria[2].Target = %q, want 'go test ./...'", result[2].Target)
+	}
+	// file_contains: path → target, value → expected
+	if result[3].Target != "main.go" || result[3].Expected != "package main" {
+		t.Errorf("criteria[3] = %+v, want target=main.go expected=package main", result[3])
 	}
 }
 

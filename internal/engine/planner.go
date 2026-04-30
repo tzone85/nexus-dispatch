@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 
 	"github.com/tzone85/nexus-dispatch/internal/agent"
 	"github.com/tzone85/nexus-dispatch/internal/config"
@@ -147,7 +148,9 @@ Respond with a JSON array of stories. Each story must have:
 IMPORTANT:
 - Every story MUST produce code changes (new files or modifications to existing files). Do NOT create read-only "assessment" or "analysis" stories — agents that produce no code changes will be marked as failed.
 - For existing codebases: skip scaffolding. The first story should write actual code.
-- For new projects: the first story (s-001) should create the directory structure and initial files.
+- For new projects: the first story (s-001) should create the directory structure and initial files (e.g. go.mod, package.json, README.md, base directories).
+- For new projects: ALL OTHER stories MUST list s-001 in their depends_on. They cannot run until project setup is in place. Failing to chain dependencies here will cause every parallel agent to fail because shared scaffolding does not yet exist.
+- Stories that depend on output from another story (e.g. consume a type defined in another story) MUST list that story in their depends_on.
 - All stories MUST reference specific file paths in their descriptions.
 - Distribute work across different files to minimize merge conflicts between parallel agents.
 - Each file path MUST appear in exactly ONE story's owned_files — no overlapping file ownership between stories.
@@ -258,6 +261,32 @@ architecture and conventions when planning stories.`, profileContext)
 	for _, s := range stories {
 		if p.config.Planning.MaxStoryComplexity > 0 && s.Complexity > p.config.Planning.MaxStoryComplexity {
 			return PlanResult{}, fmt.Errorf("story %s complexity %d exceeds max %d", s.ID, s.Complexity, p.config.Planning.MaxStoryComplexity)
+		}
+	}
+
+	// Live-test discovery: small models often return greenfield plans with
+	// every depends_on empty, so all stories race in parallel and all fail
+	// because scaffolding (go.mod, package.json) does not exist yet. If the
+	// plan has 3+ stories AND zero declared dependencies AND looks like a
+	// greenfield project (first story title mentions "setup"/"init"/"scaffold"),
+	// auto-chain stories 2..N to depend on story 1 and log a warning.
+	if len(stories) >= 3 {
+		hasAnyDep := false
+		for _, s := range stories {
+			if len(s.DependsOn) > 0 {
+				hasAnyDep = true
+				break
+			}
+		}
+		if !hasAnyDep {
+			firstTitle := strings.ToLower(stories[0].Title + " " + stories[0].Description)
+			if strings.Contains(firstTitle, "setup") || strings.Contains(firstTitle, "init") || strings.Contains(firstTitle, "scaffold") || strings.Contains(firstTitle, "structure") {
+				log.Printf("[planner] greenfield plan with zero dependencies detected — auto-chaining stories 2..%d to depend on %s (override the LLM)", len(stories), stories[0].ID)
+				firstID := stories[0].ID
+				for i := 1; i < len(stories); i++ {
+					stories[i].DependsOn = append(stories[i].DependsOn, firstID)
+				}
+			}
 		}
 	}
 
@@ -411,11 +440,38 @@ Respond ONLY with the JSON array, no other text.`, reqTitle, storyID, storyTitle
 // parseStoriesFromText extracts PlannedStory values from a plain-text JSON
 // response. This is the fallback path for models that do not support native
 // tool calling.
+//
+// Live-test discovery: small models (Gemma) return owned_files / depends_on
+// as a comma-separated string instead of an array, so we parse via a lenient
+// intermediate struct using FlexibleStringSlice and then convert.
 func parseStoriesFromText(content string) ([]PlannedStory, error) {
-	var stories []PlannedStory
+	type lenientStory struct {
+		ID                 string              `json:"id"`
+		Title              string              `json:"title"`
+		Description        string              `json:"description"`
+		AcceptanceCriteria FlexibleString      `json:"acceptance_criteria"`
+		Complexity         int                 `json:"complexity"`
+		DependsOn          FlexibleStringSlice `json:"depends_on"`
+		OwnedFiles         FlexibleStringSlice `json:"owned_files"`
+		WaveHint           string              `json:"wave_hint"`
+	}
+	var lenient []lenientStory
 	cleaned := extractJSON(content)
-	if err := json.Unmarshal([]byte(cleaned), &stories); err != nil {
+	if err := json.Unmarshal([]byte(cleaned), &lenient); err != nil {
 		return nil, fmt.Errorf("parse stories: %w (response: %s)", err, content)
+	}
+	stories := make([]PlannedStory, len(lenient))
+	for i, l := range lenient {
+		stories[i] = PlannedStory{
+			ID:                 l.ID,
+			Title:              l.Title,
+			Description:        l.Description,
+			AcceptanceCriteria: l.AcceptanceCriteria,
+			Complexity:         l.Complexity,
+			DependsOn:          []string(l.DependsOn),
+			OwnedFiles:         []string(l.OwnedFiles),
+			WaveHint:           l.WaveHint,
+		}
 	}
 	return stories, nil
 }
