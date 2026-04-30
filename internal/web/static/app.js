@@ -8,9 +8,18 @@ let activeFilter = "all";
 let confirmCallback = null;
 
 // ── WebSocket connection ─────────────────────────────────────────────
+// C1: forward the auth token from the query string to the WebSocket upgrade.
+// The dashboard URL printed by the CLI carries ?token=<hex>; without it the
+// server returns 401 on /ws.
+function getAuthToken() {
+  const params = new URLSearchParams(location.search);
+  return params.get("token") || "";
+}
+
 function connect() {
   const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-  ws = new WebSocket(`${protocol}//${location.host}/ws`);
+  const token = encodeURIComponent(getAuthToken());
+  ws = new WebSocket(`${protocol}//${location.host}/ws?token=${token}`);
 
   ws.onopen = () => {
     reconnectDelay = 1000;
@@ -518,15 +527,21 @@ function renderRecoveryLog(items) {
 /** Status → fill color for DAG nodes. */
 function dagNodeColor(status) {
   switch (status) {
-    case "merged":       return "#00CC66";
-    case "in_progress":  return "#00CCCC";
+    case "merged":
+      return "#00CC66";
+    case "in_progress":
+      return "#00CCCC";
     case "review":
-    case "qa":           return "#FF9933";
+    case "qa":
+      return "#FF9933";
     case "draft":
     case "planned":
-    case "assigned":     return "#555555";
-    case "split":        return "#6f42c1";
-    default:             return "#333333";
+    case "assigned":
+      return "#555555";
+    case "split":
+      return "#6f42c1";
+    default:
+      return "#333333";
   }
 }
 
@@ -546,7 +561,9 @@ function renderDAG(dag, stories) {
 
   // Build status lookup from stories array.
   var statusMap = {};
-  (stories || []).forEach(function (s) { statusMap[s.id] = s.status; });
+  (stories || []).forEach(function (s) {
+    statusMap[s.id] = s.status;
+  });
 
   // Group nodes by wave.
   var waves = {};
@@ -559,7 +576,12 @@ function renderDAG(dag, stories) {
   });
 
   // Layout parameters.
-  var nodeW = 120, nodeH = 32, padX = 60, padY = 20, marginL = 30, marginT = 40;
+  var nodeW = 120,
+    nodeH = 32,
+    padX = 60,
+    padY = 20,
+    marginL = 30,
+    marginT = 40;
   var waveCount = maxWave + 1;
 
   // Compute positions: { id: {x, y} }.
@@ -575,18 +597,30 @@ function renderDAG(dag, stories) {
 
   // Determine max row count for SVG height.
   var maxRows = 0;
-  for (var wk in waves) { if (waves[wk].length > maxRows) maxRows = waves[wk].length; }
+  for (var wk in waves) {
+    if (waves[wk].length > maxRows) maxRows = waves[wk].length;
+  }
 
   var svgW = marginL * 2 + waveCount * (nodeW + padX);
   var svgH = marginT + maxRows * (nodeH + padY) + 20;
 
   // Build SVG.
-  var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + svgW + '" height="' + svgH + '" style="background:#111;border-radius:6px">';
+  var svg =
+    '<svg xmlns="http://www.w3.org/2000/svg" width="' +
+    svgW +
+    '" height="' +
+    svgH +
+    '" style="background:#111;border-radius:6px">';
 
   // Wave band labels.
   for (var wb = 0; wb <= maxWave; wb++) {
     var bx = marginL + wb * (nodeW + padX) + nodeW / 2;
-    svg += '<text x="' + bx + '" y="18" fill="#00CCCC" font-size="11" text-anchor="middle" font-family="monospace">Wave ' + wb + '</text>';
+    svg +=
+      '<text x="' +
+      bx +
+      '" y="18" fill="#00CCCC" font-size="11" text-anchor="middle" font-family="monospace">Wave ' +
+      wb +
+      "</text>";
   }
 
   // Edges.
@@ -598,11 +632,21 @@ function renderDAG(dag, stories) {
     var y1 = from.y + nodeH / 2;
     var x2 = to.x + nodeW;
     var y2 = to.y + nodeH / 2;
-    svg += '<line x1="' + x1 + '" y1="' + y1 + '" x2="' + x2 + '" y2="' + y2 + '" stroke="#444" stroke-width="1.5" marker-end="url(#arrow)"/>';
+    svg +=
+      '<line x1="' +
+      x1 +
+      '" y1="' +
+      y1 +
+      '" x2="' +
+      x2 +
+      '" y2="' +
+      y2 +
+      '" stroke="#444" stroke-width="1.5" marker-end="url(#arrow)"/>';
   });
 
   // Arrow marker.
-  svg += '<defs><marker id="arrow" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#444"/></marker></defs>';
+  svg +=
+    '<defs><marker id="arrow" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#444"/></marker></defs>';
 
   // Nodes.
   dag.nodes.forEach(function (n) {
@@ -610,11 +654,29 @@ function renderDAG(dag, stories) {
     if (!p) return;
     var color = dagNodeColor(statusMap[n.id] || "draft");
     var label = n.id.length > 14 ? n.id.substring(0, 14) : n.id;
-    svg += '<rect x="' + p.x + '" y="' + p.y + '" width="' + nodeW + '" height="' + nodeH + '" rx="4" fill="' + color + '" opacity="0.85"/>';
-    svg += '<text x="' + (p.x + nodeW / 2) + '" y="' + (p.y + nodeH / 2 + 4) + '" fill="#fff" font-size="10" text-anchor="middle" font-family="monospace">' + esc(label) + '</text>';
+    svg +=
+      '<rect x="' +
+      p.x +
+      '" y="' +
+      p.y +
+      '" width="' +
+      nodeW +
+      '" height="' +
+      nodeH +
+      '" rx="4" fill="' +
+      color +
+      '" opacity="0.85"/>';
+    svg +=
+      '<text x="' +
+      (p.x + nodeW / 2) +
+      '" y="' +
+      (p.y + nodeH / 2 + 4) +
+      '" fill="#fff" font-size="10" text-anchor="middle" font-family="monospace">' +
+      esc(label) +
+      "</text>";
   });
 
-  svg += '</svg>';
+  svg += "</svg>";
   container.innerHTML = svg;
 }
 

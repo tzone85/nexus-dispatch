@@ -60,6 +60,12 @@ func NewReviewer(client llm.Client, provider, model string, maxTokens int, es st
 // contains parseable JSON text, the text path is attempted without an
 // additional LLM call. A separate text-only LLM call is made only when
 // the provider does not support tools.
+//
+// VXD Phase 1.4 (M10): the variadic `extra` parameter accepts up to two
+// optional strings — extra[0] is the blast-radius context (existing) and
+// extra[1] is the worktree file tree (`git ls-files` output) so the
+// reviewer doesn't hallucinate "missing file X" when X is in the repo
+// but unchanged.
 func (r *Reviewer) Review(ctx context.Context, storyID, title, acceptanceCriteria, diff string, extra ...string) (ReviewResult, error) {
 	if diff == "" {
 		return ReviewResult{}, fmt.Errorf("empty diff for story %s", storyID)
@@ -71,11 +77,17 @@ func (r *Reviewer) Review(ctx context.Context, storyID, title, acceptanceCriteri
 		blastRadiusCtx = "\n" + extra[0] + "\n"
 	}
 
+	// VXD Phase 1.4: optional worktree file tree.
+	fileTreeCtx := ""
+	if len(extra) > 1 && extra[1] != "" {
+		fileTreeCtx = "\n\nWorktree files (git ls-files):\n" + extra[1] + "\n"
+	}
+
 	prompt := fmt.Sprintf(`Review this code change for the following story:
 
 Story: %s
 Acceptance Criteria: %s
-%s
+%s%s
 Diff:
 %s
 
@@ -85,7 +97,9 @@ Review the code for:
 3. Test coverage - are changes tested?
 4. Security - any vulnerabilities?
 5. Performance - any obvious issues?
-6. Blast radius - if blast radius analysis is provided above, check whether high-risk callers or dependents might break.`, title, acceptanceCriteria, blastRadiusCtx, diff)
+6. Blast radius - if blast radius analysis is provided above, check whether high-risk callers or dependents might break.
+
+Do NOT claim a file is missing if it appears in the worktree files list above.`, title, acceptanceCriteria, blastRadiusCtx, fileTreeCtx, diff)
 
 	systemPrompt := "You are a Senior code reviewer. Review code changes and provide structured feedback."
 

@@ -5,69 +5,113 @@ import (
 	"strings"
 )
 
-// extractJSON strips markdown code fences from LLM responses so that the
-// content can be passed to json.Unmarshal. Many models wrap JSON output in
-// ```json ... ``` even when instructed not to.
+// extractJSON strips markdown code fences and conversational preambles
+// from LLM responses so the content can be passed to json.Unmarshal.
+// Handles three common LLM output patterns:
+//  1. Pure JSON: returned as-is
+//  2. Code-fenced JSON (```json ... ```): fence stripped, optional preamble OK
+//  3. Preamble + JSON (e.g. "Here you go: [...]"): preamble stripped
 func extractJSON(raw string) string {
 	s := strings.TrimSpace(raw)
-
-	// Strip ```json ... ``` or ``` ... ```
-	if strings.HasPrefix(s, "```") {
-		// Remove opening fence (with optional language tag)
-		if idx := strings.Index(s, "\n"); idx != -1 {
-			s = s[idx+1:]
-		}
-		// Remove closing fence
-		if idx := strings.LastIndex(s, "```"); idx != -1 {
-			s = s[:idx]
-		}
-		s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
 	}
 
-	// If the response still doesn't start with JSON, find the first
-	// JSON array or object marker. LLMs (especially when plugins inject
-	// preamble text) may prepend non-JSON content before the actual payload.
-	if len(s) > 0 && s[0] != '[' && s[0] != '{' {
-		// Look for a code fence that contains JSON
-		if fenceIdx := strings.Index(s, "```json"); fenceIdx != -1 {
-			inner := s[fenceIdx+7:]
-			if endIdx := strings.Index(inner, "```"); endIdx != -1 {
-				return strings.TrimSpace(inner[:endIdx])
-			}
+	// Pattern 2: code fence (anywhere — covers preamble + fenced cases)
+	if fenceStart := strings.Index(s, "```"); fenceStart != -1 {
+		inner := s[fenceStart+3:]
+		// Skip optional language tag (everything up to first newline)
+		if nl := strings.Index(inner, "\n"); nl != -1 {
+			inner = inner[nl+1:]
 		}
-		if fenceIdx := strings.Index(s, "```\n"); fenceIdx != -1 {
-			inner := s[fenceIdx+4:]
-			if endIdx := strings.Index(inner, "```"); endIdx != -1 {
-				return strings.TrimSpace(inner[:endIdx])
-			}
+		// Strip closing fence
+		if fenceEnd := strings.Index(inner, "```"); fenceEnd != -1 {
+			inner = inner[:fenceEnd]
 		}
-
-		// Fallback: find the first [ or { and extract from there
-		arrIdx := strings.Index(s, "[")
-		objIdx := strings.Index(s, "{")
-		startIdx := -1
-		if arrIdx >= 0 && (objIdx < 0 || arrIdx < objIdx) {
-			startIdx = arrIdx
-		} else if objIdx >= 0 {
-			startIdx = objIdx
-		}
-		if startIdx >= 0 {
-			s = s[startIdx:]
-			// Find the matching closing bracket
-			if s[0] == '[' {
-				if endIdx := strings.LastIndex(s, "]"); endIdx >= 0 {
-					s = s[:endIdx+1]
-				}
-			} else {
-				if endIdx := strings.LastIndex(s, "}"); endIdx >= 0 {
-					s = s[:endIdx+1]
-				}
-			}
-			s = strings.TrimSpace(s)
-		}
+		return strings.TrimSpace(inner)
 	}
 
-	return s
+	// Pattern 3: depth-aware bracket matching (handles nested objects/arrays
+	// and brackets inside JSON string values).
+	//
+	// We scan forward from the first delimiter, tracking open/close depth and
+	// skipping brackets that appear inside JSON string literals (between
+	// unescaped double-quotes). This avoids two classes of bugs with the
+	// naive LastIndexByte approach:
+	//   1. Stray closing brackets after the JSON payload get included.
+	//   2. Opening brackets in the preamble (e.g. "Score [10/10]:") shift
+	//      `first` past the real JSON start.
+	//
+	// To handle case 2 we try every candidate opening bracket position until
+	// depth-scanning succeeds in finding a balanced match.
+	firstObj := strings.Index(s, "{")
+	firstArr := strings.Index(s, "[")
+	first := firstObj
+	openCh, closeCh := byte('{'), byte('}')
+	if firstArr != -1 && (firstObj == -1 || firstArr < firstObj) {
+		first = firstArr
+		openCh, closeCh = '[', ']'
+	}
+	if first == -1 {
+		return s // no JSON markers — return as-is
+	}
+
+	// Try each occurrence of openCh starting from first. We need this loop
+	// because the preamble may contain the same bracket character (e.g. "[10/10]:").
+	// A successful depth scan (end != -1) means we found a balanced JSON token.
+	for start := first; start < len(s); {
+		if s[start] != openCh {
+			next := strings.IndexByte(s[start:], openCh)
+			if next == -1 {
+				break
+			}
+			start += next
+		}
+
+		depth := 0
+		inString := false
+		end := -1
+		for i := start; i < len(s); i++ {
+			ch := s[i]
+			if ch == '\\' && inString {
+				i++ // skip escaped character
+				continue
+			}
+			if ch == '"' {
+				inString = !inString
+				continue
+			}
+			if inString {
+				continue
+			}
+			if ch == openCh {
+				depth++
+			} else if ch == closeCh {
+				depth--
+				if depth == 0 {
+					end = i
+					break
+				}
+			}
+		}
+		if end != -1 {
+			candidate := strings.TrimSpace(s[start : end+1])
+			// Accept only if it is structurally valid JSON; this skips
+			// non-JSON balanced tokens in the preamble (e.g. "[10/10]").
+			if json.Valid([]byte(candidate)) {
+				return candidate
+			}
+		}
+		// This candidate didn't balance or wasn't valid JSON — try the next
+		// openCh occurrence.
+		next := strings.IndexByte(s[start+1:], openCh)
+		if next == -1 {
+			break
+		}
+		start = start + 1 + next
+	}
+
+	return s // unmatched brackets — return as-is
 }
 
 // FlexibleString unmarshals either a JSON string or an array of strings into a

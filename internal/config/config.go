@@ -188,14 +188,32 @@ type RuntimeDetection struct {
 
 // RuntimeConfig describes an external AI coding runtime.
 type RuntimeConfig struct {
-	Command          string           `yaml:"command"`
-	Args             []string         `yaml:"args"`
-	Models           []string         `yaml:"models"`
-	Detection        RuntimeDetection `yaml:"detection"`
-	Native           bool             `yaml:"native,omitempty"`
-	MaxIterations    int              `yaml:"max_iterations,omitempty"`
-	CommandAllowlist []string         `yaml:"command_allowlist,omitempty"`
-	Concurrency      int              `yaml:"concurrency,omitempty"`
+	Command          string              `yaml:"command"`
+	Args             []string            `yaml:"args"`
+	Models           []string            `yaml:"models"`
+	Detection        RuntimeDetection    `yaml:"detection"`
+	Native           bool                `yaml:"native,omitempty"`
+	MaxIterations    int                 `yaml:"max_iterations,omitempty"`
+	CommandAllowlist []string            `yaml:"command_allowlist,omitempty"`
+	Concurrency      int                 `yaml:"concurrency,omitempty"`
+	Runner           string              `yaml:"runner,omitempty"`
+	Docker           DockerRunnerConfig  `yaml:"docker,omitempty"`
+	SSH              SSHRunnerConfig     `yaml:"ssh,omitempty"`
+}
+
+// DockerRunnerConfig holds settings for the Docker execution target.
+type DockerRunnerConfig struct {
+	Image      string   `yaml:"image"`
+	Network    string   `yaml:"network,omitempty"`
+	ExtraFlags []string `yaml:"extra_flags,omitempty"`
+}
+
+// SSHRunnerConfig holds settings for the SSH execution target.
+type SSHRunnerConfig struct {
+	Host       string   `yaml:"host"`
+	KeyFile    string   `yaml:"key_file,omitempty"`
+	RemoteDir  string   `yaml:"remote_dir,omitempty"`
+	ExtraFlags []string `yaml:"extra_flags,omitempty"`
 }
 
 // validBackends is the set of allowed workspace backends.
@@ -308,6 +326,25 @@ func (c Config) Validate() error {
 	for pts, hrs := range c.Billing.HoursPerPoint {
 		if hrs[0] > hrs[1] {
 			return fmt.Errorf("billing.hours_per_point[%d]: low (%.1f) must be <= high (%.1f)", pts, hrs[0], hrs[1])
+		}
+	}
+
+	// M2: when per_token billing is enabled, every model referenced from
+	// runtimes must have an entry in billing.llm_costs.rates. Otherwise the
+	// cost report silently under-counts.
+	if c.Billing.LLMCosts.Mode == "per_token" {
+		modelsInUse := map[string]bool{}
+		for _, rt := range c.Runtimes {
+			for _, m := range rt.Models {
+				if m != "" {
+					modelsInUse[m] = true
+				}
+			}
+		}
+		for m := range modelsInUse {
+			if _, ok := c.Billing.LLMCosts.Rates[m]; !ok {
+				return fmt.Errorf("billing.llm_costs.rates is missing an entry for model %q used in runtimes (per_token mode requires a rate per model)", m)
+			}
 		}
 	}
 

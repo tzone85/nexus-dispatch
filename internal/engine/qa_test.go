@@ -117,13 +117,14 @@ func TestQA_Run_LintFails(t *testing.T) {
 		t.Fatal("lint check should have failed")
 	}
 
-	// Verify STORY_REVIEW_FAILED event (QA failures now emit REVIEW_FAILED for unified escalation)
-	events, err := es.List(state.EventFilter{Type: state.EventStoryReviewFailed})
+	// Verify STORY_QA_FAILED event (QA failures emit QA-specific event so the
+	// projection and escalation engine can distinguish them from review failures)
+	events, err := es.List(state.EventFilter{Type: state.EventStoryQAFailed})
 	if err != nil {
 		t.Fatalf("list events: %v", err)
 	}
 	if len(events) != 1 {
-		t.Fatalf("expected 1 STORY_REVIEW_FAILED event, got %d", len(events))
+		t.Fatalf("expected 1 STORY_QA_FAILED event, got %d", len(events))
 	}
 }
 

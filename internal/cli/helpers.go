@@ -65,24 +65,39 @@ func (s stores) Close() {
 }
 
 // loadConfig loads configuration from the given path or falls back to defaults
-// if the file is not found.
+// if the file is not found. H3: behavior depends on whether the caller passed
+// an explicit path:
+//   - empty path  → try ./nxd.yaml then ~/.nxd/config.yaml
+//   - explicit    → fail loudly if the file doesn't exist or can't parse,
+//     do NOT silently fall back to home directory
+//
+// This prevents `nxd --config /etc/nxd/prod.yaml ...` from quietly loading
+// the wrong config when the prod file is missing.
 func loadConfig(cfgPath string) (config.Config, error) {
-	if cfgPath == "" {
+	explicit := cfgPath != ""
+	if !explicit {
 		cfgPath = "nxd.yaml"
 	}
 
 	cfg, err := config.LoadFromFile(cfgPath)
-	if err != nil {
-		// Try home directory fallback
-		home, homeErr := os.UserHomeDir()
-		if homeErr != nil {
-			return config.Config{}, fmt.Errorf("load config: %w", err)
-		}
-		altPath := filepath.Join(home, ".nxd", "config.yaml")
-		cfg, err = config.LoadFromFile(altPath)
-		if err != nil {
-			return config.Config{}, fmt.Errorf("load config from %s or %s: %w", cfgPath, altPath, err)
-		}
+	if err == nil {
+		return cfg, nil
+	}
+
+	if explicit {
+		// Loud failure: caller passed --config and it doesn't work.
+		return config.Config{}, fmt.Errorf("load config from %s: %w", cfgPath, err)
+	}
+
+	// Implicit path: try home-directory fallback before giving up.
+	home, homeErr := os.UserHomeDir()
+	if homeErr != nil {
+		return config.Config{}, fmt.Errorf("load config from %s (no home dir for fallback): %w", cfgPath, err)
+	}
+	altPath := filepath.Join(home, ".nxd", "config.yaml")
+	cfg, altErr := config.LoadFromFile(altPath)
+	if altErr != nil {
+		return config.Config{}, fmt.Errorf("no config: tried %s (%v) and %s (%v)", cfgPath, err, altPath, altErr)
 	}
 	return cfg, nil
 }

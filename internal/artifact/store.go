@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/tzone85/nexus-dispatch/internal/sanitize"
 )
 
 // Type identifies the kind of artifact stored for a story.
@@ -48,9 +50,20 @@ func NewStore(baseDir string) (*Store, error) {
 	return &Store{baseDir: baseDir}, nil
 }
 
+// storyDir validates storyID and returns the safe per-story directory.
+func (s *Store) storyDir(storyID string) (string, error) {
+	if !sanitize.ValidIdentifier(storyID) {
+		return "", fmt.Errorf("invalid story id: %q", storyID)
+	}
+	return sanitize.SafeJoin(s.baseDir, storyID)
+}
+
 // Init creates the artifact directory for a story.
 func (s *Store) Init(storyID string) error {
-	dir := filepath.Join(s.baseDir, storyID)
+	dir, err := s.storyDir(storyID)
+	if err != nil {
+		return err
+	}
 	return os.MkdirAll(dir, 0o755)
 }
 
@@ -59,7 +72,10 @@ func (s *Store) Write(storyID string, artifactType Type, data any) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	dir := filepath.Join(s.baseDir, storyID)
+	dir, err := s.storyDir(storyID)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("mkdir artifact dir: %w", err)
 	}
@@ -78,7 +94,10 @@ func (s *Store) WriteRaw(storyID string, artifactType Type, content string) erro
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	dir := filepath.Join(s.baseDir, storyID)
+	dir, err := s.storyDir(storyID)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("mkdir artifact dir: %w", err)
 	}
@@ -96,7 +115,10 @@ func (s *Store) Append(storyID string, artifactType Type, data any) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	dir := filepath.Join(s.baseDir, storyID)
+	dir, err := s.storyDir(storyID)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("mkdir artifact dir: %w", err)
 	}
@@ -119,14 +141,25 @@ func (s *Store) Append(storyID string, artifactType Type, data any) error {
 }
 
 // Read returns the raw contents of a typed artifact.
+// Both storyID and filename are validated to prevent path traversal.
 func (s *Store) Read(storyID string, filename string) ([]byte, error) {
-	path := filepath.Join(s.baseDir, storyID, filename)
+	dir, err := s.storyDir(storyID)
+	if err != nil {
+		return nil, err
+	}
+	path, err := sanitize.SafeJoin(dir, filename)
+	if err != nil {
+		return nil, err
+	}
 	return os.ReadFile(path)
 }
 
 // List returns the filenames of all artifacts stored for a story.
 func (s *Store) List(storyID string) ([]string, error) {
-	dir := filepath.Join(s.baseDir, storyID)
+	dir, err := s.storyDir(storyID)
+	if err != nil {
+		return nil, err
+	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {

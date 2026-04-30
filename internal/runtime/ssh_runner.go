@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/tzone85/nexus-dispatch/internal/sanitize"
 )
 
 // SSHRunner executes agent sessions on remote machines via SSH.
@@ -40,6 +42,11 @@ func NewSSHRunner(cfg SSHConfig) *SSHRunner {
 
 // Run uploads setup files and starts the execution on the remote machine.
 func (r *SSHRunner) Run(pe PreparedExecution) error {
+	// H13: validate SessionName before using it in remote paths to prevent
+	// path traversal on the SSH target (e.g. SessionName="../../etc").
+	if !sanitize.ValidIdentifier(pe.SessionName) {
+		return fmt.Errorf("invalid session name %q", pe.SessionName)
+	}
 	remoteWorkDir := filepath.Join(r.remoteDir, pe.SessionName)
 
 	// Create remote directory.
@@ -49,8 +56,11 @@ func (r *SSHRunner) Run(pe PreparedExecution) error {
 
 	// Upload setup files via scp.
 	for localPath, content := range pe.SetupFiles {
+		// H11: write setup files mode 0o600 — they may carry env-var values
+		// (API keys, tokens). Mode 0o644 leaves them world-readable on
+		// shared dev hosts for the duration of the SCP.
 		tmpFile := filepath.Join(os.TempDir(), filepath.Base(localPath))
-		if err := os.WriteFile(tmpFile, []byte(content), 0o644); err != nil {
+		if err := os.WriteFile(tmpFile, []byte(content), 0o600); err != nil {
 			return fmt.Errorf("write temp file: %w", err)
 		}
 		defer os.Remove(tmpFile)

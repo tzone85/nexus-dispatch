@@ -14,6 +14,7 @@ import (
 	"github.com/tzone85/nexus-dispatch/internal/graph"
 	"github.com/tzone85/nexus-dispatch/internal/llm"
 	"github.com/tzone85/nexus-dispatch/internal/repolearn"
+	"github.com/tzone85/nexus-dispatch/internal/sanitize"
 	"github.com/tzone85/nexus-dispatch/internal/state"
 )
 
@@ -76,6 +77,14 @@ func (p *Planner) PlanWithContext(ctx context.Context, reqID, requirement, repoP
 // graph. It emits REQ_SUBMITTED, STORY_CREATED (per story), and REQ_PLANNED
 // events.
 func (p *Planner) Plan(ctx context.Context, reqID, requirement, repoPath string) (PlanResult, error) {
+	// Validate requirement before sending to LLM
+	if sanitize.DetectPromptInjection(requirement) {
+		return PlanResult{}, fmt.Errorf("requirement rejected: prompt injection detected")
+	}
+	if sanitize.ScanForSecrets(requirement) {
+		return PlanResult{}, fmt.Errorf("requirement rejected: embedded secret detected — remove credentials before submitting")
+	}
+
 	// Emit requirement submitted
 	reqPayload := map[string]any{
 		"id":          reqID,
@@ -220,9 +229,22 @@ architecture and conventions when planning stories.`, profileContext)
 	}
 	idMap := make(map[string]string, len(stories))
 	for i, s := range stories {
+		// Reject duplicate story IDs — LLM hallucination would silently drop stories.
+		if _, exists := idMap[s.ID]; exists {
+			return PlanResult{}, fmt.Errorf("LLM returned duplicate story ID: %s", s.ID)
+		}
 		newID := prefix + "-" + s.ID
 		idMap[s.ID] = newID
 		stories[i].ID = newID
+	}
+	// Validate depends_on references before remapping — a nonexistent reference
+	// creates a dangling DAG edge that makes the story permanently undispatchable.
+	for _, s := range stories {
+		for _, dep := range s.DependsOn {
+			if _, ok := idMap[dep]; !ok {
+				return PlanResult{}, fmt.Errorf("story %s has depends_on reference to nonexistent story %s", s.ID, dep)
+			}
+		}
 	}
 	for i, s := range stories {
 		for j, dep := range s.DependsOn {

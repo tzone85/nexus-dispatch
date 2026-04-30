@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/tzone85/nexus-dispatch/internal/criteria"
 	"github.com/tzone85/nexus-dispatch/internal/llm"
@@ -195,13 +196,19 @@ func (g *GemmaRuntime) Execute(ctx context.Context, workDir, model, systemPrompt
 			Detail:    fmt.Sprintf("iteration %d/%d: waiting for LLM response", i+1, g.config.MaxIterations),
 		})
 
-		resp, err := g.client.Complete(ctx, llm.CompletionRequest{
+		// S3-5: per-iteration deadline. MaxIterations alone doesn't help if a
+		// single Ollama call hangs forever (network stall, server hang). Cap at
+		// 5 minutes per iteration so the outer loop can make progress / be
+		// cancelled.
+		iterCtx, iterCancel := context.WithTimeout(ctx, 5*time.Minute)
+		resp, err := g.client.Complete(iterCtx, llm.CompletionRequest{
 			Model:     model,
 			System:    systemPrompt,
 			Messages:  messages,
 			Tools:     tools,
 			MaxTokens: 8192,
 		})
+		iterCancel()
 		if err != nil {
 			g.emitProgress(ProgressEvent{
 				Iteration: i + 1,
@@ -528,8 +535,10 @@ func isCommandAllowed(command string, allowlist []string) bool {
 		return false
 	}
 
-	// Reject commands containing shell chaining operators.
-	for _, ch := range []string{";", "&&", "||", "|", "$(",  "`", "\n"} {
+	// H9: reject any shell metacharacter that could chain commands, redirect
+	// I/O, or escape the allowlist. Belt-and-suspenders alongside the prefix
+	// match below.
+	for _, ch := range []string{";", "&&", "||", "|", "$(", "$", "`", ">", "<", "\n", "\r", "\t&"} {
 		if strings.Contains(command, ch) {
 			return false
 		}

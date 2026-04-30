@@ -93,6 +93,18 @@ jobs:
           name: nxd-${{ matrix.os }}
           path: nxd
 
+  docker:
+    name: Docker build
+    runs-on: ubuntu-latest
+    # S3-2: verify the Dockerfile still builds. Non-blocking on PR.
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build container image
+        run: docker build -t nxd:ci .
+
   release:
     name: Release
     runs-on: ubuntu-latest

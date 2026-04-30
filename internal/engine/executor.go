@@ -95,7 +95,7 @@ type SpawnResult struct {
 // parallel stories are running and which files to avoid. For native runtimes
 // it wraps the LLM client with a concurrency semaphore so that parallel
 // agents don't overwhelm a single-GPU Ollama instance.
-func (e *Executor) SpawnAll(repoDir string, assignments []Assignment, stories map[string]PlannedStory) []SpawnResult {
+func (e *Executor) SpawnAll(ctx context.Context, repoDir string, assignments []Assignment, stories map[string]PlannedStory) []SpawnResult {
 	// Build wave story info for parallel awareness.
 	waveStories := make([]WaveStoryInfo, 0, len(assignments))
 	for _, a := range assignments {
@@ -115,7 +115,7 @@ func (e *Executor) SpawnAll(repoDir string, assignments []Assignment, stories ma
 
 	results := make([]SpawnResult, 0, len(assignments))
 	for _, a := range assignments {
-		result := e.spawn(repoDir, a, stories[a.StoryID], waveStories, nativeClient)
+		result := e.spawn(ctx, repoDir, a, stories[a.StoryID], waveStories, nativeClient)
 		results = append(results, result)
 	}
 	return results
@@ -138,7 +138,7 @@ func (e *Executor) buildNativeClient() llm.Client {
 	return llm.NewSemaphoreClient(e.llmClient, concurrency)
 }
 
-func (e *Executor) spawn(repoDir string, a Assignment, story PlannedStory, waveStories []WaveStoryInfo, nativeClient llm.Client) SpawnResult {
+func (e *Executor) spawn(ctx context.Context, repoDir string, a Assignment, story PlannedStory, waveStories []WaveStoryInfo, nativeClient llm.Client) SpawnResult {
 	result := SpawnResult{Assignment: a}
 
 	// Determine worktree path
@@ -161,7 +161,7 @@ func (e *Executor) spawn(repoDir string, a Assignment, story PlannedStory, waveS
 
 	// Check if this is a native runtime (e.g., Gemma)
 	if e.registry.IsNative(rtName) {
-		return e.spawnNative(repoDir, a, story, waveStories, worktreePath, rtName, result, nativeClient)
+		return e.spawnNative(ctx, repoDir, a, story, waveStories, worktreePath, rtName, result, nativeClient)
 	}
 
 	rt, err := e.registry.Get(rtName)
@@ -413,7 +413,7 @@ func tierForRole(role agent.Role) int {
 
 // spawnNative runs a story using the native Gemma runtime (no tmux, no external CLI).
 // It calls the LLM directly via function calling tools.
-func (e *Executor) spawnNative(repoDir string, a Assignment, story PlannedStory, waveStories []WaveStoryInfo, worktreePath, rtName string, result SpawnResult, nativeClient llm.Client) SpawnResult {
+func (e *Executor) spawnNative(ctx context.Context, repoDir string, a Assignment, story PlannedStory, waveStories []WaveStoryInfo, worktreePath, rtName string, result SpawnResult, nativeClient llm.Client) SpawnResult {
 	if nativeClient == nil {
 		result.Error = fmt.Errorf("native runtime %s requires an LLM client (call SetLLMClient first)", rtName)
 		return result
@@ -471,8 +471,12 @@ func (e *Executor) spawnNative(repoDir string, a Assignment, story PlannedStory,
 		"worktree_path": worktreePath, "runtime": rtName, "branch": a.Branch,
 		"tier": tierForRole(a.Role), "role": string(a.Role),
 	})
-	e.eventStore.Append(startEvt)
-	e.projStore.Project(startEvt)
+	if err := e.eventStore.Append(startEvt); err != nil {
+		log.Printf("[native-runtime] append STORY_STARTED for %s: %v", a.StoryID, err)
+	}
+	if err := e.projStore.Project(startEvt); err != nil {
+		log.Printf("[native-runtime] project STORY_STARTED for %s: %v", a.StoryID, err)
+	}
 
 	// Run native Gemma runtime in a goroutine (non-blocking, like tmux).
 	// On completion (success or failure) the goroutine emits STORY_COMPLETED
@@ -508,21 +512,34 @@ func (e *Executor) spawnNative(repoDir string, a Assignment, story PlannedStory,
 				payload["is_error"] = true
 			}
 			evt := state.NewEvent(state.EventStoryProgress, a.AgentID, a.StoryID, payload)
-			e.eventStore.Append(evt)
-			e.projStore.Project(evt)
+			if err := e.eventStore.Append(evt); err != nil {
+				log.Printf("[native-runtime] append STORY_PROGRESS for %s: %v", a.StoryID, err)
+			}
+			if err := e.projStore.Project(evt); err != nil {
+				log.Printf("[native-runtime] project STORY_PROGRESS for %s: %v", a.StoryID, err)
+			}
 
 			// Append to per-story trace artifact for post-mortem replay.
 			if e.artifactStore != nil {
-				e.artifactStore.Append(a.StoryID, artifact.TypeTraceEvents, payload)
+				if err := e.artifactStore.Append(a.StoryID, artifact.TypeTraceEvents, payload); err != nil {
+					log.Printf("[native-runtime] artifact append for %s: %v", a.StoryID, err)
+				}
 			}
 		}
 
-		// Create a cancellable context so the controller can stop stuck agents.
-		execCtx, execCancel := context.WithCancel(context.Background())
+		// Create a cancellable context parented to the executor's context so
+		// monitor cancellation (Ctrl-C, graceful shutdown) propagates to the
+		// native goroutine. The controller can also stop stuck agents.
+		execCtx, execCancel := context.WithCancel(ctx)
 		defer execCancel()
 		if e.controller != nil {
 			e.controller.RegisterCancel(a.StoryID, execCancel)
 		}
+		defer func() {
+			if e.controller != nil {
+				e.controller.DeregisterCancel(a.StoryID)
+			}
+		}()
 
 		log.Printf("[native-runtime] executing %s in %s", a.StoryID, worktreePath)
 		execResult := gemmaRT.Execute(execCtx, worktreePath, modelCfg.Model, systemPrompt, goal)
@@ -555,8 +572,12 @@ func (e *Executor) spawnNative(repoDir string, a Assignment, story PlannedStory,
 			}
 		}
 		completeEvt := state.NewEvent(state.EventStoryCompleted, a.AgentID, a.StoryID, payload)
-		e.eventStore.Append(completeEvt)
-		e.projStore.Project(completeEvt)
+		if err := e.eventStore.Append(completeEvt); err != nil {
+			log.Printf("[native-runtime] append STORY_COMPLETED for %s: %v", a.StoryID, err)
+		}
+		if err := e.projStore.Project(completeEvt); err != nil {
+			log.Printf("[native-runtime] project STORY_COMPLETED for %s: %v", a.StoryID, err)
+		}
 	}()
 
 	return result

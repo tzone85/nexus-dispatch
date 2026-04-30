@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/oklog/ulid/v2"
@@ -80,13 +81,25 @@ CREATE TABLE IF NOT EXISTS agent_scores (
 `
 
 // SQLiteStore implements ProjectionStore using SQLite.
+//
+// H6: SQLite serializes writes at the file-lock level. Without an
+// application-level mutex, concurrent goroutines all calling Project() can
+// trigger SQLITE_BUSY storms. We attach a sync.RWMutex and additionally
+// open the connection with WAL journaling and a generous busy timeout so
+// reads aren't starved during heavy event projection.
 type SQLiteStore struct {
 	db *sql.DB
+	mu sync.RWMutex
 }
 
 // NewSQLiteStore opens a SQLite database and applies the schema migration.
 func NewSQLiteStore(dsn string) (*SQLiteStore, error) {
-	db, err := sql.Open("sqlite3", dsn)
+	// Append connection params if not already specified by caller.
+	connStr := dsn
+	if !strings.Contains(connStr, "?") {
+		connStr += "?_journal=WAL&_busy_timeout=5000&_fk=1"
+	}
+	db, err := sql.Open("sqlite3", connStr)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
@@ -140,6 +153,11 @@ func (s *SQLiteStore) Close() error {
 // Project applies a domain event to the projection tables, updating the
 // materialized state accordingly.
 func (s *SQLiteStore) Project(evt Event) error {
+	// H6: serialize all writes through a single mutex. SQLite's own locking
+	// produces SQLITE_BUSY under contention; this avoids those errors and
+	// the noisy retry loops they trigger.
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	payload := s.decodePayload(evt)
 
 	switch evt.Type {

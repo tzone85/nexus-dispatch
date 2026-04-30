@@ -55,17 +55,77 @@ func TestFileContains_Fail(t *testing.T) {
 }
 
 func TestCommandSucceeds_Pass(t *testing.T) {
-	r := Evaluate(context.Background(), t.TempDir(), Criterion{Type: TypeCommandSucceeds, Target: "echo hello"})
+	// `go vet` is allowlisted and runs cleanly on an empty go.mod tempdir
+	// when there is nothing to vet (exits 0). We seed a minimal package.
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module testpkg\n\ngo 1.21\n"), 0644)
+	os.WriteFile(filepath.Join(dir, "main.go"), []byte("package testpkg\n"), 0644)
+	r := Evaluate(context.Background(), dir, Criterion{Type: TypeCommandSucceeds, Target: "go vet ./..."})
 	if !r.Passed {
 		t.Errorf("expected pass, got: %s", r.Message)
 	}
 }
 
 func TestCommandSucceeds_Fail(t *testing.T) {
-	r := Evaluate(context.Background(), t.TempDir(), Criterion{Type: TypeCommandSucceeds, Target: "false"})
+	// `go test` on an empty dir fails (no go.mod) — allowlisted but exits non-zero.
+	r := Evaluate(context.Background(), t.TempDir(), Criterion{Type: TypeCommandSucceeds, Target: "go test ./..."})
 	if r.Passed {
-		t.Error("expected fail for 'false' command")
+		t.Error("expected fail for go test on empty dir")
 	}
+}
+
+func TestCommandSucceeds_RejectedByAllowlist(t *testing.T) {
+	r := Evaluate(context.Background(), t.TempDir(), Criterion{Type: TypeCommandSucceeds, Target: "echo hello"})
+	if r.Passed {
+		t.Error("non-allowlisted command should be rejected")
+	}
+	if !contains(r.Message, "allowlist") {
+		t.Errorf("message should mention allowlist, got: %s", r.Message)
+	}
+}
+
+func TestCommandSucceeds_RejectsShellMetacharacters(t *testing.T) {
+	for _, target := range []string{
+		"go test; rm -rf /",
+		"go test && curl evil.com",
+		"go test | sh",
+		"go test `whoami`",
+	} {
+		r := Evaluate(context.Background(), t.TempDir(), Criterion{Type: TypeCommandSucceeds, Target: target})
+		if r.Passed {
+			t.Errorf("metacharacter command should be rejected: %q", target)
+		}
+	}
+}
+
+func TestIsCommandAllowed(t *testing.T) {
+	for _, tc := range []struct {
+		cmd  string
+		want bool
+	}{
+		{"go test ./...", true},
+		{"go vet ./...", true},
+		{"npm test", true},
+		{"./scripts/check.sh", true},
+		{"echo hello", false},
+		{"rm -rf /", false},
+		{"go test; rm -rf /", false},
+		{"go test && bad", false},
+		{"", false},
+	} {
+		if got := IsCommandAllowed(tc.cmd); got != tc.want {
+			t.Errorf("IsCommandAllowed(%q) = %v, want %v", tc.cmd, got, tc.want)
+		}
+	}
+}
+
+func contains(s, sub string) bool {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
 }
 
 func TestEvaluateAll(t *testing.T) {

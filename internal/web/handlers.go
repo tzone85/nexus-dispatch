@@ -6,12 +6,10 @@ import (
 	"fmt"
 	"log"
 	"os/exec"
-	"regexp"
 
+	"github.com/tzone85/nexus-dispatch/internal/sanitize"
 	"github.com/tzone85/nexus-dispatch/internal/state"
 )
-
-var agentIDPattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
 const maxEscalationTier = 3
 
@@ -94,7 +92,7 @@ func (s *Server) handlePause(payload json.RawMessage) WSResponse {
 	if err := s.eventStore.Append(evt); err != nil {
 		return WSResponse{Type: "command_result", Action: action, Success: false, Message: fmt.Sprintf("event error: %v", err)}
 	}
-	s.projStore.Project(evt) //nolint:errcheck
+	if err := s.projStore.Project(evt); err != nil { log.Printf("[ws] project %s: %v", evt.Type, err) }
 
 	return WSResponse{Type: "command_result", Action: action, Success: true, Message: "Requirement paused"}
 }
@@ -125,7 +123,7 @@ func (s *Server) handleResume(payload json.RawMessage) WSResponse {
 	if err := s.eventStore.Append(evt); err != nil {
 		return WSResponse{Type: "command_result", Action: action, Success: false, Message: fmt.Sprintf("event error: %v", err)}
 	}
-	s.projStore.Project(evt) //nolint:errcheck
+	if err := s.projStore.Project(evt); err != nil { log.Printf("[ws] project %s: %v", evt.Type, err) }
 
 	return WSResponse{Type: "command_result", Action: action, Success: true, Message: "Requirement resumed"}
 }
@@ -152,14 +150,14 @@ func (s *Server) handleRetry(payload json.RawMessage) WSResponse {
 		"reason":    "manual retry from dashboard",
 		"source":    "dashboard",
 	})
-	s.eventStore.Append(escEvt) //nolint:errcheck
-	s.projStore.Project(escEvt) //nolint:errcheck
+	if err := s.eventStore.Append(escEvt); err != nil { log.Printf("[ws] append %s: %v", escEvt.Type, err) }
+	if err := s.projStore.Project(escEvt); err != nil { log.Printf("[ws] project %s: %v", escEvt.Type, err) }
 
 	resetEvt := state.NewEvent(state.EventStoryReviewFailed, "dashboard", p.StoryID, map[string]any{
 		"source": "dashboard",
 	})
-	s.eventStore.Append(resetEvt) //nolint:errcheck
-	s.projStore.Project(resetEvt) //nolint:errcheck
+	if err := s.eventStore.Append(resetEvt); err != nil { log.Printf("[ws] append %s: %v", resetEvt.Type, err) }
+	if err := s.projStore.Project(resetEvt); err != nil { log.Printf("[ws] project %s: %v", resetEvt.Type, err) }
 
 	return WSResponse{Type: "command_result", Action: action, Success: true, Message: "Story retried at tier 0"}
 }
@@ -189,14 +187,14 @@ func (s *Server) handleReassign(payload json.RawMessage) WSResponse {
 		"reason":    "manual reassign from dashboard",
 		"source":    "dashboard",
 	})
-	s.eventStore.Append(escEvt) //nolint:errcheck
-	s.projStore.Project(escEvt) //nolint:errcheck
+	if err := s.eventStore.Append(escEvt); err != nil { log.Printf("[ws] append %s: %v", escEvt.Type, err) }
+	if err := s.projStore.Project(escEvt); err != nil { log.Printf("[ws] project %s: %v", escEvt.Type, err) }
 
 	resetEvt := state.NewEvent(state.EventStoryReviewFailed, "dashboard", p.StoryID, map[string]any{
 		"source": "dashboard",
 	})
-	s.eventStore.Append(resetEvt) //nolint:errcheck
-	s.projStore.Project(resetEvt) //nolint:errcheck
+	if err := s.eventStore.Append(resetEvt); err != nil { log.Printf("[ws] append %s: %v", resetEvt.Type, err) }
+	if err := s.projStore.Project(resetEvt); err != nil { log.Printf("[ws] project %s: %v", resetEvt.Type, err) }
 
 	return WSResponse{Type: "command_result", Action: action, Success: true, Message: fmt.Sprintf("Story reassigned to tier %d", p.TargetTier)}
 }
@@ -231,7 +229,7 @@ func (s *Server) handleEscalate(payload json.RawMessage) WSResponse {
 	if err := s.eventStore.Append(escEvt); err != nil {
 		return WSResponse{Type: "command_result", Action: action, Success: false, Message: fmt.Sprintf("event error: %v", err)}
 	}
-	s.projStore.Project(escEvt) //nolint:errcheck
+	if err := s.projStore.Project(escEvt); err != nil { log.Printf("[ws] project %s: %v", escEvt.Type, err) }
 
 	return WSResponse{Type: "command_result", Action: action, Success: true, Message: fmt.Sprintf("Story escalated to tier %d", nextTier)}
 }
@@ -244,7 +242,7 @@ func (s *Server) handleKill(payload json.RawMessage) WSResponse {
 		return WSResponse{Type: "command_result", Action: action, Success: false, Message: "invalid agent_id"}
 	}
 
-	if !agentIDPattern.MatchString(p.AgentID) {
+	if !sanitize.ValidIdentifier(p.AgentID) {
 		return WSResponse{Type: "command_result", Action: action, Success: false, Message: "invalid agent_id format"}
 	}
 
@@ -274,8 +272,12 @@ func (s *Server) handleKill(payload json.RawMessage) WSResponse {
 		"reason": "killed from dashboard",
 		"source": "dashboard",
 	})
-	s.eventStore.Append(evt) //nolint:errcheck
-	s.projStore.Project(evt) //nolint:errcheck
+	if err := s.eventStore.Append(evt); err != nil {
+		log.Printf("[ws] append AGENT_TERMINATED for %s: %v", p.AgentID, err)
+	}
+	if err := s.projStore.Project(evt); err != nil {
+		log.Printf("[ws] project AGENT_TERMINATED for %s: %v", p.AgentID, err)
+	}
 
 	return WSResponse{Type: "command_result", Action: action, Success: true, Message: fmt.Sprintf("Agent %s killed", p.AgentID)}
 }
@@ -319,8 +321,14 @@ func (s *Server) handleEdit(payload json.RawMessage) WSResponse {
 		"changes": changes,
 		"source":  "dashboard",
 	})
-	s.eventStore.Append(evt) //nolint:errcheck
-	s.projStore.Project(evt) //nolint:errcheck
+	if err := s.eventStore.Append(evt); err != nil {
+		log.Printf("[ws] append STORY_REWRITTEN for %s: %v", p.StoryID, err)
+		return WSResponse{Type: "command_result", Action: action, Success: false, Message: "store error"}
+	}
+	if err := s.projStore.Project(evt); err != nil {
+		log.Printf("[ws] project STORY_REWRITTEN for %s: %v", p.StoryID, err)
+		return WSResponse{Type: "command_result", Action: action, Success: false, Message: "store error"}
+	}
 
 	return WSResponse{Type: "command_result", Action: action, Success: true, Message: "Story updated and reset to draft"}
 }
@@ -351,7 +359,7 @@ func (s *Server) handleApproveRequirement(payload json.RawMessage) WSResponse {
 	if err := s.eventStore.Append(evt); err != nil {
 		return WSResponse{Type: "command_result", Action: action, Success: false, Message: fmt.Sprintf("event error: %v", err)}
 	}
-	s.projStore.Project(evt) //nolint:errcheck
+	if err := s.projStore.Project(evt); err != nil { log.Printf("[ws] project %s: %v", evt.Type, err) }
 
 	return WSResponse{Type: "command_result", Action: action, Success: true, Message: "Requirement approved"}
 }
@@ -382,7 +390,7 @@ func (s *Server) handleRejectRequirement(payload json.RawMessage) WSResponse {
 	if err := s.eventStore.Append(evt); err != nil {
 		return WSResponse{Type: "command_result", Action: action, Success: false, Message: fmt.Sprintf("event error: %v", err)}
 	}
-	s.projStore.Project(evt) //nolint:errcheck
+	if err := s.projStore.Project(evt); err != nil { log.Printf("[ws] project %s: %v", evt.Type, err) }
 
 	return WSResponse{Type: "command_result", Action: action, Success: true, Message: "Requirement rejected"}
 }
@@ -412,7 +420,7 @@ func (s *Server) handleMergeStory(payload json.RawMessage) WSResponse {
 	if err := s.eventStore.Append(evt); err != nil {
 		return WSResponse{Type: "command_result", Action: action, Success: false, Message: fmt.Sprintf("event error: %v", err)}
 	}
-	s.projStore.Project(evt) //nolint:errcheck
+	if err := s.projStore.Project(evt); err != nil { log.Printf("[ws] project %s: %v", evt.Type, err) }
 
 	return WSResponse{Type: "command_result", Action: action, Success: true, Message: "Story merged"}
 }

@@ -301,13 +301,19 @@ func (m Model) fetchData() tea.Cmd {
 }
 
 // applyData updates the model with freshly fetched data using immutable update.
+// L6: clamp storyScrollOffset against the new story count so a refresh that
+// shrinks the list doesn't leave the offset pointing past the end.
 func (m Model) applyData(d dataMsg) Model {
+	scroll := m.storyScrollOffset
+	if scroll >= len(d.stories) {
+		scroll = 0
+	}
 	return Model{
 		eventStore:        m.eventStore,
 		projStore:         m.projStore,
 		version:           m.version,
 		reqFilter:         m.reqFilter,
-		storyScrollOffset: m.storyScrollOffset,
+		storyScrollOffset: scroll,
 		width:             m.width,
 		height:            m.height,
 		requirements:      d.requirements,

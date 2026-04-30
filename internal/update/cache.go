@@ -30,7 +30,9 @@ func WriteCache(path string, result CheckResult) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0644)
+	// M9: 0o600 — cache may include API response bodies that incidentally
+	// contain auth-sensitive data. Locking down the mode is cheap defense.
+	return os.WriteFile(path, data, 0o600)
 }
 
 // ReadCache reads a cached check result. Returns a zero-value CheckResult

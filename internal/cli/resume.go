@@ -294,7 +294,13 @@ func runResume(cmd *cobra.Command, args []string) error {
 	controller := engine.NewController(s.Config.Controller, nil, s.Events, s.Proj)
 	executor.SetController(controller)
 
-	results := executor.SpawnAll(repoDir, assignments, storyMap)
+	// Create cancellable context for spawn (parented to ctrl-c). The monitor
+	// reuses this same context further down so cancellation propagates to
+	// in-flight native goroutines.
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+
+	results := executor.SpawnAll(ctx, repoDir, assignments, storyMap)
 
 	activeAgents := make([]engine.ActiveAgent, 0, len(results))
 	for _, r := range results {
@@ -369,9 +375,8 @@ func runResume(cmd *cobra.Command, args []string) error {
 		StuckThresholdS: s.Config.Monitor.StuckThresholdS,
 	}, s.Events)
 
-	// Start monitoring loop (Ctrl+C detaches cleanly, agents keep running)
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer cancel()
+	// ctx + cancel created earlier (just before SpawnAll) so cancellation
+	// propagates to native runtime goroutines as well as the monitor.
 
 	monitor := engine.NewMonitor(reg, watchdog, reviewer, qaRunner, merger, s.Config, s.Events, s.Proj)
 	monitor.SetMemPalace(mp)

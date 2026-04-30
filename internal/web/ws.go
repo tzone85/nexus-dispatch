@@ -42,16 +42,25 @@ type WSMessage struct {
 }
 
 type WSResponse struct {
-	Type    string      `json:"type"`
-	Action  string      `json:"action,omitempty"`
-	Success bool        `json:"success,omitempty"`
-	Message string      `json:"message,omitempty"`
-	Data    interface{} `json:"data,omitempty"`
+	Type    string `json:"type"`
+	Action  string `json:"action,omitempty"`
+	Success bool   `json:"success,omitempty"`
+	Message string `json:"message,omitempty"`
+	Data    any    `json:"data,omitempty"`
+	// SeqNo is set on type=="event" messages for gap detection.
+	SeqNo uint64 `json:"seq_no,omitempty"`
 }
 
 func (h *Hub) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
+	// H1: pin Origin to the actual bind address rather than allowing any
+	// localhost port. Without this, any process on the same machine can
+	// open a WebSocket via Origin spoofing.
+	origins := []string{"localhost:*", "127.0.0.1:*"}
+	if h.server != nil && h.server.BindAddr() != "" {
+		origins = []string{h.server.BindAddr()}
+	}
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		OriginPatterns: []string{"localhost:*", "127.0.0.1:*"},
+		OriginPatterns: origins,
 	})
 	if err != nil {
 		log.Printf("[ws] accept error: %v", err)
@@ -86,7 +95,7 @@ func (h *Hub) Run(ctx context.Context) {
 	defer ticker.Stop()
 
 	// Subscribe to event bus for instant event delivery.
-	var eventCh chan state.Event
+	var eventCh chan EventEnvelope
 	if h.eventBus != nil {
 		eventCh = h.eventBus.Subscribe()
 		defer h.eventBus.Unsubscribe(eventCh)
@@ -97,12 +106,12 @@ func (h *Hub) Run(ctx context.Context) {
 		case <-ctx.Done():
 			h.closeAll()
 			return
-		case evt, ok := <-eventCh:
+		case env, ok := <-eventCh:
 			if !ok {
 				eventCh = nil
 				continue
 			}
-			h.pushEvent(ctx, evt)
+			h.pushEvent(ctx, env.Event, env.SeqNo)
 		case <-ticker.C:
 			h.broadcast(ctx)
 		}
@@ -110,8 +119,9 @@ func (h *Hub) Run(ctx context.Context) {
 }
 
 // pushEvent sends a single event to all connected clients immediately.
-func (h *Hub) pushEvent(ctx context.Context, evt state.Event) {
-	msg := WSResponse{Type: "event", Data: EventSummary{
+// seqNo is the EventBus monotonic sequence number — clients can track gaps.
+func (h *Hub) pushEvent(ctx context.Context, evt state.Event, seqNo uint64) {
+	msg := WSResponse{Type: "event", SeqNo: seqNo, Data: EventSummary{
 		Type:      string(evt.Type),
 		Timestamp: evt.Timestamp.Format("15:04:05"),
 		AgentID:   evt.AgentID,

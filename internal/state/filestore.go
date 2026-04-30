@@ -17,7 +17,7 @@ type FileStore struct {
 
 // NewFileStore creates a new FileStore that persists events to the given path.
 func NewFileStore(path string) (*FileStore, error) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return nil, err
 	}

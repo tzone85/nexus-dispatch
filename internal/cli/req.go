@@ -273,8 +273,17 @@ func resolveRequirement(cmd *cobra.Command, args []string) (string, error) {
 // An optional godmode parameter controls whether permission prompts are skipped
 // on runtimes that support it (e.g., Claude Code, Codex).
 // It delegates to buildLLMClientFunc, which can be overridden in tests.
+//
+// H7: every client returned here is wrapped with a SanitizingClient so that
+// LLM-generated content (review feedback, manager diagnoses, etc.) is screened
+// for prompt-injection markers and embedded credentials before downstream
+// consumers see it.
 func buildLLMClient(provider string, godmode ...bool) (llm.Client, error) {
-	return buildLLMClientFunc(provider, godmode...)
+	c, err := buildLLMClientFunc(provider, godmode...)
+	if err != nil {
+		return nil, err
+	}
+	return llm.NewSanitizingClient(c, provider), nil
 }
 
 // buildLLMClientDefault is the production implementation of buildLLMClient.

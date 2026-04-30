@@ -80,6 +80,25 @@ type Monitor struct {
 	dagMu sync.Mutex
 }
 
+// emitSplitFailed records a partial-split failure so operators can recover.
+// Logs the error, lists which children persisted before the abort, and emits
+// a SPLIT_FAILED event. The DAG is intentionally NOT mutated, so the parent
+// remains the canonical story for retry.
+func (m *Monitor) emitSplitFailed(parentID, reason string, createdChildren []string, cause error) {
+	payload := map[string]any{
+		"parent_story_id":  parentID,
+		"reason":           reason,
+		"created_children": createdChildren,
+	}
+	if cause != nil {
+		payload["error"] = cause.Error()
+	}
+	evt := state.NewEvent("STORY_SPLIT_FAILED", "monitor", parentID, payload)
+	if err := m.eventStore.Append(evt); err != nil {
+		log.Printf("[split] failed to append SPLIT_FAILED for %s: %v", parentID, err)
+	}
+}
+
 // NewMonitor creates a Monitor wired to all pipeline components.
 func NewMonitor(
 	reg *runtime.Registry,
@@ -338,6 +357,41 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 	// the work before checking the diff.
 	autoCommit(ag.WorktreePath, storyID)
 
+	// VXD Phase 1.1: scrub LLM reasoning preamble from committed source
+	// files. Agents (especially small models) sometimes prepend "Looking at
+	// the code, I'll add..." as the first lines of a file. We strip that
+	// before the reviewer sees the diff.
+	if !m.dryRun {
+		filesScrubbed, linesRemoved := scrubHallucinationsFromWorktree(ag.WorktreePath)
+		if filesScrubbed > 0 {
+			log.Printf("[pipeline] scrubbed %d preamble line(s) across %d file(s) for %s", linesRemoved, filesScrubbed, storyID)
+			// Amend the autoCommit so the diff reflects the cleaned files.
+			amend := exec.Command("git", "commit", "--amend", "--no-edit", "-a")
+			amend.Dir = ag.WorktreePath
+			if amendOut, amendErr := amend.CombinedOutput(); amendErr != nil {
+				log.Printf("[pipeline] amend after scrub for %s: %v (%s)", storyID, amendErr, string(amendOut))
+			}
+		}
+	}
+
+	// VXD Phase 1.1: validate that no merge conflict markers leaked
+	// through. If they did, reset to draft — running review/QA against a
+	// half-merged file produces useless output.
+	if conflicted := validateNoConflictMarkers(ag.WorktreePath); len(conflicted) > 0 {
+		log.Printf("[pipeline] %s has unresolved conflict markers in %v — resetting", storyID, conflicted)
+		m.resetStoryToDraft(storyID, "monitor", fmt.Sprintf("unresolved conflict markers in %d file(s)", len(conflicted)))
+		return
+	}
+
+	// VXD Phase 1.2: non-blocking build validation. Failures are logged
+	// (and surface to the reviewer via the diff context) but do not abort
+	// the pipeline — the review/QA gates are the canonical merge blockers.
+	if !m.dryRun {
+		if buildErr := validateBuild(ctx, ag.WorktreePath); buildErr != nil {
+			log.Printf("[pipeline] build validation warning for %s: %v", storyID, buildErr)
+		}
+	}
+
 	// In dry-run mode, simulate a successful agent by writing a placeholder
 	// file and committing it.
 	if m.dryRun {
@@ -402,7 +456,10 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 			}
 		}
 
-		result, err := m.reviewer.Review(ctx, storyID, storyTitle, storyAC, diff, blastRadius)
+		// VXD Phase 1.4: pass git ls-files so reviewer can verify file
+		// existence claims instead of hallucinating about missing files.
+		fileTree := captureFileTree(ag.WorktreePath)
+		result, err := m.reviewer.Review(ctx, storyID, storyTitle, storyAC, diff, blastRadius, fileTree)
 		if err != nil {
 			// Fatal API errors (auth failures, billing exhaustion,
 			// permission denied) will never succeed on retry -- pause
@@ -430,12 +487,16 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 			}
 		}
 
-		// Persist review result as artifact.
+		// Persist review result as artifact (M16: include comments so post-mortem
+		// replay can show what the reviewer actually said per file/line).
 		if m.artifactStore != nil {
-			m.artifactStore.Write(storyID, artifact.TypeReviewResult, map[string]any{
-				"passed":  result.Passed,
-				"summary": result.Summary,
-			})
+			if err := m.artifactStore.Write(storyID, artifact.TypeReviewResult, map[string]any{
+				"passed":   result.Passed,
+				"summary":  result.Summary,
+				"comments": result.Comments,
+			}); err != nil {
+				log.Printf("[pipeline] artifact write review for %s: %v", storyID, err)
+			}
 		}
 
 		if !result.Passed {
@@ -481,7 +542,7 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 				"QA FAILURE — fix this error:\n\n%s\n\nHint: %s\n\nMake the minimal change to fix this. Do not rewrite files.",
 				qaOutput, hint,
 			)
-			feedbackEvt := state.NewEvent(state.EventStoryReviewFailed, "monitor", storyID, map[string]any{
+			feedbackEvt := state.NewEvent(state.EventStoryQAFailed, "monitor", storyID, map[string]any{
 				"feedback": retryFeedback,
 				"source":   "qa_failure",
 			})
@@ -823,7 +884,7 @@ func (m *Monitor) dispatchNextWave(ctx context.Context, rc *RunContext, repoDir 
 		storyMap[ps.ID] = ps
 	}
 
-	results := m.executor.SpawnAll(repoDir, assignments, storyMap)
+	results := m.executor.SpawnAll(ctx, repoDir, assignments, storyMap)
 
 	var active []ActiveAgent
 	for _, r := range results {
@@ -985,7 +1046,10 @@ func (m *Monitor) executeSplitAction(ctx context.Context, storyID string, action
 	m.dagMu.Lock()
 	defer m.dagMu.Unlock()
 
-	// Create child stories in the event store.
+	// Create child stories in the event store. C6: atomic — if any child
+	// emission fails, abort BEFORE mutating the DAG so we don't leave a
+	// half-split state. We emit STORY_SPLIT only after all children persist.
+	createdChildIDs := make([]string, 0, len(children))
 	for _, child := range children {
 		childEvt := state.NewEvent(state.EventStoryCreated, "manager", child.ID, map[string]any{
 			"id":                  child.ID,
@@ -997,21 +1061,34 @@ func (m *Monitor) executeSplitAction(ctx context.Context, storyID string, action
 			"owned_files":         child.OwnedFiles,
 			"split_depth":         storyData.SplitDepth + 1,
 		})
-		m.eventStore.Append(childEvt)
-		m.projStore.Project(childEvt)
+		if err := m.eventStore.Append(childEvt); err != nil {
+			log.Printf("[split] abort: failed to append child %s: %v", child.ID, err)
+			m.emitSplitFailed(storyID, "child append failed", createdChildIDs, err)
+			return
+		}
+		if err := m.projStore.Project(childEvt); err != nil {
+			log.Printf("[split] abort: failed to project child %s: %v", child.ID, err)
+			m.emitSplitFailed(storyID, "child project failed", createdChildIDs, err)
+			return
+		}
+		createdChildIDs = append(createdChildIDs, child.ID)
 	}
 
 	// Emit STORY_SPLIT for the parent.
-	childIDs := make([]string, len(children))
-	for i, c := range children {
-		childIDs[i] = c.ID
-	}
 	splitEvt := state.NewEvent(state.EventStorySplit, "manager", storyID, map[string]any{
-		"child_story_ids": childIDs,
+		"child_story_ids": createdChildIDs,
 		"reason":          action.Diagnosis,
 	})
-	m.eventStore.Append(splitEvt)
-	m.projStore.Project(splitEvt)
+	if err := m.eventStore.Append(splitEvt); err != nil {
+		log.Printf("[split] failed to append STORY_SPLIT for %s: %v", storyID, err)
+		m.emitSplitFailed(storyID, "split event append failed", createdChildIDs, err)
+		return
+	}
+	if err := m.projStore.Project(splitEvt); err != nil {
+		log.Printf("[split] failed to project STORY_SPLIT for %s: %v", storyID, err)
+		m.emitSplitFailed(storyID, "split event project failed", createdChildIDs, err)
+		return
+	}
 
 	// Mutate the DAG to replace the parent with children.
 	m.escalation.ApplySplit(
@@ -1050,9 +1127,19 @@ func (m *Monitor) handleTechLeadEscalation(ctx context.Context, story PlannedSto
 		fmt.Fprintf(&failureContext, "%s %s (agent: %s)\n", evt.Type, evt.Timestamp.Format("15:04:05"), evt.AgentID)
 	}
 	logPath := filepath.Join(logDir, storyID+".log")
-	if data, err := os.ReadFile(logPath); err == nil {
-		failureContext.WriteString("\nAgent log:\n")
-		failureContext.Write(data)
+	// M11: bound log read to 256 KB to prevent OOM on training-loop runs.
+	if f, err := os.Open(logPath); err == nil {
+		const maxLog = 256 * 1024
+		buf := make([]byte, maxLog)
+		n, _ := f.Read(buf)
+		f.Close()
+		if n > 0 {
+			failureContext.WriteString("\nAgent log:\n")
+			failureContext.Write(buf[:n])
+			if n == maxLog {
+				failureContext.WriteString("\n... (log truncated to 256 KB)")
+			}
+		}
 	}
 
 	// Check if planner is available.
@@ -1236,10 +1323,18 @@ func autoCommit(worktreePath, storyID string) {
 // ensureGitignorePatterns appends NXD artifact patterns to .gitignore if
 // they are not already present, preventing CLAUDE.md, .nxd-prompts/,
 // .serena/, and other tool artifacts from being committed by agents.
+//
+// VXD Phase 1.3: extended pattern list to cover post-completion artifacts
+// (WAVE_CONTEXT.md, .nxd-fix-gaps.md) and the NXD config itself, which
+// agents sometimes echo back into the worktree.
 func ensureGitignorePatterns(worktreePath string) {
 	nxdPatterns := []string{
 		"CLAUDE.md",
+		"WAVE_CONTEXT.md",
+		"REQUIREMENT.md",
+		"nxd.yaml",
 		".nxd-prompts/",
+		".nxd-fix-gaps.md",
 		".serena/",
 	}
 

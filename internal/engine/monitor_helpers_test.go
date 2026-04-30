@@ -28,8 +28,8 @@ func TestEnsureGitignorePatterns_ExistingPatterns(t *testing.T) {
 	dir := t.TempDir()
 	giPath := filepath.Join(dir, ".gitignore")
 
-	// Pre-create .gitignore with all patterns already present
-	existing := "CLAUDE.md\n.nxd-prompts/\n.serena/\n"
+	// Pre-create .gitignore with the FULL extended pattern set (Phase 1.3).
+	existing := "CLAUDE.md\nWAVE_CONTEXT.md\nREQUIREMENT.md\nnxd.yaml\n.nxd-prompts/\n.nxd-fix-gaps.md\n.serena/\n"
 	os.WriteFile(giPath, []byte(existing), 0o644)
 
 	ensureGitignorePatterns(dir)

@@ -147,8 +147,58 @@ func evalCoverageAbove(ctx context.Context, workDir string, c Criterion) Result 
 	return Result{Criterion: c, Passed: true, Actual: fmt.Sprintf("%.1f%%", coverage), Message: "coverage meets threshold"}
 }
 
+// allowedCommandPrefixes restricts what can be run via command_succeeds
+// criteria. The criteria configuration originates from nxd.yaml (operator
+// trust) but is also augmented by LLM split actions, where untrusted text
+// could land. The allowlist below covers all legitimate validation tools
+// NXD ships criteria for, and rejects anything outside this list.
+var allowedCommandPrefixes = []string{
+	"go build", "go test", "go vet", "go run", "go fmt", "go mod tidy",
+	"npm run", "npm test", "npm install", "npm ci", "npx tsc",
+	"pnpm run", "pnpm test", "pnpm install",
+	"yarn build", "yarn test", "yarn install",
+	"python -m", "python3 -m", "pytest",
+	"make ",
+	"cargo build", "cargo test",
+	"./scripts/", "scripts/",
+	"git diff", "git status", "git log",
+}
+
+// IsCommandAllowed reports whether the given command is permitted under the
+// criteria allowlist. Exposed for testing and for callers that need to
+// pre-validate criteria at config-load time.
+func IsCommandAllowed(cmd string) bool {
+	trimmed := strings.TrimSpace(cmd)
+	if trimmed == "" {
+		return false
+	}
+	// Reject shell metacharacters that can chain commands or redirect.
+	if strings.ContainsAny(trimmed, ";&|`$<>") {
+		return false
+	}
+	for _, prefix := range allowedCommandPrefixes {
+		if strings.HasPrefix(trimmed, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 func evalCommandSucceeds(ctx context.Context, workDir string, c Criterion) Result {
-	cmd := exec.CommandContext(ctx, "sh", "-c", c.Target)
+	if !IsCommandAllowed(c.Target) {
+		return Result{
+			Criterion: c, Passed: false,
+			Actual:  c.Target,
+			Message: fmt.Sprintf("command rejected by allowlist: %q (see internal/criteria/evaluator.go)", c.Target),
+		}
+	}
+	// Tokenize and exec without a shell so injection via metachars is
+	// impossible by construction (in addition to the allowlist check).
+	parts := strings.Fields(c.Target)
+	if len(parts) == 0 {
+		return Result{Criterion: c, Passed: false, Message: "empty command"}
+	}
+	cmd := exec.CommandContext(ctx, parts[0], parts[1:]...)
 	cmd.Dir = workDir
 	out, err := cmd.CombinedOutput()
 	if err != nil {

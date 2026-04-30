@@ -60,6 +60,15 @@ func (c *Controller) RegisterCancel(storyID string, cancel context.CancelFunc) {
 	c.cancelFuncs[storyID] = cancel
 }
 
+// DeregisterCancel removes the cancel function for a story, called by the
+// runtime goroutine on normal completion. Without this the cancelFuncs map
+// would grow unbounded across the lifetime of the daemon (H5).
+func (c *Controller) DeregisterCancel(storyID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.cancelFuncs, storyID)
+}
+
 // RunLoop ticks at the configured interval and analyzes active stories.
 // It blocks until ctx is cancelled.
 func (c *Controller) RunLoop(ctx context.Context) {

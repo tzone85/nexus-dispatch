@@ -185,21 +185,44 @@ func (c *OllamaClient) Complete(ctx context.Context, req CompletionRequest) (Com
 
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.httpClient.Do(httpReq)
-	if err != nil {
-		if isConnectionRefused(err) {
-			return CompletionResponse{}, fmt.Errorf(
-				"ollama connection refused at %s: is Ollama running? (start with 'ollama serve'): %w",
-				c.baseURL, err,
-			)
+	// S3-7: exponential backoff on transient 5xx and connection failures.
+	// Bounded retries (3 attempts) so the per-iteration timeout in callers
+	// remains meaningful. 4xx (including 404 model-not-found) is NOT retried.
+	const maxAttempts = 3
+	var resp *http.Response
+	var respBody []byte
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		// Re-build the request body each attempt — net/http drains the
+		// body on the first send.
+		httpReq.Body = io.NopCloser(bytes.NewReader(jsonBody))
+		resp, err = c.httpClient.Do(httpReq)
+		if err != nil {
+			if isConnectionRefused(err) {
+				return CompletionResponse{}, fmt.Errorf(
+					"ollama connection refused at %s: is Ollama running? (start with 'ollama serve'): %w",
+					c.baseURL, err,
+				)
+			}
+			if attempt < maxAttempts && ctx.Err() == nil {
+				backoff := time.Duration(1<<uint(attempt-1)) * 500 * time.Millisecond
+				time.Sleep(backoff)
+				continue
+			}
+			return CompletionResponse{}, fmt.Errorf("ollama http request: %w", err)
 		}
-		return CompletionResponse{}, fmt.Errorf("ollama http request: %w", err)
-	}
-	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return CompletionResponse{}, fmt.Errorf("read response: %w", err)
+		respBody, err = io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return CompletionResponse{}, fmt.Errorf("read response: %w", err)
+		}
+
+		if resp.StatusCode >= 500 && attempt < maxAttempts && ctx.Err() == nil {
+			backoff := time.Duration(1<<uint(attempt-1)) * 500 * time.Millisecond
+			time.Sleep(backoff)
+			continue
+		}
+		break
 	}
 
 	if resp.StatusCode == http.StatusNotFound {

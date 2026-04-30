@@ -144,11 +144,12 @@ func TestApplyData_ImmutableUpdate(t *testing.T) {
 		version:           "1.0.0",
 		width:             100,
 		height:            30,
-		storyScrollOffset: 5,
+		storyScrollOffset: 2,
 	}
 
 	d := dataMsg{
-		agents: []state.Agent{{ID: "agent-1", Status: "active"}},
+		agents:  []state.Agent{{ID: "agent-1", Status: "active"}},
+		stories: []state.Story{{ID: "s-1"}, {ID: "s-2"}, {ID: "s-3"}, {ID: "s-4"}, {ID: "s-5"}},
 	}
 
 	updated := original.applyData(d)
@@ -161,12 +162,25 @@ func TestApplyData_ImmutableUpdate(t *testing.T) {
 	if len(updated.agents) != 1 {
 		t.Errorf("updated model agents len = %d, want 1", len(updated.agents))
 	}
-	// Preserved fields must survive the update.
-	if updated.storyScrollOffset != 5 {
-		t.Errorf("applyData did not preserve storyScrollOffset: got %d, want 5", updated.storyScrollOffset)
+	// Scroll offset survives when still within range (2 < 5 stories).
+	if updated.storyScrollOffset != 2 {
+		t.Errorf("applyData did not preserve storyScrollOffset: got %d, want 2", updated.storyScrollOffset)
 	}
 	if updated.width != 100 {
 		t.Errorf("applyData did not preserve width: got %d, want 100", updated.width)
+	}
+}
+
+// TestApplyData_ClampsScrollOffset verifies L6: when stories shrink below the
+// scroll offset, the offset clamps to 0 instead of pointing past the end.
+func TestApplyData_ClampsScrollOffset(t *testing.T) {
+	original := Model{storyScrollOffset: 10}
+	d := dataMsg{
+		stories: []state.Story{{ID: "s-1"}}, // only one story now
+	}
+	updated := original.applyData(d)
+	if updated.storyScrollOffset != 0 {
+		t.Errorf("expected scroll clamped to 0, got %d", updated.storyScrollOffset)
 	}
 }
 

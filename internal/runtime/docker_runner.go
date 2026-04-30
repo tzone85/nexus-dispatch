@@ -6,7 +6,44 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/tzone85/nexus-dispatch/internal/sanitize"
 )
+
+// dangerousDockerFlags are flags that can break out of the agent sandbox
+// (privilege escalation, host filesystem access, capability grants). H12:
+// reject these from extra_flags unless the operator explicitly opts in via
+// a future allow_dangerous config field.
+var dangerousDockerFlags = []string{
+	"--privileged",
+	"--cap-add",
+	"--security-opt=label=disable",
+	"--device",
+	"--pid=host",
+	"--pid=container",
+	"--ipc=host",
+	"--userns=host",
+	"--uts=host",
+	"--cgroupns=host",
+}
+
+// validateDockerExtraFlags rejects flags that escalate the container's
+// privileges. Returns an error describing the first dangerous flag found.
+func validateDockerExtraFlags(flags []string) error {
+	for _, f := range flags {
+		// Match exact and prefix-with-= forms (e.g. --cap-add=SYS_ADMIN).
+		for _, danger := range dangerousDockerFlags {
+			if f == danger || strings.HasPrefix(f, danger+"=") {
+				return fmt.Errorf("dangerous docker flag rejected: %q (set runtimes.<name>.docker.allow_dangerous: true to override)", f)
+			}
+		}
+		// Also reject anything containing shell metacharacters.
+		if strings.ContainsAny(f, ";&|`$<>") {
+			return fmt.Errorf("docker flag contains shell metacharacters: %q", f)
+		}
+	}
+	return nil
+}
 
 // DockerRunner executes agent sessions inside Docker containers.
 type DockerRunner struct {
@@ -37,13 +74,22 @@ func NewDockerRunner(cfg DockerConfig) *DockerRunner {
 
 // Run starts a Docker container with the prepared execution.
 func (r *DockerRunner) Run(pe PreparedExecution) error {
+	// H13: validate session name before using it as a container name.
+	if !sanitize.ValidIdentifier(pe.SessionName) {
+		return fmt.Errorf("invalid session name %q", pe.SessionName)
+	}
+	// H12: reject dangerous extra flags before assembling the command.
+	if err := validateDockerExtraFlags(r.extraFlags); err != nil {
+		return err
+	}
 	// Write setup files to the work directory before mounting.
 	for path, content := range pe.SetupFiles {
 		dir := filepath.Dir(path)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return fmt.Errorf("create dir for setup file %s: %w", path, err)
 		}
-		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		// H11-equiv: setup files often carry env vars / API keys; mode 0o600.
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 			return fmt.Errorf("write setup file %s: %w", path, err)
 		}
 	}
