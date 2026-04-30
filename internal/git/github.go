@@ -79,8 +79,14 @@ func GetPRStatus(repoDir string, prNumber int) (PRInfo, error) {
 	return info, nil
 }
 
-// PushBranch pushes the named branch to origin and sets up tracking.
+// PushBranch pushes the named branch to origin and sets up tracking. For
+// local-only repos (no `origin` remote), this is a no-op — the branch
+// already exists in the local repo and there is no remote to push to.
+// LB10: companion to LB7 (FetchBranch).
 func PushBranch(repoDir, branch string) error {
+	if !HasRemote(repoDir, "origin") {
+		return nil
+	}
 	cmd := exec.Command("git", "push", "-u", "origin", branch)
 	cmd.Dir = repoDir
 	out, err := cmd.CombinedOutput()
@@ -90,8 +96,12 @@ func PushBranch(repoDir, branch string) error {
 	return nil
 }
 
-// DeleteRemoteBranch removes a branch from the origin remote.
+// DeleteRemoteBranch removes a branch from the origin remote. No-op for
+// local-only repos.
 func DeleteRemoteBranch(repoDir, branch string) error {
+	if !HasRemote(repoDir, "origin") {
+		return nil
+	}
 	cmd := exec.Command("git", "push", "origin", "--delete", branch)
 	cmd.Dir = repoDir
 	out, err := cmd.CombinedOutput()

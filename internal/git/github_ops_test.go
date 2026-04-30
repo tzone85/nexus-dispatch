@@ -113,16 +113,13 @@ func TestGetPRStatus_InvalidJSON(t *testing.T) {
 	}
 }
 
-// TestPushBranch_NoRemote tests PushBranch when there is no remote configured.
+// TestPushBranch_NoRemote verifies PushBranch is a no-op for local-only
+// repos (LB10 fix — companion to LB7). Previously failed with "fatal:
+// 'origin' does not appear to be a git repository".
 func TestPushBranch_NoRemote(t *testing.T) {
 	dir := helperInitRepo(t)
-
-	err := PushBranch(dir, "main")
-	if err == nil {
-		t.Fatal("PushBranch should fail when no remote is configured")
-	}
-	if !strings.Contains(err.Error(), "git push") {
-		t.Errorf("error should mention 'git push', got: %v", err)
+	if err := PushBranch(dir, "main"); err != nil {
+		t.Fatalf("PushBranch should be a no-op for local-only repos, got: %v", err)
 	}
 }
 
@@ -151,16 +148,12 @@ func TestPushBranch_WithRemote(t *testing.T) {
 	}
 }
 
-// TestDeleteRemoteBranch_NoRemote tests DeleteRemoteBranch when there is no remote.
+// TestDeleteRemoteBranch_NoRemote verifies DeleteRemoteBranch is a no-op
+// for local-only repos (LB10 fix — companion to PushBranch + FetchBranch).
 func TestDeleteRemoteBranch_NoRemote(t *testing.T) {
 	dir := helperInitRepo(t)
-
-	err := DeleteRemoteBranch(dir, "some-branch")
-	if err == nil {
-		t.Fatal("DeleteRemoteBranch should fail when no remote is configured")
-	}
-	if !strings.Contains(err.Error(), "git push --delete") {
-		t.Errorf("error should mention 'git push --delete', got: %v", err)
+	if err := DeleteRemoteBranch(dir, "some-branch"); err != nil {
+		t.Fatalf("DeleteRemoteBranch should be a no-op for local-only repos, got: %v", err)
 	}
 }
 

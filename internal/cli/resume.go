@@ -366,9 +366,23 @@ func runResume(cmd *cobra.Command, args []string) error {
 		SuccessCriteria: successCriteria,
 	}, &engine.ExecRunner{}, s.Events, s.Proj)
 
+	// LB11: honor config.Merge.Mode. Default mode (no GitHub remote, or
+	// mode: local in YAML) uses NewLocalMerger which performs offline git
+	// merges. Only fall back to GitHub when mode: github is set explicitly.
 	var merger *engine.Merger
-	if nxdgit.GHAvailable() {
-		merger = engine.NewMerger(s.Config.Merge, &ghOpsAdapter{}, s.Events, s.Proj)
+	switch s.Config.Merge.Mode {
+	case engine.MergeModeLocal, "":
+		merger = engine.NewLocalMerger(s.Config.Merge, nxdgit.NewLocalMerger(repoDir), s.Events, s.Proj)
+	case engine.MergeModeGitHub:
+		if nxdgit.GHAvailable() {
+			merger = engine.NewMerger(s.Config.Merge, &ghOpsAdapter{}, s.Events, s.Proj)
+		} else {
+			log.Printf("[merge] mode=github but `gh` CLI not available; falling back to local merge")
+			merger = engine.NewLocalMerger(s.Config.Merge, nxdgit.NewLocalMerger(repoDir), s.Events, s.Proj)
+		}
+	default:
+		log.Printf("[merge] unknown merge.mode=%q; defaulting to local", s.Config.Merge.Mode)
+		merger = engine.NewLocalMerger(s.Config.Merge, nxdgit.NewLocalMerger(repoDir), s.Events, s.Proj)
 	}
 
 	watchdog := engine.NewWatchdog(engine.WatchdogConfig{

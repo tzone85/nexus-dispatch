@@ -739,6 +739,14 @@ func (g *GemmaRuntime) execRunCommand(call llm.ToolCall, workDir string) llm.Too
 			strings.HasPrefix(trimmed, "mv"),
 			strings.HasPrefix(trimmed, "cp"):
 			hint = "\nhint: file mutation is intentionally blocked. Use write_file or edit_file. To delete a file, write empty content."
+		case strings.HasPrefix(trimmed, "git ") ||
+			strings.HasPrefix(trimmed, "git\t"):
+			// LB9 (live test): qwen 14b loves to manually run git checkout/add/commit/status.
+			// NXD already auto-commits in the post-execution pipeline AND creates the branch.
+			// The agent's job is purely to write/edit code; git operations are a no-op.
+			hint = "\nhint: do NOT run git commands. NXD already created the branch and will auto-commit your changes after task_complete. Just write/edit files; the orchestrator handles git."
+		case strings.Contains(trimmed, "&&") || strings.Contains(trimmed, "||"):
+			hint = "\nhint: chained commands are blocked. Run one command per run_command call."
 		}
 		result.Content = fmt.Sprintf("command not in allowlist: %s%s", args.Command, hint)
 		return result
