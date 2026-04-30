@@ -109,6 +109,24 @@ func (q *QA) Run(ctx context.Context, storyID, worktreePath string) (QAResult, e
 		}
 	}
 
+	// LB14 (live test): the QAConfig also carries declarative SuccessCriteria
+	// (set via nxd.yaml's qa.success_criteria block). Without this loop the
+	// criteria were silently ignored when LintCommand / BuildCommand /
+	// TestCommand were empty, causing QA to pass even with a broken build.
+	if len(q.config.SuccessCriteria) > 0 {
+		critResults := criteria.EvaluateAll(ctx, worktreePath, q.config.SuccessCriteria)
+		for _, cr := range critResults {
+			result.Checks = append(result.Checks, QACheckResult{
+				Name:   fmt.Sprintf("criteria:%s(%s)", cr.Criterion.Type, cr.Criterion.Target),
+				Passed: cr.Passed,
+				Output: cr.Message,
+			})
+			if !cr.Passed {
+				result.Passed = false
+			}
+		}
+	}
+
 	// Emit result event
 	eventType := state.EventStoryQAPassed
 	if !result.Passed {
