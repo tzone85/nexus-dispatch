@@ -640,11 +640,23 @@ func (g *GemmaRuntime) execWriteFile(call llm.ToolCall, workDir string) llm.Tool
 	// Reject the canonical directory-name pattern: empty content + path with
 	// no file extension and not a known well-known filename.
 	cleaned := strings.TrimSpace(args.Path)
-	if strings.TrimSpace(args.Content) == "" && !looksLikeFile(cleaned) {
+	contentTrimmed := strings.TrimSpace(args.Content)
+	if contentTrimmed == "" && !looksLikeFile(cleaned) {
 		result.IsError = true
 		result.Content = "write_file expects a real FILE path with content. " +
 			"Path " + cleaned + " looks like a directory name (no extension, no content). " +
 			"To create a directory, just write a real file inside it (e.g. \"" + cleaned + "/board.go\") — write_file auto-creates parent dirs."
+		return result
+	}
+
+	// LB13: empty test files break the build. A *_test.go / *.test.ts /
+	// *_spec.py / etc. with empty content fails compilation immediately.
+	// Reject and tell the agent to write at least one passing test.
+	if contentTrimmed == "" && looksLikeTestFile(cleaned) {
+		result.IsError = true
+		result.Content = "write_file rejected: " + cleaned + " is a test file but content is empty. " +
+			"Write at least one test function (e.g. for Go: 'package game\\n\\nimport \"testing\"\\n\\nfunc TestSmoke(t *testing.T) {}'). " +
+			"Empty test files fail the build/QA gate."
 		return result
 	}
 
@@ -718,6 +730,27 @@ func (g *GemmaRuntime) execEditFile(call llm.ToolCall, workDir string) llm.ToolC
 
 	result.Content = fmt.Sprintf("edited %s: replaced text", args.Path)
 	return result
+}
+
+// looksLikeTestFile reports whether a path looks like a test file by
+// language convention. Used by LB13 to reject empty-content writes that
+// would break compilation.
+func looksLikeTestFile(path string) bool {
+	base := strings.ToLower(filepath.Base(path))
+	for _, suffix := range []string{
+		"_test.go", ".test.ts", ".test.tsx", ".test.js", ".test.jsx",
+		".spec.ts", ".spec.tsx", ".spec.js", ".spec.jsx",
+		"_test.py", "_spec.py", "_test.rb", "_spec.rb",
+		"_test.rs",
+	} {
+		if strings.HasSuffix(base, suffix) {
+			return true
+		}
+	}
+	if strings.HasPrefix(base, "test_") && strings.HasSuffix(base, ".py") {
+		return true
+	}
+	return false
 }
 
 // looksLikeFile heuristically reports whether a path looks like a real file
