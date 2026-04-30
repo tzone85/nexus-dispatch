@@ -131,6 +131,14 @@ func (p *Planner) Plan(ctx context.Context, reqID, requirement, repoPath string)
 
 	systemPrompt := agent.SystemPrompt(agent.RoleTechLead, promptCtx)
 
+	// Inject DDD+TDD methodology guidance unless the requirement explicitly
+	// opts out (`methodology: relaxed|none|...`). The opt-out only takes
+	// effect when config.methodology.allow_override is true.
+	methodology := buildMethodologyDirective(p.config.Methodology, requirement)
+	if methodology != "" {
+		systemPrompt += "\n\n" + methodology
+	}
+
 	userMessage := fmt.Sprintf(`Decompose this requirement into atomic, implementable stories:
 
 Requirement: %s
@@ -287,6 +295,26 @@ architecture and conventions when planning stories.`, profileContext)
 					stories[i].DependsOn = append(stories[i].DependsOn, firstID)
 				}
 			}
+		}
+	}
+
+	// TDD enforcement: when methodology.tdd is on (default), every story
+	// that owns at least one source-code file MUST also own a matching
+	// test file. We log a warning and let the agent fix it during the
+	// inner loop instead of hard-failing the whole plan, since some
+	// stories legitimately touch only config / non-code files.
+	methDecision := ResolveMethodology(p.config.Methodology, requirement)
+	if methDecision.TDD {
+		warned := false
+		for _, s := range stories {
+			if !storyOwnsCodeWithoutTest(s) {
+				continue
+			}
+			if !warned {
+				log.Printf("[planner] TDD enforcement: stories owning source files SHOULD also own a test file; flagging:")
+				warned = true
+			}
+			log.Printf("[planner]   - %s (%s) owns code without a paired test file", s.ID, s.Title)
 		}
 	}
 

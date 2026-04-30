@@ -107,6 +107,16 @@ func DefaultConfig() Config {
 				{Kind: "test_passes", Value: "go test ./..."},
 			},
 		},
+		// DDD + TDD on by default. Per-requirement opt-out via the
+		// `methodology: relaxed` directive in the requirement text or a
+		// `.spec/methodology.md` file. Operators can disable globally by
+		// setting `methodology.tdd: false` in nxd.yaml.
+		Methodology: MethodologyConfig{
+			DDD:            true,
+			TDD:            true,
+			MinCoveragePct: 80,
+			AllowOverride:  true,
+		},
 		Plugins: PluginConfig{},
 		Runtimes: map[string]RuntimeConfig{
 			"aider": {

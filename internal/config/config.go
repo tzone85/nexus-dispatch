@@ -32,6 +32,28 @@ type Config struct {
 	QA            QAConfig                 `yaml:"qa"`
 	Runtimes      map[string]RuntimeConfig `yaml:"runtimes"`
 	Plugins       PluginConfig             `yaml:"plugins"`
+	Methodology   MethodologyConfig        `yaml:"methodology"`
+}
+
+// MethodologyConfig controls the default design / testing approach NXD
+// applies when planning and dispatching stories. The user can opt out per
+// requirement (via `methodology: relaxed` in the requirement text or a
+// `methodology.md` in `.spec/`) or globally via this YAML block.
+type MethodologyConfig struct {
+	// DDD: Domain-Driven Design defaults — domain layer separation, ubiquitous
+	// language enforcement, bounded contexts when the project is large enough.
+	// Default: true.
+	DDD bool `yaml:"ddd"`
+	// TDD: Test-Driven Development defaults — tests written FIRST, every story
+	// owning a feature must own its test file, coverage gate enforced.
+	// Default: true.
+	TDD bool `yaml:"tdd"`
+	// MinCoveragePct gates merge when TDD is on. Default: 80.
+	MinCoveragePct int `yaml:"min_coverage_pct"`
+	// AllowOverride permits per-requirement opt-out via "methodology: relaxed"
+	// directive. Set to false to enforce DDD/TDD on every requirement
+	// regardless of what the requirement text says. Default: true.
+	AllowOverride bool `yaml:"allow_override"`
 }
 
 // PlanningConfig controls how the planner decomposes requirements into stories.
