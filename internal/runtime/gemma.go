@@ -634,6 +634,20 @@ func (g *GemmaRuntime) execWriteFile(call llm.ToolCall, workDir string) llm.Tool
 		return result
 	}
 
+	// LB12 (live test): qwen 14b sometimes calls write_file with a directory
+	// path and empty content (e.g. path="internal/game"), creating an empty
+	// FILE that then blocks future stories from creating files inside it.
+	// Reject the canonical directory-name pattern: empty content + path with
+	// no file extension and not a known well-known filename.
+	cleaned := strings.TrimSpace(args.Path)
+	if strings.TrimSpace(args.Content) == "" && !looksLikeFile(cleaned) {
+		result.IsError = true
+		result.Content = "write_file expects a real FILE path with content. " +
+			"Path " + cleaned + " looks like a directory name (no extension, no content). " +
+			"To create a directory, just write a real file inside it (e.g. \"" + cleaned + "/board.go\") — write_file auto-creates parent dirs."
+		return result
+	}
+
 	absPath, err := safePath(args.Path, workDir)
 	if err != nil {
 		result.IsError = true
@@ -704,6 +718,29 @@ func (g *GemmaRuntime) execEditFile(call llm.ToolCall, workDir string) llm.ToolC
 
 	result.Content = fmt.Sprintf("edited %s: replaced text", args.Path)
 	return result
+}
+
+// looksLikeFile heuristically reports whether a path looks like a real file
+// rather than a directory name. Used by execWriteFile to reject the
+// "agent wrote a directory as an empty file" pattern (LB12).
+//
+// True when the path:
+//   - has a file extension (last component contains a dot after the first char)
+//   - is a well-known extensionless filename (Makefile, Dockerfile, etc.)
+func looksLikeFile(path string) bool {
+	base := filepath.Base(path)
+	switch base {
+	case "Makefile", "Dockerfile", "Containerfile", "Vagrantfile",
+		"Gemfile", "Procfile", "Rakefile", "Gopkg.lock",
+		"README", "LICENSE", "AUTHORS", "CONTRIBUTORS", "CHANGELOG",
+		"NOTICE", "COPYING", "VERSION", ".gitignore", ".dockerignore",
+		".gitattributes", ".editorconfig", ".env":
+		return true
+	}
+	if i := strings.LastIndex(base, "."); i > 0 && i < len(base)-1 {
+		return true
+	}
+	return false
 }
 
 // execRunCommand runs a shell command if it matches the allowlist.
