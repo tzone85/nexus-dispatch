@@ -223,6 +223,19 @@ func (g *GemmaRuntime) Execute(ctx context.Context, workDir, model, systemPrompt
 		// Truncate oversized responses to prevent context window exhaustion.
 		resp.Content = llm.TruncateContent(resp.Content, llm.MaxResponseContentLen)
 
+		// LB8 (live test): qwen2.5-coder and similar local models commonly
+		// emit tool calls as raw JSON in the content field rather than via
+		// the structured tool_calls API. If we got no structured calls but
+		// the content looks like one or more tool-call objects, parse them
+		// out and execute as if they were real tool calls.
+		if len(resp.ToolCalls) == 0 {
+			extracted := extractInlineToolCalls(resp.Content)
+			if len(extracted) > 0 {
+				log.Printf("[gemma] recovered %d inline tool call(s) from text content", len(extracted))
+				resp.ToolCalls = extracted
+			}
+		}
+
 		// No tool calls means the model is done talking without completing.
 		if len(resp.ToolCalls) == 0 {
 			g.emitProgress(ProgressEvent{
