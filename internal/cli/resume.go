@@ -294,6 +294,10 @@ func runResume(cmd *cobra.Command, args []string) error {
 	controller := engine.NewController(s.Config.Controller, nil, s.Events, s.Proj)
 	executor.SetController(controller)
 
+	// Operator directive injection: native runtime checks for pending
+	// USER_DIRECTIVE events at iteration start. CLI: `nxd direct <id>`.
+	executor.SetDirectiveStore(engine.NewDirectiveStore(s.Events))
+
 	// Create cancellable context for spawn (parented to ctrl-c). The monitor
 	// reuses this same context further down so cancellation propagates to
 	// in-flight native goroutines.

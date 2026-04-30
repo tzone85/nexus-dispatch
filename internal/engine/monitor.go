@@ -692,12 +692,20 @@ func (m *Monitor) isRequirementPaused(storyID string) bool {
 // This is used when a fatal, non-retryable error (e.g. billing exhaustion)
 // makes further progress impossible. The user must resolve the issue and
 // run "nxd resume" to continue.
+//
+// Before pausing, emits a HUMAN_REVIEW_NEEDED event with a structured
+// diagnosis (failure pattern + suggested operator directives) so the
+// dashboard / CLI can surface actionable next steps instead of just
+// "paused, please resume".
 func (m *Monitor) pauseRequirement(storyID, reason string) {
 	story, err := m.projStore.GetStory(storyID)
 	if err != nil {
 		log.Printf("[pipeline] cannot pause: failed to look up story %s: %v", storyID, err)
 		return
 	}
+
+	// Build a diagnosis payload from recent events for this story.
+	m.emitHumanReviewNeeded(story, reason)
 
 	pauseEvt := state.NewEvent(state.EventReqPaused, "monitor", "", map[string]any{
 		"id":     story.ReqID,
@@ -710,7 +718,116 @@ func (m *Monitor) pauseRequirement(storyID, reason string) {
 		log.Printf("[pipeline] failed to project pause event for req %s: %v", story.ReqID, err)
 	}
 	log.Printf("[pipeline] requirement %s paused: %s", story.ReqID, reason)
-	log.Printf("[pipeline] resolve the issue and run 'nxd resume %s' to continue", story.ReqID)
+	log.Printf("[pipeline] redirect with: nxd direct %s \"<your guidance>\"", story.ReqID)
+	log.Printf("[pipeline] or resume:    nxd resume %s", story.ReqID)
+}
+
+// emitHumanReviewNeeded inspects the story's recent failure history and
+// emits a structured event capturing:
+//   - the immediate cause (reason passed to pauseRequirement)
+//   - the dominant failure pattern (review-rejection, criteria-fail,
+//     merge-error, etc) inferred from the last few events
+//   - 1-3 suggested operator directives that an operator could send via
+//     `nxd direct` to break the loop
+func (m *Monitor) emitHumanReviewNeeded(story state.Story, reason string) {
+	// Pull the last 50 events for this story to reason about failure mode.
+	events, _ := m.eventStore.List(state.EventFilter{StoryID: story.ID, Limit: 50})
+
+	// Counters for the failure-pattern heuristic.
+	var (
+		reviewFails   int
+		qaFails       int
+		criteriaFails int
+		mergeErrors   int
+		emptyDiffs    int
+	)
+	for _, ev := range events {
+		switch ev.Type {
+		case state.EventStoryReviewFailed:
+			reviewFails++
+		case state.EventStoryQAFailed:
+			qaFails++
+		case state.EventStoryProgress:
+			payload := state.DecodePayload(ev.Payload)
+			if isErr, _ := payload["is_error"].(bool); isErr {
+				if detail, _ := payload["detail"].(string); strings.Contains(detail, "criteria failed") {
+					criteriaFails++
+				}
+			}
+		case "STORY_MERGE_ERROR":
+			mergeErrors++
+		}
+	}
+	// Empty-diff signal lives in pause reason text.
+	if strings.Contains(reason, "agent produced no code changes") || strings.Contains(reason, "empty diff") {
+		emptyDiffs++
+	}
+
+	// Pick the dominant pattern.
+	var pattern string
+	var suggestions []string
+	switch {
+	case mergeErrors > 0 || strings.Contains(reason, "merge"):
+		pattern = "merge_error"
+		suggestions = []string{
+			"nxd direct " + story.ReqID + " \"resolve the rebase conflict in <file> by keeping both changes\"",
+			"nxd direct " + story.ID + " \"skip the merge step — local-only repo\"",
+		}
+	case emptyDiffs > 0:
+		pattern = "empty_diff"
+		suggestions = []string{
+			"nxd direct " + story.ID + " \"start by writing a minimal failing test in <test-file>\"",
+			"nxd direct " + story.ID + " \"the prior attempt left an empty file at <path>; delete it first\"",
+		}
+	case qaFails > criteriaFails && qaFails > reviewFails:
+		pattern = "qa_failing"
+		suggestions = []string{
+			"nxd direct " + story.ID + " \"fix the failing test by <hypothesis>\"",
+			"nxd direct " + story.ReqID + " \"relax the test_passes criterion temporarily — set qa.success_criteria in nxd.yaml\"",
+		}
+	case criteriaFails > 0:
+		pattern = "criteria_thrashing"
+		suggestions = []string{
+			"nxd direct " + story.ID + " \"focus on getting `go build ./...` green first; tests can fail for now\"",
+			"nxd direct " + story.ReqID + " \"split this story into smaller pieces — each owning ONE file\"",
+		}
+	case reviewFails > 0:
+		pattern = "review_rejection"
+		suggestions = []string{
+			"nxd direct " + story.ID + " \"address the reviewer's last comment specifically: <quote>\"",
+			"nxd direct " + story.ID + " \"the reviewer is being overly strict; ship the minimum and iterate\"",
+		}
+	default:
+		pattern = "unknown"
+		suggestions = []string{
+			"nxd status --req " + story.ReqID + " (inspect events)",
+			"nxd direct " + story.ID + " \"<your guidance>\"",
+			"nxd resume " + story.ReqID + " --godmode (try again)",
+		}
+	}
+
+	payload := map[string]any{
+		"req_id":          story.ReqID,
+		"story_id":        story.ID,
+		"reason":          reason,
+		"failure_pattern": pattern,
+		"counters": map[string]int{
+			"review_failed":   reviewFails,
+			"qa_failed":       qaFails,
+			"criteria_failed": criteriaFails,
+			"merge_error":     mergeErrors,
+			"empty_diffs":     emptyDiffs,
+		},
+		"suggested_directives": suggestions,
+	}
+	evt := state.NewEvent(state.EventHumanReviewNeeded, "monitor", story.ID, payload)
+	if err := m.eventStore.Append(evt); err != nil {
+		log.Printf("[pipeline] append HUMAN_REVIEW_NEEDED for %s: %v", story.ID, err)
+	}
+	log.Printf("[pipeline] HUMAN_REVIEW_NEEDED for %s — pattern=%s; suggested actions:", story.ID, pattern)
+	for _, s := range suggestions {
+		log.Printf("           %s", s)
+	}
 }
 
 // resetStoryToDraft uses the EscalationMachine to decide whether the story

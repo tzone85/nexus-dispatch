@@ -41,7 +41,8 @@ type Executor struct {
 	artifactStore *artifact.Store
 	scratchboard  *scratchboard.Scratchboard
 	controller    *Controller
-	projectDir    string // path to project state dir (for loading RepoProfile)
+	directives    *DirectiveStore // optional: feeds operator directives into native runtime iterations
+	projectDir    string          // path to project state dir (for loading RepoProfile)
 }
 
 // SetProjectDir sets the project state directory for loading RepoProfile.
@@ -80,6 +81,13 @@ func (e *Executor) SetScratchboard(sb *scratchboard.Scratchboard) {
 // SetController sets the periodic controller for context cancellation support.
 func (e *Executor) SetController(c *Controller) {
 	e.controller = c
+}
+
+// SetDirectiveStore wires the operator-directive store. When set, the
+// native runtime checks for pending directives at the top of each
+// iteration and prepends them to the agent's prompt.
+func (e *Executor) SetDirectiveStore(d *DirectiveStore) {
+	e.directives = d
 }
 
 // SpawnResult holds the outcome of spawning an agent for one assignment.
@@ -490,6 +498,10 @@ func (e *Executor) spawnNative(ctx context.Context, repoDir string, a Assignment
 		gemmaRT.StoryID = a.StoryID
 		gemmaRT.Scratchboard = e.scratchboard
 		gemmaRT.Criteria = configCriteriaToRuntime(e.config.QA.SuccessCriteria)
+		// Operator-directive injection: pull pending instructions for this
+		// req/story at the top of each iteration. Nil-safe.
+		gemmaRT.ReqID = a.ReqID
+		gemmaRT.Directives = e.directives.AsRuntimeProvider()
 
 		// Wire progress callback to emit fine-grained STORY_PROGRESS events.
 		gemmaRT.OnProgress = func(prog runtime.ProgressEvent) {

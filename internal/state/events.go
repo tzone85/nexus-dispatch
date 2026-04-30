@@ -71,6 +71,27 @@ const (
 	EventWorktreePruned EventType = "WORKTREE_PRUNED"
 	EventBranchDeleted  EventType = "BRANCH_DELETED"
 	EventGCCompleted    EventType = "GC_COMPLETED"
+
+	// Human-in-the-loop events.
+	//
+	// EventUserDirective carries an operator instruction targeted at a
+	// requirement (req_id) or a specific story (story_id). The native
+	// runtime checks for unacknowledged directives at the top of every
+	// iteration and prepends them to the agent's prompt. Used to
+	// redirect work mid-flight without pausing the run.
+	EventUserDirective EventType = "USER_DIRECTIVE"
+
+	// EventDirectiveAcked is emitted by the runtime once a directive
+	// has been consumed (added to the agent's prompt). Pairs each
+	// USER_DIRECTIVE with the iteration that consumed it so the dashboard
+	// can show "delivered" state.
+	EventDirectiveAcked EventType = "DIRECTIVE_ACKED"
+
+	// EventHumanReviewNeeded is emitted when an automated path has
+	// genuinely run out of moves (max split depth reached, all tiers
+	// exhausted, criteria still failing). Carries a structured diagnosis
+	// + suggested directives so an operator can quickly redirect.
+	EventHumanReviewNeeded EventType = "HUMAN_REVIEW_NEEDED"
 )
 
 // Event represents a single domain event in the append-only event store.

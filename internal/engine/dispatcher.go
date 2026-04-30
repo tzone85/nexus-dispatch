@@ -21,6 +21,7 @@ var safeStoryIDPattern = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
 // and branch metadata.
 type Assignment struct {
 	StoryID      string
+	ReqID        string // parent requirement, used to scope operator directives
 	Role         agent.Role
 	AgentID      string
 	SessionName  string
@@ -102,6 +103,7 @@ func (d *Dispatcher) DispatchWave(dag *graph.DAG, completed map[string]bool, req
 
 		assignment := Assignment{
 			StoryID:     story.ID,
+			ReqID:       reqID,
 			Role:        role,
 			AgentID:     agentID,
 			SessionName: sessionName,

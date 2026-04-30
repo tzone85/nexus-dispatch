@@ -61,6 +61,28 @@ type GemmaRuntime struct {
 	Criteria     []criteria.Criterion // optional success criteria to evaluate after task_complete
 	AgentID      string               // used as author when writing to scratchboard
 	StoryID      string               // used as context when writing to scratchboard
+	ReqID        string               // used to scope directive lookups
+	Directives   DirectiveProvider    // optional: inject operator directives at iteration start
+}
+
+// DirectiveProvider supplies pending operator instructions to the runtime
+// at iteration boundaries. Implemented by engine.DirectiveStore. Kept in
+// the runtime package as an interface so runtime can stay free of an
+// engine import dependency.
+type DirectiveProvider interface {
+	// Pending returns unacknowledged instructions targeted at reqID/storyID.
+	// The result is a slice of (id, instruction) pairs; the runtime is
+	// responsible for ACK-ing them after delivery.
+	Pending(reqID, storyID string) ([]PendingDirective, error)
+	// Ack records that the listed directive IDs have been delivered.
+	Ack(agentID, storyID string, ids []string) error
+}
+
+// PendingDirective is the runtime's view of a directive — it's just an
+// ID + instruction text. Engine layer adds richer fields.
+type PendingDirective struct {
+	ID          string
+	Instruction string
 }
 
 // NewGemmaRuntime creates a new GemmaRuntime with the given LLM client and
@@ -188,6 +210,40 @@ func (g *GemmaRuntime) Execute(ctx context.Context, workDir, model, systemPrompt
 	criteriaRejections := 0 // tracks how many times task_complete was rejected by criteria
 
 	for i := 0; i < g.config.MaxIterations; i++ {
+		// Operator directive injection: at iteration start, pull any
+		// unacknowledged directives targeted at this story and prepend
+		// them as a user message. Once delivered, ACK them so the same
+		// instruction isn't replayed on every iteration.
+		if g.Directives != nil {
+			pending, derr := g.Directives.Pending(g.ReqID, g.StoryID)
+			if derr != nil {
+				log.Printf("[gemma] directive lookup failed: %v", derr)
+			} else if len(pending) > 0 {
+				var b strings.Builder
+				b.WriteString("OPERATOR DIRECTIVE (apply before continuing):\n")
+				ids := make([]string, 0, len(pending))
+				for _, d := range pending {
+					b.WriteString("- ")
+					b.WriteString(strings.TrimSpace(d.Instruction))
+					b.WriteString("\n")
+					ids = append(ids, d.ID)
+				}
+				messages = append(messages, llm.Message{
+					Role:    llm.RoleUser,
+					Content: b.String(),
+				})
+				if ackErr := g.Directives.Ack(g.AgentID, g.StoryID, ids); ackErr != nil {
+					log.Printf("[gemma] directive ack failed: %v", ackErr)
+				}
+				g.emitProgress(ProgressEvent{
+					Iteration: i + 1,
+					MaxIter:   g.config.MaxIterations,
+					Phase:     PhaseThinking,
+					Detail:    fmt.Sprintf("delivered %d operator directive(s)", len(pending)),
+				})
+			}
+		}
+
 		// Coarse progress: iteration started, model is thinking.
 		g.emitProgress(ProgressEvent{
 			Iteration: i + 1,
