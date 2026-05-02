@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/tzone85/nexus-dispatch/internal/config"
+	"github.com/tzone85/nexus-dispatch/internal/nlog"
 	"github.com/tzone85/nexus-dispatch/internal/state"
 )
 
@@ -24,6 +25,11 @@ func loadStores(cfgPath string) (stores, error) {
 	if err != nil {
 		return stores{}, err
 	}
+
+	// Apply log-level / log-format from workspace config. nlog.Setup is
+	// idempotent; main.go calls it earlier with env vars, so this only
+	// "promotes" the level if the user pinned it in YAML.
+	nlog.Setup(cfg.Workspace.LogLevel, cfg.Workspace.LogFormat)
 
 	stateDir := expandHome(cfg.Workspace.StateDir)
 

@@ -83,7 +83,12 @@ type PlanningConfig struct {
 type WorkspaceConfig struct {
 	StateDir            string `yaml:"state_dir"`
 	Backend             string `yaml:"backend"`
+	// LogLevel selects slog level filter: debug | info | warn | error.
+	// Empty means info. Honored by internal/nlog.Setup.
 	LogLevel            string `yaml:"log_level"`
+	// LogFormat selects output: text (human, default) | json (machine /
+	// log aggregators).  Honored by internal/nlog.Setup.
+	LogFormat           string `yaml:"log_format,omitempty"`
 	LogRetentionDays    int    `yaml:"log_retention_days"`
 	UpdateCheck         bool   `yaml:"update_check"`
 	UpdateIntervalHours int    `yaml:"update_interval_hours"`
