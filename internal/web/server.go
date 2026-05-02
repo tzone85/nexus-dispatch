@@ -34,8 +34,9 @@ type Server struct {
 	metricsCache *MetricsCache
 	mempalace    *memory.MemPalace
 	dagExport    *graph.DAGExport
-	authToken    string // C1: required as ?token=<hex> on / and /ws
-	bindAddr     string // C1: actual host:port for tightening Origin checks
+	authToken    string    // C1: required as ?token=<hex> on / and /ws
+	bindAddr     string    // C1: actual host:port for tightening Origin checks
+	startedAt    time.Time // for /healthz uptime
 }
 
 func NewServer(es state.EventStore, ps *state.SQLiteStore, port int, filter state.ReqFilter, stateDir string, mp *memory.MemPalace) *Server {
@@ -63,6 +64,7 @@ func NewServer(es state.EventStore, ps *state.SQLiteStore, port int, filter stat
 		metricsCache: mc,
 		mempalace:    mp,
 		authToken:    token,
+		startedAt:    time.Now(),
 	}
 	s.hub = NewHub(s)
 	return s
@@ -129,6 +131,11 @@ func (s *Server) Start(ctx context.Context) error {
 		}
 		s.hub.HandleWebSocket(w, r)
 	})
+
+	// Health endpoints. Both unauthenticated and inexpensive — designed for
+	// container/k8s liveness + readiness probes and external load balancers.
+	mux.HandleFunc("/healthz", s.handleHealthz)
+	mux.HandleFunc("/readyz", s.handleReadyz)
 
 	addr := fmt.Sprintf("localhost:%d", s.port)
 	listener, err := net.Listen("tcp", addr)
