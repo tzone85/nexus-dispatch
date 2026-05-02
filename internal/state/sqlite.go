@@ -253,6 +253,8 @@ func (s *SQLiteStore) Project(evt Event) error {
 
 // GetRequirement returns a single requirement by ID.
 func (s *SQLiteStore) GetRequirement(id string) (Requirement, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	var req Requirement
 	err := s.db.QueryRow(
 		`SELECT id, title, description, status, repo_path, created_at FROM requirements WHERE id = ?`,
@@ -266,6 +268,8 @@ func (s *SQLiteStore) GetRequirement(id string) (Requirement, error) {
 
 // GetStory returns a single story by ID.
 func (s *SQLiteStore) GetStory(id string) (Story, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	var story Story
 	var ownedFilesJSON string
 	var mergedAt sql.NullTime
@@ -296,6 +300,8 @@ func (s *SQLiteStore) GetStory(id string) (Story, error) {
 
 // ListStories returns stories matching the given filter.
 func (s *SQLiteStore) ListStories(filter StoryFilter) ([]Story, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	query := `SELECT id, req_id, title, description, acceptance_criteria, complexity, status, agent_id, branch, pr_url, pr_number, owned_files, wave_hint, wave, escalation_tier, split_depth, created_at, merged_at FROM stories`
 	var conditions []string
 	var args []any
@@ -355,6 +361,8 @@ func (s *SQLiteStore) ListRequirements() ([]Requirement, error) {
 // ListRequirementsFiltered returns requirements matching the given filter,
 // ordered by creation time.
 func (s *SQLiteStore) ListRequirementsFiltered(filter ReqFilter) ([]Requirement, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	query := `SELECT id, title, description, status, repo_path, created_at FROM requirements`
 	var conditions []string
 	var args []any
@@ -396,6 +404,8 @@ type AgentFilter struct {
 
 // ListAgents returns agents matching the given filter, ordered by creation time.
 func (s *SQLiteStore) ListAgents(filter AgentFilter) ([]Agent, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	query := `SELECT id, type, model, runtime, status, current_story_id, session_name, created_at FROM agents`
 	var args []any
 
@@ -440,6 +450,8 @@ type Escalation struct {
 
 // ListEscalations returns all escalations ordered by creation time descending.
 func (s *SQLiteStore) ListEscalations() ([]Escalation, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	rows, err := s.db.Query(
 		`SELECT id, story_id, from_agent, reason, status, resolution, from_tier, to_tier, created_at
 		 FROM escalations ORDER BY created_at DESC`,
@@ -471,6 +483,8 @@ type StoryDep struct {
 
 // ListStoryDeps returns all dependency edges for stories belonging to the given requirement.
 func (s *SQLiteStore) ListStoryDeps(reqID string) ([]StoryDep, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	rows, err := s.db.Query(
 		`SELECT sd.story_id, sd.depends_on_id
 		 FROM story_deps sd

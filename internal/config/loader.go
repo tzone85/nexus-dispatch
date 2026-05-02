@@ -2,7 +2,10 @@ package config
 
 import (
 	"fmt"
+	"log"
 	"os"
+	"strconv"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -186,9 +189,72 @@ func LoadFromFile(path string) (Config, error) {
 		return Config{}, fmt.Errorf("parsing config YAML: %w", err)
 	}
 
+	if err := CheckSchemaVersion(cfg.Version, path); err != nil {
+		return Config{}, err
+	}
+
 	if err := cfg.Validate(); err != nil {
 		return Config{}, fmt.Errorf("config validation: %w", err)
 	}
 
 	return cfg, nil
+}
+
+// CheckSchemaVersion compares the loaded YAML's `version` field against
+// CurrentSchemaVersion. Behavior:
+//   - empty            → log hint, succeed
+//   - equal            → succeed silently
+//   - older minor/patch → log advisory, succeed (this build still
+//     understands the older shape because schema bumps are minor by default)
+//   - older major       → succeed with a migration warning
+//   - newer major       → fail (the YAML expects features this binary lacks)
+//
+// The path argument is included in messages so operators with multiple
+// config files can identify the offender. Visible-for-testing.
+func CheckSchemaVersion(have, path string) error {
+	if have == "" {
+		log.Printf("[config] %s has no `version:` field — pin it to %q to silence this hint", path, CurrentSchemaVersion)
+		return nil
+	}
+	if have == CurrentSchemaVersion {
+		return nil
+	}
+	haveMajor, haveOK := majorOf(have)
+	curMajor, _ := majorOf(CurrentSchemaVersion)
+	if !haveOK {
+		log.Printf("[config] %s has unparseable version %q — proceeding with current schema", path, have)
+		return nil
+	}
+	switch {
+	case haveMajor > curMajor:
+		return fmt.Errorf("config schema version %s in %s is newer than this binary supports (v%d). Upgrade nxd or pin schema to %s",
+			have, path, curMajor, CurrentSchemaVersion)
+	case haveMajor < curMajor:
+		log.Printf("[config] %s schema is v%d but build expects v%d — running in compat mode; consider upgrading config to %s",
+			path, haveMajor, curMajor, CurrentSchemaVersion)
+	default:
+		log.Printf("[config] %s schema %s differs from build's %s — proceeding (minor/patch drift)", path, have, CurrentSchemaVersion)
+	}
+	return nil
+}
+
+// majorOf parses the leading integer of a semver-ish string ("1.0", "2",
+// "v1.2.3"). Returns (n, true) on success.
+func majorOf(v string) (int, bool) {
+	v = strings.TrimPrefix(strings.TrimSpace(v), "v")
+	if v == "" {
+		return 0, false
+	}
+	end := len(v)
+	for i, c := range v {
+		if c == '.' || c == '-' || c == ' ' {
+			end = i
+			break
+		}
+	}
+	n, err := strconv.Atoi(v[:end])
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }

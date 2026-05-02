@@ -16,7 +16,23 @@ type MemoryConfig struct {
 }
 
 // Config is the top-level NXD configuration.
+// CurrentSchemaVersion is the canonical nxd.yaml schema version this build
+// understands. Change it whenever you make a non-backward-compatible
+// change to the YAML shape (rename a field, change a type, drop a field).
+//
+// Forward-compatibility rules:
+//   - Equal version       → load normally.
+//   - YAML missing version → log a one-time hint that operators should pin
+//                            it; load normally with current defaults.
+//   - YAML major < current → log a migration suggestion + load with
+//                            shimmed defaults; the binary still works.
+//   - YAML major > current → fail loudly: the operator is running an
+//                            older NXD build than their config expects.
+const CurrentSchemaVersion = "1.0"
+
 type Config struct {
+	// Version pins the nxd.yaml schema version. Should match
+	// CurrentSchemaVersion at build time. See the constant's docs above.
 	Version   string                   `yaml:"version"`
 	Workspace WorkspaceConfig          `yaml:"workspace"`
 	Models    ModelsConfig             `yaml:"models"`
