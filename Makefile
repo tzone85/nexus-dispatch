@@ -1,4 +1,5 @@
-.PHONY: build test lint clean install release release-snapshot vet check
+.PHONY: build test lint clean install release release-snapshot vet check \
+        fmt tidy bench coverage-html watch vulncheck doctor notice
 
 BINARY=nxd
 VERSION?=0.1.0
@@ -12,8 +13,57 @@ test:
 	go test ./... -race -coverprofile=coverage.out
 	@go tool cover -func=coverage.out | tail -1
 
+# `make coverage-html` writes coverage.html alongside coverage.out and opens
+# it in the default browser. Useful for finding uncovered branches.
+coverage-html: test
+	go tool cover -html=coverage.out -o coverage.html
+	@command -v open >/dev/null 2>&1 && open coverage.html || \
+	 command -v xdg-open >/dev/null 2>&1 && xdg-open coverage.html || \
+	 echo "coverage.html written"
+
 vet:
 	go vet ./...
+
+fmt:
+	gofmt -w -s .
+
+tidy:
+	go mod tidy
+
+# `make bench` runs every benchmark in the repo; useful for the slog and
+# event-bus changes where we want to confirm no regressions.
+bench:
+	go test -run=^$$ -bench=. -benchmem -benchtime=1s ./...
+
+# `make watch` rebuilds + reruns tests on file change. Requires reflex
+# (`go install github.com/cespare/reflex@latest`).
+watch:
+	@command -v reflex >/dev/null 2>&1 || { \
+	  echo "reflex not installed; run: go install github.com/cespare/reflex@latest"; exit 1; }
+	reflex -r '\.go$$' -s -- sh -c 'make vet test'
+
+# `make vulncheck` runs govulncheck against the dependency graph. CI mirrors
+# this in a non-blocking job (.github/workflows/ci.yml::vulncheck).
+vulncheck:
+	@command -v govulncheck >/dev/null 2>&1 || { \
+	  echo "govulncheck not installed; run: go install golang.org/x/vuln/cmd/govulncheck@latest"; exit 1; }
+	govulncheck ./...
+
+# `make doctor` proxies to the runtime preflight check.
+doctor: build
+	./$(BINARY) doctor
+
+# `make notice` regenerates the NOTICE file from go.mod's transitive
+# dependencies. Requires go-licenses
+# (`go install github.com/google/go-licenses@latest`).
+notice:
+	@command -v go-licenses >/dev/null 2>&1 || { \
+	  echo "go-licenses not installed; run: go install github.com/google/go-licenses@latest"; exit 1; }
+	@go-licenses report ./cmd/nxd \
+	  --template=scripts/notice.tmpl \
+	  --ignore github.com/tzone85/nexus-dispatch \
+	  > NOTICE 2>/dev/null && \
+	  echo "wrote NOTICE ($$(wc -l < NOTICE | tr -d ' ') lines)"
 
 # `make check` is the single command CI / contributors should run before
 # pushing: vet + race tests + build.
@@ -23,7 +73,7 @@ lint:
 	golangci-lint run ./...
 
 clean:
-	rm -f $(BINARY) coverage.out
+	rm -f $(BINARY) coverage.out coverage.html
 
 install: build
 	mkdir -p $(INSTALL_DIR)
