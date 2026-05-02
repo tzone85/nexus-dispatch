@@ -321,6 +321,7 @@ func (m *Monitor) pollNativeAgent(ctx context.Context, wg *sync.WaitGroup, activ
 	events, err := m.eventStore.List(state.EventFilter{
 		Type:    state.EventStoryCompleted,
 		StoryID: ag.Assignment.StoryID,
+		Limit:   1, // we only need to know whether ANY exist; perf win on long-lived stores
 	})
 	if err != nil || len(events) == 0 {
 		return // still running
@@ -1481,9 +1482,25 @@ func ensureGitignorePatterns(worktreePath string) {
 // gitDiff returns the git diff for committed changes in a worktree.
 // It tries multiple merge-base candidates so it works with local-only
 // repos that have no "origin/main".
+//
+// Performance note (B1.5): probe `git remote` once to skip the origin/*
+// candidates entirely on local-only repos (common after LB7). Saves
+// 2 fork+exec'd git processes per pipeline pass; ScanRepo runs hundreds
+// of times during a multi-story run.
 func gitDiff(worktreePath string) (string, error) {
-	// Try merge-base candidates in order of preference.
-	candidates := []string{"origin/main", "origin/master", "main", "master"}
+	// Probe whether `origin` exists before trying origin/* refs.
+	hasOrigin := false
+	if remoteCmd := exec.Command("git", "remote"); remoteCmd != nil {
+		remoteCmd.Dir = worktreePath
+		if out, err := remoteCmd.Output(); err == nil {
+			hasOrigin = strings.Contains(string(out), "origin")
+		}
+	}
+
+	candidates := []string{"main", "master"}
+	if hasOrigin {
+		candidates = []string{"origin/main", "origin/master", "main", "master"}
+	}
 	var mbOut []byte
 	var mbErr error
 	for _, ref := range candidates {

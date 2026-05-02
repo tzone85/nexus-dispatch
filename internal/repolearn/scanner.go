@@ -687,6 +687,17 @@ func detectCodeGraphSignals(profile *RepoProfile, repoPath string) {
 // --------------------------------------------------------------------------
 
 // parseMakefileTargets extracts target names from a Makefile.
+// Package-level regexes — compiled once at init, reused across calls.
+// Hoisting these out of per-call hot paths matters because ScanRepo
+// can be invoked many times during a single planning + dispatch cycle.
+var (
+	makefileTargetRe = regexp.MustCompile(`^([a-zA-Z_][a-zA-Z0-9_-]*)\s*:`)
+	goModVersionRe   = regexp.MustCompile(`(?m)^go\s+(\d+\.\d+(?:\.\d+)?)`)
+	cargoRustRe      = regexp.MustCompile(`(?m)^rust-version\s*=\s*"([^"]+)"`)
+	cargoEditionRe   = regexp.MustCompile(`(?m)^edition\s*=\s*"([^"]+)"`)
+	pyRequiresRe     = regexp.MustCompile(`(?m)requires-python\s*=\s*"([^"]+)"`)
+)
+
 func parseMakefileTargets(repoPath string) []string {
 	makefilePath := filepath.Join(repoPath, "Makefile")
 	f, err := os.Open(makefilePath)
@@ -695,14 +706,13 @@ func parseMakefileTargets(repoPath string) []string {
 	}
 	defer f.Close()
 
-	targetRe := regexp.MustCompile(`^([a-zA-Z_][a-zA-Z0-9_-]*)\s*:`)
 	var targets []string
 	seen := make(map[string]bool)
 
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := scanner.Text()
-		if matches := targetRe.FindStringSubmatch(line); len(matches) > 1 {
+		if matches := makefileTargetRe.FindStringSubmatch(line); len(matches) > 1 {
 			target := matches[1]
 			if !seen[target] {
 				targets = append(targets, target)
@@ -719,8 +729,7 @@ func extractGoVersion(repoPath string) string {
 	if err != nil {
 		return ""
 	}
-	re := regexp.MustCompile(`(?m)^go\s+(\d+\.\d+(?:\.\d+)?)`)
-	if m := re.FindSubmatch(data); len(m) > 1 {
+	if m := goModVersionRe.FindSubmatch(data); len(m) > 1 {
 		return string(m[1])
 	}
 	return ""
@@ -732,12 +741,10 @@ func extractCargoVersion(repoPath string) string {
 	if err != nil {
 		return ""
 	}
-	re := regexp.MustCompile(`(?m)^rust-version\s*=\s*"([^"]+)"`)
-	if m := re.FindSubmatch(data); len(m) > 1 {
+	if m := cargoRustRe.FindSubmatch(data); len(m) > 1 {
 		return string(m[1])
 	}
-	re = regexp.MustCompile(`(?m)^edition\s*=\s*"([^"]+)"`)
-	if m := re.FindSubmatch(data); len(m) > 1 {
+	if m := cargoEditionRe.FindSubmatch(data); len(m) > 1 {
 		return "edition " + string(m[1])
 	}
 	return ""
@@ -749,8 +756,7 @@ func extractPythonVersion(repoPath string) string {
 	if err != nil {
 		return ""
 	}
-	re := regexp.MustCompile(`(?m)requires-python\s*=\s*"([^"]+)"`)
-	if m := re.FindSubmatch(data); len(m) > 1 {
+	if m := pyRequiresRe.FindSubmatch(data); len(m) > 1 {
 		return string(m[1])
 	}
 	return ""

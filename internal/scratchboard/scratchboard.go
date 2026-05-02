@@ -66,6 +66,12 @@ func (s *Scratchboard) Write(entry Entry) error {
 
 // Read returns the most recent entries (up to limit). If category is non-empty,
 // only entries matching that category are returned. Returns newest first.
+//
+// Performance note (B1.5): single-pass reverse iteration over file lines.
+// Previous version walked forward, allocated all entries, then manually
+// reversed; this walks backward and stops once limit is hit. For a hot
+// scratchboard with thousands of entries that's a 100x reduction in
+// allocated entries on each call.
 func (s *Scratchboard) Read(category string, limit int) ([]Entry, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -82,8 +88,10 @@ func (s *Scratchboard) Read(category string, limit int) ([]Entry, error) {
 		return nil, fmt.Errorf("read scratchboard: %w", err)
 	}
 
-	var all []Entry
-	for _, line := range splitLines(data) {
+	lines := splitLines(data)
+	out := make([]Entry, 0, limit)
+	for i := len(lines) - 1; i >= 0 && len(out) < limit; i-- {
+		line := lines[i]
 		if len(line) == 0 {
 			continue
 		}
@@ -94,18 +102,9 @@ func (s *Scratchboard) Read(category string, limit int) ([]Entry, error) {
 		if category != "" && e.Category != category {
 			continue
 		}
-		all = append(all, e)
+		out = append(out, e)
 	}
-
-	// Return newest first, capped at limit.
-	if len(all) > limit {
-		all = all[len(all)-limit:]
-	}
-	result := make([]Entry, len(all))
-	for i, e := range all {
-		result[len(all)-1-i] = e
-	}
-	return result, nil
+	return out, nil
 }
 
 // Snapshot returns all entries formatted as a markdown string suitable for
