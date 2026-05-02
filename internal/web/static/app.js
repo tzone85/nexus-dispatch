@@ -87,7 +87,8 @@ function esc(str) {
 
 // ── Rendering ────────────────────────────────────────────────────────
 function renderState(data) {
-  renderAgents(data.agents || []);
+  renderHumanReview(data.human_review);
+  renderAgents(data.agents || [], data.agent_traces || []);
   renderPipeline(data.pipeline || {});
   renderDAG(data.dag, data.stories || []);
   renderStories(data.stories || []);
@@ -98,15 +99,96 @@ function renderState(data) {
   renderReviewGates(data.review_gates);
   renderInvestigations(data.investigations);
   renderRecoveryLog(data.recovery_log);
+  renderSuggestions(data.suggestions);
 }
 
-function renderAgents(agents) {
+// seenSuggestionIds tracks which improver suggestions we've already
+// shown a toast for, so we don't re-toast on every WebSocket tick.
+const seenSuggestionIds = new Set();
+
+function renderSuggestions(items) {
+  const section = document.getElementById("suggestions");
+  const list = document.getElementById("suggestions-list");
+  if (!items || items.length === 0) {
+    section.style.display = "none";
+    return;
+  }
+  section.style.display = "";
+  list.textContent = "";
+
+  items.forEach(function (s) {
+    const item = document.createElement("div");
+    item.className = "suggestion-item severity-" + (s.severity || "info");
+
+    const head = document.createElement("div");
+    head.className = "sugg-head";
+
+    const sev = document.createElement("span");
+    sev.className = "badge badge-" + (s.severity || "info");
+    sev.textContent = (s.severity || "info").toUpperCase();
+    head.appendChild(sev);
+
+    const title = document.createElement("strong");
+    title.textContent = " " + (s.title || s.id || "(no title)");
+    head.appendChild(title);
+
+    if (s.source) {
+      const src = document.createElement("span");
+      src.className = "muted";
+      src.textContent = " · " + s.source;
+      head.appendChild(src);
+    }
+    item.appendChild(head);
+
+    if (s.description) {
+      const desc = document.createElement("p");
+      desc.className = "sugg-desc";
+      desc.textContent = s.description;
+      item.appendChild(desc);
+    }
+    if (s.action) {
+      const act = document.createElement("p");
+      act.className = "sugg-action";
+      act.textContent = "→ " + s.action;
+      item.appendChild(act);
+    }
+
+    list.appendChild(item);
+
+    // Toast new critical/warning suggestions once per session so
+    // operators don't miss them on a busy dashboard. Info-level stays
+    // silent in the panel.
+    if (
+      (s.severity === "critical" || s.severity === "warning") &&
+      s.id &&
+      !seenSuggestionIds.has(s.id)
+    ) {
+      seenSuggestionIds.add(s.id);
+      showToast(
+        "Suggestion: " + (s.title || s.id),
+        s.severity === "critical" ? "error" : "success",
+      );
+    }
+  });
+}
+
+// expandedAgents tracks which agent rows are currently expanded so the
+// drill-down state survives WebSocket-driven re-renders.
+const expandedAgents = new Set();
+
+function renderAgents(agents, traces) {
   const tbody = document.querySelector("#agents-table tbody");
   if (!agents.length) {
     tbody.innerHTML =
       '<tr><td colspan="7" class="muted">No agents running</td></tr>';
     return;
   }
+  // Build an agent_id -> trace lookup once instead of scanning per row.
+  const traceByAgent = (traces || []).reduce(function (acc, t) {
+    acc[t.agent_id] = t;
+    return acc;
+  }, {});
+
   // All values passed to innerHTML are routed through esc() first.
   tbody.innerHTML = agents
     .map((a) => {
@@ -114,11 +196,21 @@ function renderAgents(agents) {
       const storyId = esc(a.current_story_id || "\u2014");
       const session = esc(a.session_name || "\u2014");
       const agentId = esc(a.id);
+      const isExpanded = expandedAgents.has(a.id);
+      const arrow = isExpanded ? "\u25BC" : "\u25B6";
+      const trace = traceByAgent[a.id];
+      const drillRow = isExpanded && trace ? buildAgentDrillRow(trace) : "";
       return (
-        "<tr>" +
-        "<td>" +
+        '<tr class="agent-row" data-agent-id="' +
         agentId +
-        "</td>" +
+        '">' +
+        '<td><button class="agent-toggle" data-agent-id="' +
+        agentId +
+        '">' +
+        arrow +
+        " " +
+        agentId +
+        "</button></td>" +
         "<td>" +
         esc(a.type) +
         "</td>" +
@@ -144,10 +236,130 @@ function renderAgents(agents) {
         agentId +
         "'}); })\">" +
         "&#x2715;</button></td>" +
-        "</tr>"
+        "</tr>" +
+        drillRow
       );
     })
     .join("");
+
+  // Wire toggle buttons after re-render. Agent count is small, so
+  // re-attaching listeners on every render is simpler than maintaining a
+  // delegated listener through DOM replacement.
+  tbody.querySelectorAll(".agent-toggle").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      const id = btn.getAttribute("data-agent-id");
+      if (expandedAgents.has(id)) {
+        expandedAgents.delete(id);
+      } else {
+        expandedAgents.add(id);
+      }
+      if (currentState) {
+        renderAgents(
+          currentState.agents || [],
+          currentState.agent_traces || [],
+        );
+      }
+    });
+  });
+}
+
+// buildAgentDrillRow returns a <tr> string with the recent progress events
+// for one agent. Values are escaped via esc().
+function buildAgentDrillRow(trace) {
+  if (!trace.recent || trace.recent.length === 0) {
+    return (
+      '<tr class="agent-drill"><td colspan="7" class="muted">' +
+      "No recent progress for " +
+      esc(trace.story_id) +
+      "</td></tr>"
+    );
+  }
+  const rows = trace.recent
+    .map(function (r) {
+      const toolBadge = r.tool
+        ? '<span class="badge badge-warn">' + esc(r.tool) + "</span> "
+        : "";
+      return (
+        '<li class="drill-row">' +
+        '<span class="timestamp">' +
+        esc(r.timestamp) +
+        "</span> " +
+        '<span class="badge">iter ' +
+        esc(String(r.iteration)) +
+        "</span> " +
+        '<span class="badge">' +
+        esc(r.phase || "?") +
+        "</span> " +
+        toolBadge +
+        '<span class="drill-detail">' +
+        esc(r.detail || "") +
+        "</span>" +
+        "</li>"
+      );
+    })
+    .join("");
+  return (
+    '<tr class="agent-drill"><td colspan="7">' +
+    '<div class="drill-header">Story <strong>' +
+    esc(trace.story_id) +
+    "</strong> recent progress:</div>" +
+    '<ul class="drill-list">' +
+    rows +
+    "</ul>" +
+    "</td></tr>"
+  );
+}
+
+function renderHumanReview(items) {
+  const section = document.getElementById("human-review");
+  const list = document.getElementById("human-review-list");
+  if (!items || items.length === 0) {
+    section.style.display = "none";
+    return;
+  }
+  section.style.display = "";
+  list.textContent = "";
+  items.forEach(function (h) {
+    const item = document.createElement("div");
+    item.className = "human-review-item";
+
+    const head = document.createElement("div");
+    head.className = "review-head";
+    const ts = document.createElement("span");
+    ts.className = "timestamp";
+    ts.textContent = h.timestamp + " ";
+    head.appendChild(ts);
+    const story = document.createElement("strong");
+    story.textContent = h.story_id || "(no story)";
+    head.appendChild(story);
+    if (h.reason) {
+      const reasonBadge = document.createElement("span");
+      reasonBadge.className = "badge badge-danger";
+      reasonBadge.textContent = " " + h.reason;
+      head.appendChild(reasonBadge);
+    }
+    item.appendChild(head);
+
+    if (h.diagnosis) {
+      const diag = document.createElement("p");
+      diag.className = "review-diagnosis";
+      diag.textContent = h.diagnosis;
+      item.appendChild(diag);
+    }
+
+    if (h.directives && h.directives.length > 0) {
+      const ul = document.createElement("ul");
+      ul.className = "review-directives";
+      h.directives.forEach(function (d) {
+        const li = document.createElement("li");
+        li.textContent = d;
+        ul.appendChild(li);
+      });
+      item.appendChild(ul);
+    }
+
+    list.appendChild(item);
+  });
 }
 
 function renderPipeline(p) {

@@ -3,24 +3,29 @@ package web
 
 import (
 	"encoding/json"
+	"path/filepath"
 
 	"github.com/tzone85/nexus-dispatch/internal/graph"
+	"github.com/tzone85/nexus-dispatch/internal/improver"
 	"github.com/tzone85/nexus-dispatch/internal/state"
 )
 
 type StateSnapshot struct {
-	Agents          []state.Agent       `json:"agents"`
-	Stories         []state.Story       `json:"stories"`
-	Pipeline        PipelineCounts      `json:"pipeline"`
-	Events          []EventSummary      `json:"events"`
-	Escalations     []state.Escalation  `json:"escalations"`
-	Requirements    []state.Requirement `json:"requirements"`
-	Metrics         *MetricsSummary     `json:"metrics"`
-	MemPalaceStatus *MemPalaceStatus    `json:"mempalace_status"`
-	ReviewGates     []ReviewGateItem    `json:"review_gates"`
-	Investigations  []InvestigationItem `json:"investigations"`
-	RecoveryLog     []RecoveryItem      `json:"recovery_log"`
-	DAG             *graph.DAGExport    `json:"dag,omitempty"`
+	Agents          []state.Agent         `json:"agents"`
+	Stories         []state.Story         `json:"stories"`
+	Pipeline        PipelineCounts        `json:"pipeline"`
+	Events          []EventSummary        `json:"events"`
+	Escalations     []state.Escalation    `json:"escalations"`
+	Requirements    []state.Requirement   `json:"requirements"`
+	Metrics         *MetricsSummary       `json:"metrics"`
+	MemPalaceStatus *MemPalaceStatus      `json:"mempalace_status"`
+	ReviewGates     []ReviewGateItem      `json:"review_gates"`
+	Investigations  []InvestigationItem   `json:"investigations"`
+	RecoveryLog     []RecoveryItem        `json:"recovery_log"`
+	HumanReview     []HumanReviewItem     `json:"human_review"`
+	AgentTraces     []AgentTrace          `json:"agent_traces"`
+	Suggestions     []improver.Suggestion `json:"suggestions"`
+	DAG             *graph.DAGExport      `json:"dag,omitempty"`
 }
 
 type PipelineCounts struct {
@@ -167,10 +172,107 @@ func (s *Server) BuildSnapshot() (StateSnapshot, error) {
 	}
 	snap.Investigations = investigations
 
+	// Human review banner: scan recent HUMAN_REVIEW_NEEDED events.
+	hrEvents, _ := s.eventStore.List(state.EventFilter{
+		Type:  state.EventHumanReviewNeeded,
+		Limit: 10,
+	})
+	humanReview := []HumanReviewItem{}
+	for _, evt := range hrEvents {
+		payload := state.DecodePayload(evt.Payload)
+		reason, _ := payload["reason"].(string)
+		diagnosis := stringFromPayload(payload, "diagnosis")
+		if diagnosis == "" {
+			diagnosis = stringFromPayload(payload, "failure_pattern")
+		}
+		directives := stringSliceFromPayload(payload, "directives")
+		if len(directives) == 0 {
+			directives = stringSliceFromPayload(payload, "suggested_directives")
+		}
+		humanReview = append(humanReview, HumanReviewItem{
+			StoryID:    evt.StoryID,
+			Reason:     reason,
+			Diagnosis:  diagnosis,
+			Directives: directives,
+			Timestamp:  evt.Timestamp.Format("15:04:05"),
+		})
+	}
+	snap.HumanReview = humanReview
+
+	// Agent drill-down: last 5 STORY_PROGRESS events per agent currently
+	// running (status != "done"). Bound by 10 active agents to keep the
+	// snapshot size manageable.
+	traces := []AgentTrace{}
+	for i, ag := range snap.Agents {
+		if i >= 10 {
+			break
+		}
+		if ag.Status == "done" || ag.CurrentStoryID == "" {
+			continue
+		}
+		progEvents, _ := s.eventStore.List(state.EventFilter{
+			Type:    state.EventStoryProgress,
+			StoryID: ag.CurrentStoryID,
+			Limit:   5,
+		})
+		recent := make([]AgentProgressRow, 0, len(progEvents))
+		for _, evt := range progEvents {
+			payload := state.DecodePayload(evt.Payload)
+			recent = append(recent, AgentProgressRow{
+				Iteration: intFromPayload(payload, "iteration"),
+				Phase:     stringFromPayload(payload, "phase"),
+				Detail:    stringFromPayload(payload, "detail"),
+				Tool:      stringFromPayload(payload, "tool"),
+				Timestamp: evt.Timestamp.Format("15:04:05"),
+			})
+		}
+		traces = append(traces, AgentTrace{
+			AgentID: ag.ID,
+			StoryID: ag.CurrentStoryID,
+			Recent:  recent,
+		})
+	}
+	snap.AgentTraces = traces
+
+	// Self-improvement suggestions: load from the JSON file written by
+	// `nxd improve`. We do not run analyzers on every WebSocket tick —
+	// the CLI command is the canonical refresh trigger.
+	if suggestions, err := improver.LoadSuggestions(filepath.Join(s.stateDir, "improvements.json")); err == nil {
+		snap.Suggestions = suggestions
+	}
+
 	// Include DAG export if available.
 	snap.DAG = s.dagExport
 
 	return snap, nil
+}
+
+// stringFromPayload extracts a string value from a decoded JSON payload map.
+func stringFromPayload(m map[string]any, key string) string {
+	if v, ok := m[key].(string); ok {
+		return v
+	}
+	return ""
+}
+
+// stringSliceFromPayload extracts a []string from a decoded JSON payload map.
+// JSON arrays decode as []any; this safely converts each element.
+func stringSliceFromPayload(m map[string]any, key string) []string {
+	v, ok := m[key]
+	if !ok {
+		return nil
+	}
+	arr, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(arr))
+	for _, e := range arr {
+		if s, ok := e.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // intFromPayload extracts an integer from a decoded JSON payload map.

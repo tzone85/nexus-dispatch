@@ -2,7 +2,9 @@ package git
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -33,6 +35,8 @@ func (m *LocalMerger) Merge(featureBranch, baseBranch string) (MergeResult, erro
 		Branch:     featureBranch,
 		BaseBranch: baseBranch,
 	}
+	m.cleanupUntrackedGoBuildArtifacts()
+	defer m.cleanupUntrackedGoBuildArtifacts()
 
 	// Checkout base branch
 	if err := m.runGit("checkout", baseBranch); err != nil {
@@ -74,6 +78,9 @@ func (m *LocalMerger) Merge(featureBranch, baseBranch string) (MergeResult, erro
 // CanMerge checks if a branch can be merged cleanly (dry run).
 // It uses git merge --no-commit --no-ff, then aborts regardless of outcome.
 func (m *LocalMerger) CanMerge(featureBranch, baseBranch string) (bool, []string, error) {
+	m.cleanupUntrackedGoBuildArtifacts()
+	defer m.cleanupUntrackedGoBuildArtifacts()
+
 	// Checkout base branch
 	if err := m.runGit("checkout", baseBranch); err != nil {
 		return false, nil, fmt.Errorf("checkout %s: %w", baseBranch, err)
@@ -142,4 +149,42 @@ func (m *LocalMerger) runGit(args ...string) error {
 		return fmt.Errorf("git %s: %w (%s)", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+func (m *LocalMerger) cleanupUntrackedGoBuildArtifacts() {
+	for _, path := range m.knownGoBuildArtifactPaths() {
+		if !m.isUntracked(path) {
+			continue
+		}
+		_ = os.Remove(filepath.Join(m.repoDir, path))
+	}
+}
+
+func (m *LocalMerger) knownGoBuildArtifactPaths() []string {
+	paths := []string{filepath.Base(m.repoDir)}
+	if data, err := os.ReadFile(filepath.Join(m.repoDir, "go.mod")); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) == 2 && fields[0] == "module" {
+				paths = append(paths, filepath.Base(fields[1]))
+				break
+			}
+		}
+	}
+	return paths
+}
+
+func (m *LocalMerger) isUntracked(path string) bool {
+	cmd := exec.Command("git", "status", "--porcelain", "--untracked-files=all", "--", path)
+	cmd.Dir = m.repoDir
+	out, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(line, "?? ") && strings.TrimSpace(strings.TrimPrefix(line, "?? ")) == path {
+			return true
+		}
+	}
+	return false
 }

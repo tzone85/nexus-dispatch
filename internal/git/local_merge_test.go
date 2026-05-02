@@ -87,6 +87,27 @@ func TestLocalMerger_Merge_Success(t *testing.T) {
 	}
 }
 
+func TestLocalMerger_Merge_RemovesUntrackedGoBuildArtifact(t *testing.T) {
+	repo := setupMergeRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, "go.mod"), []byte("module smoke.test/health\n\ngo 1.21\n"), 0644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+	runCmd(t, repo, "git", "add", "go.mod")
+	runCmd(t, repo, "git", "commit", "-m", "add go.mod")
+	addFeatureBranch(t, repo, "feature/clean-build-artifact", "feature.txt", "hello world")
+	if err := os.WriteFile(filepath.Join(repo, "health"), []byte("binary"), 0644); err != nil {
+		t.Fatalf("write build artifact: %v", err)
+	}
+
+	merger := nxdgit.NewLocalMerger(repo)
+	if _, err := merger.Merge("feature/clean-build-artifact", "main"); err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(repo, "health")); !os.IsNotExist(err) {
+		t.Fatalf("expected untracked build artifact to be removed, stat err=%v", err)
+	}
+}
+
 func TestLocalMerger_Merge_WithConflicts(t *testing.T) {
 	repo := setupMergeRepo(t)
 	addConflictingBranches(t, repo, "feature/conflict")

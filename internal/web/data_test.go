@@ -107,6 +107,36 @@ func TestBuildSnapshot_Events(t *testing.T) {
 	}
 }
 
+func TestBuildSnapshot_HumanReviewUsesEmitterPayloadKeys(t *testing.T) {
+	s := newTestServer(t)
+	reqID := seedRequirement(t, s)
+	storyID := seedStory(t, s, reqID)
+
+	evt := state.NewEvent(state.EventHumanReviewNeeded, "monitor", storyID, map[string]any{
+		"reason":               "retry budget exhausted",
+		"failure_pattern":      "review_rejection",
+		"suggested_directives": []string{"inspect failing tests", "rewrite story scope"},
+	})
+	if err := s.eventStore.Append(evt); err != nil {
+		t.Fatalf("append human review: %v", err)
+	}
+
+	snap, err := s.BuildSnapshot()
+	if err != nil {
+		t.Fatalf("BuildSnapshot: %v", err)
+	}
+	if len(snap.HumanReview) != 1 {
+		t.Fatalf("expected 1 human review item, got %d", len(snap.HumanReview))
+	}
+	item := snap.HumanReview[0]
+	if item.Diagnosis != "review_rejection" {
+		t.Errorf("Diagnosis = %q, want review_rejection", item.Diagnosis)
+	}
+	if len(item.Directives) != 2 || item.Directives[0] != "inspect failing tests" {
+		t.Errorf("Directives = %#v", item.Directives)
+	}
+}
+
 func TestSnapshotJSON(t *testing.T) {
 	s := newTestServer(t)
 	seedRequirement(t, s)

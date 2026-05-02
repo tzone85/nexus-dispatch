@@ -79,7 +79,22 @@ func RenderMarkdown(data ReportData, project string, internal bool) string {
 	}
 	b.WriteString("\n")
 
-	// 8. Internal: Timeline Detail
+	// 8. Internal: LLM Cost Breakdown
+	b.WriteString("## Internal: LLM Cost Breakdown\n\n")
+	if len(data.LLMUsage) == 0 {
+		b.WriteString("No LLM metrics recorded.\n\n")
+	} else {
+		b.WriteString("| Story | Model | Calls | Input Tokens | Output Tokens | Cost |\n")
+		b.WriteString("|-------|-------|-------|--------------|---------------|------|\n")
+		for _, usage := range data.LLMUsage {
+			fmt.Fprintf(&b, "| %s | %s | %d | %d | %d | %s %.4f |\n",
+				usage.StoryID, usage.Model, usage.Calls,
+				usage.TokensIn, usage.TokensOut, usage.Currency, usage.Cost)
+		}
+		b.WriteString("\n")
+	}
+
+	// 9. Internal: Timeline Detail
 	b.WriteString("## Internal: Timeline Detail\n\n")
 	b.WriteString("| Time | Event | Story | Description |\n")
 	b.WriteString("|------|-------|-------|-------------|\n")
@@ -177,6 +192,20 @@ func RenderHTML(data ReportData, project string, internal bool) string {
 				escapeHTML(stat.AgentID), stat.StoriesWorked, stat.Escalations)
 		}
 		b.WriteString("</tbody>\n</table>\n\n")
+
+		// Internal: LLM Cost Breakdown
+		b.WriteString("<h2>Internal: LLM Cost Breakdown</h2>\n")
+		if len(data.LLMUsage) == 0 {
+			b.WriteString("<p>No LLM metrics recorded.</p>\n\n")
+		} else {
+			b.WriteString("<table>\n<thead><tr><th>Story</th><th>Model</th><th>Calls</th><th>Input Tokens</th><th>Output Tokens</th><th>Cost</th></tr></thead>\n<tbody>\n")
+			for _, usage := range data.LLMUsage {
+				fmt.Fprintf(&b, "<tr><td>%s</td><td>%s</td><td>%d</td><td>%d</td><td>%d</td><td>%s %.4f</td></tr>\n",
+					escapeHTML(usage.StoryID), escapeHTML(usage.Model), usage.Calls,
+					usage.TokensIn, usage.TokensOut, escapeHTML(usage.Currency), usage.Cost)
+			}
+			b.WriteString("</tbody>\n</table>\n\n")
+		}
 
 		// Internal: Timeline Detail
 		b.WriteString("<h2>Internal: Timeline Detail</h2>\n")

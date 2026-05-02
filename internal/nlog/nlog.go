@@ -68,6 +68,18 @@ func Setup(level, format string) {
 	if !configured.CompareAndSwap(false, true) {
 		return
 	}
+	configure(level, format)
+}
+
+// Reconfigure installs a new global slog/stdlog bridge even when Setup has
+// already run. CLI commands call this after loading nxd.yaml so workspace
+// log settings are honored; environment variables still override YAML.
+func Reconfigure(level, format string) {
+	configure(level, format)
+	configured.Store(true)
+}
+
+func configure(level, format string) {
 	if env := os.Getenv("NXD_LOG_LEVEL"); env != "" {
 		level = env
 	}

@@ -210,3 +210,57 @@ func TestGenerateSummary_FullPipeline(t *testing.T) {
 
 	t.Logf("Generated summary:\n%s", summary)
 }
+
+func TestGenerateSummary_LocalMergeCountsMergedStories(t *testing.T) {
+	dir := t.TempDir()
+	es, err := state.NewFileStore(filepath.Join(dir, "events.jsonl"))
+	if err != nil {
+		t.Fatalf("create event store: %v", err)
+	}
+	defer es.Close()
+	ps, err := state.NewSQLiteStore(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("create proj store: %v", err)
+	}
+	defer ps.Close()
+
+	reqID := "r-local-summary"
+	reqEvt := state.NewEvent(state.EventReqSubmitted, "system", "", map[string]any{
+		"id": reqID, "title": "Local merge", "description": "desc",
+	})
+	es.Append(reqEvt)
+	ps.Project(reqEvt)
+	storyEvt := state.NewEvent(state.EventStoryCreated, "planner", "s-local-1", map[string]any{
+		"id": "s-local-1", "req_id": reqID, "title": "Local story", "description": "desc", "complexity": 1,
+	})
+	es.Append(storyEvt)
+	ps.Project(storyEvt)
+	assignEvt := state.NewEvent(state.EventStoryAssigned, "agent", "s-local-1", map[string]any{"agent_id": "agent", "wave": 1})
+	es.Append(assignEvt)
+	ps.Project(assignEvt)
+	startEvt := state.NewEvent(state.EventStoryStarted, "agent", "s-local-1", nil)
+	startEvt.Timestamp = time.Now()
+	es.Append(startEvt)
+	ps.Project(startEvt)
+	prEvt := state.NewEvent(state.EventStoryPRCreated, "merger", "s-local-1", map[string]any{
+		"pr_number": 0,
+		"pr_url":    "local://merged",
+	})
+	es.Append(prEvt)
+	ps.Project(prEvt)
+	mergeEvt := state.NewEvent(state.EventStoryMerged, "merger", "s-local-1", nil)
+	mergeEvt.Timestamp = startEvt.Timestamp.Add(time.Minute)
+	es.Append(mergeEvt)
+	ps.Project(mergeEvt)
+
+	summary, err := GenerateSummary(es, ps, reqID)
+	if err != nil {
+		t.Fatalf("generate summary: %v", err)
+	}
+	if !strings.Contains(summary, "1 stories merged locally") {
+		t.Errorf("expected local merge heading, got:\n%s", summary)
+	}
+	if !strings.Contains(summary, "1/1 merged") {
+		t.Errorf("expected 1/1 merged, got:\n%s", summary)
+	}
+}

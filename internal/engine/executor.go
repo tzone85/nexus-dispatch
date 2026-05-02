@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/tzone85/nexus-dispatch/internal/agent"
 	"github.com/tzone85/nexus-dispatch/internal/artifact"
@@ -16,6 +17,7 @@ import (
 	nxdgit "github.com/tzone85/nexus-dispatch/internal/git"
 	"github.com/tzone85/nexus-dispatch/internal/llm"
 	"github.com/tzone85/nexus-dispatch/internal/memory"
+	"github.com/tzone85/nexus-dispatch/internal/metrics"
 	"github.com/tzone85/nexus-dispatch/internal/repolearn"
 	"github.com/tzone85/nexus-dispatch/internal/runtime"
 	"github.com/tzone85/nexus-dispatch/internal/scratchboard"
@@ -486,18 +488,29 @@ func (e *Executor) spawnNative(ctx context.Context, repoDir string, a Assignment
 		log.Printf("[native-runtime] project STORY_STARTED for %s: %v", a.StoryID, err)
 	}
 
+	// Per-story metrics labelling: stamp story_id / tier / role onto the
+	// shared metrics client for this goroutine's LLM calls. If nativeClient
+	// is not a *metrics.MetricsClient (dry-run, tests) the helpers no-op.
+	storyClient := metrics.LabelRole(
+		metrics.LabelTier(
+			metrics.LabelStory(nativeClient, a.StoryID),
+			tierForRole(a.Role),
+		),
+		string(a.Role),
+	)
+
 	// Run native Gemma runtime in a goroutine (non-blocking, like tmux).
 	// On completion (success or failure) the goroutine emits STORY_COMPLETED
 	// so the monitor's pollOnce can trigger the post-execution pipeline.
 	go func() {
-		gemmaRT := runtime.NewGemmaRuntime(nativeClient, runtime.GemmaRuntimeConfig{
+		gemmaRT := runtime.NewGemmaRuntime(storyClient, runtime.GemmaRuntimeConfig{
 			MaxIterations:    nativeCfg.MaxIterations,
 			CommandAllowlist: nativeCfg.CommandAllowlist,
 		})
 		gemmaRT.AgentID = a.AgentID
 		gemmaRT.StoryID = a.StoryID
 		gemmaRT.Scratchboard = e.scratchboard
-		gemmaRT.Criteria = configCriteriaToRuntime(e.config.QA.SuccessCriteria)
+		gemmaRT.Criteria = ConfigCriteriaToRuntime(e.config.QA.SuccessCriteria)
 		// Operator-directive injection: pull pending instructions for this
 		// req/story at the top of each iteration. Nil-safe.
 		gemmaRT.ReqID = a.ReqID
@@ -554,6 +567,7 @@ func (e *Executor) spawnNative(ctx context.Context, repoDir string, a Assignment
 		}()
 
 		log.Printf("[native-runtime] executing %s in %s", a.StoryID, worktreePath)
+		execStart := time.Now()
 		execResult := gemmaRT.Execute(execCtx, worktreePath, modelCfg.Model, systemPrompt, goal)
 
 		if execResult.Error != nil {
@@ -590,6 +604,16 @@ func (e *Executor) spawnNative(ctx context.Context, repoDir string, a Assignment
 		if err := e.projStore.Project(completeEvt); err != nil {
 			log.Printf("[native-runtime] project STORY_COMPLETED for %s: %v", a.StoryID, err)
 		}
+
+		// Stage timing for the execute phase. Outcome is "success" only when
+		// the runtime returned without error AND criteria (if any) passed.
+		execOutcome := "success"
+		if execResult.Error != nil {
+			execOutcome = "failure"
+		} else if len(execResult.CriteriaResult) > 0 && !criteria.AllPassed(execResult.CriteriaResult) {
+			execOutcome = "failure"
+		}
+		EmitStageCompleted(e.eventStore, e.projStore, a.AgentID, a.StoryID, "execute", execOutcome, execStart)
 	}()
 
 	return result
@@ -609,6 +633,15 @@ func (e *Executor) spawnNative(ctx context.Context, repoDir string, a Assignment
 //   - file_exists / file_contains: path is the target
 //   - coverage_above: path = package, value = threshold
 func configCriteriaToRuntime(cfgCriteria []config.SuccessCriterion) []criteria.Criterion {
+	return ConfigCriteriaToRuntime(cfgCriteria)
+}
+
+// ConfigCriteriaToRuntime converts config.SuccessCriterion slice to
+// criteria.Criterion slice for use by the executor, native runtime, and QA
+// pipeline. Command criteria accept the historical `value:` form and the
+// newer `path:` fallback. `test_passes` normalizes a full "go test ..." command
+// to the package/flag args expected by criteria.TypeTestPasses.
+func ConfigCriteriaToRuntime(cfgCriteria []config.SuccessCriterion) []criteria.Criterion {
 	if len(cfgCriteria) == 0 {
 		return nil
 	}
@@ -616,11 +649,13 @@ func configCriteriaToRuntime(cfgCriteria []config.SuccessCriterion) []criteria.C
 	for _, c := range cfgCriteria {
 		var target, expected string
 		switch c.Kind {
-		case "command_succeeds", "test_passes":
+		case "command_succeeds":
 			target = c.Value
 			if target == "" {
 				target = c.Path // backwards compat for misconfigured YAML
 			}
+		case "test_passes":
+			target = testTargetFromConfig(c)
 		case "file_contains":
 			target = c.Path
 			expected = c.Value
@@ -640,4 +675,24 @@ func configCriteriaToRuntime(cfgCriteria []config.SuccessCriterion) []criteria.C
 		})
 	}
 	return result
+}
+
+func testTargetFromConfig(c config.SuccessCriterion) string {
+	target := c.Value
+	if target == "" {
+		target = c.Path
+	}
+	return normalizeGoTestTarget(target)
+}
+
+func normalizeGoTestTarget(target string) string {
+	fields := strings.Fields(target)
+	if len(fields) >= 2 && fields[0] == "go" && fields[1] == "test" {
+		fields = fields[2:]
+		if len(fields) == 0 {
+			return "./..."
+		}
+		return strings.Join(fields, " ")
+	}
+	return target
 }

@@ -22,6 +22,19 @@ func NewSemaphoreClient(inner Client, maxConcurrent int) *SemaphoreClient {
 	}
 }
 
+// Inner returns the wrapped client. Used by labelling helpers
+// (e.g. metrics.LabelStory) that need to attach metadata to the
+// underlying MetricsClient — after they label, they Rewrap to keep the
+// concurrency limit enforced.
+func (s *SemaphoreClient) Inner() Client { return s.inner }
+
+// Rewrap returns a new SemaphoreClient that shares the same semaphore
+// channel as s but delegates to inner. Sharing the channel preserves
+// the global concurrency limit across labelled siblings.
+func (s *SemaphoreClient) Rewrap(inner Client) *SemaphoreClient {
+	return &SemaphoreClient{inner: inner, sem: s.sem}
+}
+
 // Complete acquires a semaphore slot, delegates to the inner client, and
 // releases the slot when done. If the context is cancelled while waiting
 // for a slot, the call returns immediately with the context error.

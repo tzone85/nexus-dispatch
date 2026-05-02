@@ -13,7 +13,6 @@ import (
 	"github.com/tzone85/nexus-dispatch/internal/agent"
 	"github.com/tzone85/nexus-dispatch/internal/artifact"
 	"github.com/tzone85/nexus-dispatch/internal/codegraph"
-	"github.com/tzone85/nexus-dispatch/internal/criteria"
 	"github.com/tzone85/nexus-dispatch/internal/engine"
 	nxdgit "github.com/tzone85/nexus-dispatch/internal/git"
 	"github.com/tzone85/nexus-dispatch/internal/graph"
@@ -225,10 +224,13 @@ func runResume(cmd *cobra.Command, args []string) error {
 	dispatcher := engine.NewDispatcher(s.Config, s.Events, s.Proj)
 	dispatcher.SetBayesianRouter(bayesianRouter)
 	waveNumber := maxWave + 1
+	dispatchStart := time.Now()
 	assignments, err := dispatcher.DispatchWave(dag, completed, reqID, plannedStories, waveNumber)
 	if err != nil {
+		engine.EmitStageCompleted(s.Events, s.Proj, "dispatcher", "", "dispatch", "failure", dispatchStart)
 		return fmt.Errorf("dispatch wave: %w", err)
 	}
+	engine.EmitStageCompleted(s.Events, s.Proj, "dispatcher", "", "dispatch", "success", dispatchStart)
 	if len(assignments) == 0 {
 		fmt.Fprintf(out, "No stories ready for dispatch (dependencies not yet met).\n")
 		return nil
@@ -259,6 +261,13 @@ func runResume(cmd *cobra.Command, args []string) error {
 	// Spawn agents via executor
 	executor := engine.NewExecutor(reg, s.Config, s.Events, s.Proj, mp)
 
+	// Build the metrics recorder once and share it between the native
+	// runtime (executor stage) and the post-execution pipeline (reviewer /
+	// merger stages) so all three categories land in metrics.jsonl with the
+	// correct stage label for the reporter.
+	stateDirForMetrics := expandHome(s.Config.Workspace.StateDir)
+	metricsRecorder := metrics.NewRecorder(filepath.Join(stateDirForMetrics, "metrics.jsonl"))
+
 	// Provide LLM client for native runtimes (Gemma)
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 	var nativeClient llm.Client
@@ -269,34 +278,40 @@ func runResume(cmd *cobra.Command, args []string) error {
 		nativeClient, _ = buildLLMClient(s.Config.Models.Junior.Provider)
 	}
 	if nativeClient != nil {
-		executor.SetLLMClient(nativeClient)
+		// Wrap with metrics so every native LLM call gets recorded with the
+		// "executor" stage. Per-story / per-tier / per-role labels are added
+		// inside spawnNative once those values are known.
+		nativeClient = metrics.LabelStage(
+			metrics.NewMetricsClient(nativeClient, metricsRecorder, reqID, "execute", ""),
+			"executor",
+		)
 	}
 
 	// Initialize artifact store for per-story persistence.
 	stateDir0 := expandHome(s.Config.Workspace.StateDir)
 	artifactDir := filepath.Join(stateDir0, "artifacts")
-	artStore, artErr := artifact.NewStore(artifactDir)
-	if artErr == nil {
-		executor.SetArtifactStore(artStore)
-	}
+	artStore, _ := artifact.NewStore(artifactDir)
 
 	// Initialize scratchboard for cross-agent knowledge sharing.
 	sbPath := filepath.Join(stateDir0, "scratchboards", reqID+".jsonl")
-	sb, sbErr := scratchboard.New(sbPath)
-	if sbErr == nil {
-		executor.SetScratchboard(sb)
-	}
-
-	// Wire project directory for RepoProfile loading (repo learning system).
-	executor.SetProjectDir(stateDir0)
+	sb, _ := scratchboard.New(sbPath)
 
 	// Initialize periodic controller for stuck agent detection.
 	controller := engine.NewController(s.Config.Controller, nil, s.Events, s.Proj)
-	executor.SetController(controller)
 
-	// Operator directive injection: native runtime checks for pending
-	// USER_DIRECTIVE events at iteration start. CLI: `nxd direct <id>`.
-	executor.SetDirectiveStore(engine.NewDirectiveStore(s.Events))
+	// Apply optional executor wiring as functional options. Each helper is
+	// nil-safe inside the option, so passing a nil store / scratchboard /
+	// client just skips wiring without an explicit guard at the call site.
+	executor.Configure(
+		engine.WithExecLLMClient(nativeClient),
+		engine.WithExecArtifactStore(artStore),
+		engine.WithExecScratchboard(sb),
+		engine.WithExecProjectDir(stateDir0),
+		engine.WithExecController(controller),
+		// Operator directive injection: native runtime checks for pending
+		// USER_DIRECTIVE events at iteration start. CLI: `nxd direct <id>`.
+		engine.WithExecDirectiveStore(engine.NewDirectiveStore(s.Events)),
+	)
 
 	// Create cancellable context for spawn (parented to ctrl-c). The monitor
 	// reuses this same context further down so cancellation propagates to
@@ -347,27 +362,20 @@ func runResume(cmd *cobra.Command, args []string) error {
 	if llmErr != nil {
 		log.Printf("Warning: LLM client unavailable, skipping code review: %v", llmErr)
 	} else {
-		// Wrap LLM client with metrics tracking
-		stateDir := expandHome(s.Config.Workspace.StateDir)
-		recorder := metrics.NewRecorder(filepath.Join(stateDir, "metrics.jsonl"))
-		llmClient = metrics.NewMetricsClient(llmClient, recorder, reqID, "pipeline", "")
+		// Reuse the metrics recorder created earlier so executor + reviewer
+		// + merger entries all land in the same metrics.jsonl with distinct
+		// stage labels.
+		llmClient = metrics.NewMetricsClient(llmClient, metricsRecorder, reqID, "pipeline", "")
 
 		seniorModel := s.Config.Models.Senior
-		reviewer = engine.NewReviewer(llmClient, seniorModel.Provider, seniorModel.Model, seniorModel.MaxTokens, s.Events, s.Proj)
-	}
-
-	// Convert config success criteria to engine criteria.
-	var successCriteria []criteria.Criterion
-	for _, sc := range s.Config.QA.SuccessCriteria {
-		successCriteria = append(successCriteria, criteria.Criterion{
-			Type:     criteria.Type(sc.Kind),
-			Target:   sc.Path,
-			Expected: sc.Value,
-		})
+		// Stamp stage="reviewer" so the metrics reporter can isolate review
+		// cost from executor / merger cost.
+		reviewerClient := metrics.LabelStage(llmClient, "reviewer")
+		reviewer = engine.NewReviewer(reviewerClient, seniorModel.Provider, seniorModel.Model, seniorModel.MaxTokens, s.Events, s.Proj)
 	}
 
 	qaRunner := engine.NewQA(engine.QAConfig{
-		SuccessCriteria: successCriteria,
+		SuccessCriteria: engine.ConfigCriteriaToRuntime(s.Config.QA.SuccessCriteria),
 	}, &engine.ExecRunner{}, s.Events, s.Proj)
 
 	// LB11: honor config.Merge.Mode. Default mode (no GitHub remote, or
@@ -397,29 +405,36 @@ func runResume(cmd *cobra.Command, args []string) error {
 	// propagates to native runtime goroutines as well as the monitor.
 
 	monitor := engine.NewMonitor(reg, watchdog, reviewer, qaRunner, merger, s.Config, s.Events, s.Proj)
-	monitor.SetMemPalace(mp)
-	monitor.SetBayesianRouter(bayesianRouter)
-	if artStore != nil {
-		monitor.SetArtifactStore(artStore)
-	}
 
-	// Enable blast-radius analysis via code-review-graph (optional).
-	cg := codegraph.NewRunner()
-	if cg.Available() {
-		monitor.SetCodeGraph(cg)
+	// Optional codegraph runner for blast-radius analysis. Only wire if the
+	// binary is available on PATH; the option is nil-safe but we want to log
+	// the activation so operators can see which features the run used.
+	var cg *codegraph.Runner
+	if r := codegraph.NewRunner(); r.Available() {
+		cg = r
 		log.Printf("[resume] codegraph enabled: %s", cg.BinPath)
 	}
 
-	// Enable LLM-powered conflict resolution during rebase.
+	// Optional LLM-powered conflict resolver during rebase. Stamp stage so
+	// its calls land in metrics.jsonl under the "merger" stage.
+	var conflictResolver *engine.ConflictResolver
 	if llmClient != nil {
 		seniorModel := s.Config.Models.Senior
-		conflictResolver := engine.NewConflictResolver(llmClient, seniorModel.Model, seniorModel.MaxTokens, s.Events)
-		monitor.SetConflictResolver(conflictResolver)
+		mergerClient := metrics.LabelStage(llmClient, "merger")
+		conflictResolver = engine.NewConflictResolver(mergerClient, seniorModel.Model, seniorModel.MaxTokens, s.Events)
 	}
 
-	// Enable auto-resume: when a wave completes, the monitor automatically
-	// dispatches the next wave of ready stories instead of exiting.
-	monitor.SetAutoResume(dispatcher, executor)
+	monitor.Configure(
+		engine.WithMonMemPalace(mp),
+		engine.WithMonBayesianRouter(bayesianRouter),
+		engine.WithMonArtifactStore(artStore),
+		engine.WithMonCodeGraph(cg),
+		engine.WithMonConflictResolver(conflictResolver),
+		engine.WithMonDryRun(dryRun),
+		// Auto-resume: when a wave completes, dispatch the next ready wave
+		// without waiting for the user to re-run "nxd resume".
+		engine.WithMonAutoResume(dispatcher, executor),
+	)
 
 	rc := &engine.RunContext{
 		ReqID:          reqID,

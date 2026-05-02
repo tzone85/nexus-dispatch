@@ -37,6 +37,7 @@ type Server struct {
 	authToken    string    // C1: required as ?token=<hex> on / and /ws
 	bindAddr     string    // C1: actual host:port for tightening Origin checks
 	startedAt    time.Time // for /healthz uptime
+	stateDir     string    // for loading improvements.json + future per-state files
 }
 
 func NewServer(es state.EventStore, ps *state.SQLiteStore, port int, filter state.ReqFilter, stateDir string, mp *memory.MemPalace) *Server {
@@ -65,6 +66,7 @@ func NewServer(es state.EventStore, ps *state.SQLiteStore, port int, filter stat
 		mempalace:    mp,
 		authToken:    token,
 		startedAt:    time.Now(),
+		stateDir:     stateDir,
 	}
 	s.hub = NewHub(s)
 	return s

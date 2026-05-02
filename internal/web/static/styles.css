@@ -361,3 +361,77 @@ button:hover {
 .inv-badges { margin-left: 0.5rem; }
 .recovery-item { padding: 0.5rem; margin-bottom: 0.3rem; font-size: 0.9rem; }
 .recovery-item .timestamp { opacity: 0.5; margin-right: 0.5rem; }
+
+/* B1.4 / B2.4: human review banner + agent drill-down */
+.panel-alert {
+  border: 1px solid #cc3333;
+  background: #2a0f10;
+  padding: 12px 16px;
+  margin: 12px 0;
+}
+.panel-alert h2 {
+  color: #ff6b6b;
+  margin: 0 0 8px 0;
+}
+.human-review-item {
+  border-left: 3px solid #cc3333;
+  padding: 6px 12px;
+  margin: 6px 0;
+  background: #1a0a0b;
+}
+.review-head { display: flex; gap: 8px; align-items: center; }
+.review-diagnosis {
+  margin: 6px 0;
+  color: #d8d8d8;
+  font-family: monospace;
+  white-space: pre-wrap;
+}
+.review-directives {
+  margin: 4px 0 4px 20px;
+  color: #b8d8b8;
+}
+.review-directives li { margin: 2px 0; }
+
+.agent-toggle {
+  background: transparent;
+  color: #cccccc;
+  border: none;
+  cursor: pointer;
+  font-family: monospace;
+  padding: 2px 6px;
+}
+.agent-toggle:hover { color: #00cccc; }
+.agent-drill td {
+  background: #15181c;
+  border-top: 1px dashed #333;
+}
+.drill-header { color: #888; padding: 4px 0; font-size: 12px; }
+.drill-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px 8px;
+  font-family: monospace;
+  font-size: 12px;
+}
+.drill-row {
+  padding: 2px 0;
+  border-bottom: 1px dotted #2a2a2a;
+}
+.drill-detail { color: #b0b0b0; }
+
+/* Self-improvement suggestions panel */
+.suggestion-item {
+  border-left: 3px solid #888;
+  padding: 6px 12px;
+  margin: 6px 0;
+  background: #15181c;
+}
+.suggestion-item.severity-critical { border-left-color: #ff6b6b; }
+.suggestion-item.severity-warning  { border-left-color: #f6b73c; }
+.suggestion-item.severity-info     { border-left-color: #6cb6ff; }
+.sugg-head { display: flex; gap: 6px; align-items: center; }
+.sugg-desc { margin: 4px 0; color: #d8d8d8; }
+.sugg-action { margin: 2px 0 4px 0; color: #b8d8b8; font-family: monospace; font-size: 12px; }
+.badge-critical { background: #cc3333; color: white; }
+.badge-warning  { background: #aa7700; color: white; }
+.badge-info     { background: #285377; color: white; }

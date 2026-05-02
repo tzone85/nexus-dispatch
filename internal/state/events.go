@@ -92,6 +92,15 @@ const (
 	// exhausted, criteria still failing). Carries a structured diagnosis
 	// + suggested directives so an operator can quickly redirect.
 	EventHumanReviewNeeded EventType = "HUMAN_REVIEW_NEEDED"
+
+	// Pipeline-stage instrumentation (B2.1). EventStageCompleted carries
+	// `stage` ("plan", "dispatch", "execute", "review", "qa", "merge") and
+	// `duration_ms` so the reporter / dashboard can show wall-clock time
+	// per stage without re-deriving it from a pair of bracketing events.
+	// `outcome` is "success" or "failure". When the stage operates on a
+	// single story the StoryID field is set; pipeline-wide stages (plan,
+	// dispatch) emit with StoryID empty.
+	EventStageCompleted EventType = "STAGE_COMPLETED"
 )
 
 // Event represents a single domain event in the append-only event store.

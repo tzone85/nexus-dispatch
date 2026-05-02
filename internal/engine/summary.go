@@ -22,6 +22,7 @@ type WaveInfo struct {
 type StoryInfo struct {
 	Title    string
 	PRNumber int
+	Merged   bool
 }
 
 // GenerateSummary produces a formatted completion summary for a requirement,
@@ -40,9 +41,13 @@ func GenerateSummary(events state.EventStore, proj state.ProjectionStore, reqID 
 
 	var earliest, latest time.Time
 	mergedCount := 0
+	prCount := 0
 	for _, w := range waves {
 		for _, s := range w.Stories {
 			if s.PRNumber > 0 {
+				prCount++
+			}
+			if s.Merged {
 				mergedCount++
 			}
 		}
@@ -59,11 +64,19 @@ func GenerateSummary(events state.EventStore, proj state.ProjectionStore, reqID 
 	if !earliest.IsZero() && !latest.IsZero() {
 		duration := latest.Sub(earliest)
 		minutes := int(math.Round(duration.Minutes()))
-		b.WriteString(fmt.Sprintf("\n%d PRs created and merged in about %d minutes (%s to %s):\n\n",
-			mergedCount, minutes,
-			earliest.Local().Format("15:04"),
-			latest.Local().Format("15:04"),
-		))
+		if prCount > 0 {
+			b.WriteString(fmt.Sprintf("\n%d PRs created and merged in about %d minutes (%s to %s):\n\n",
+				prCount, minutes,
+				earliest.Local().Format("15:04"),
+				latest.Local().Format("15:04"),
+			))
+		} else {
+			b.WriteString(fmt.Sprintf("\n%d stories merged locally in about %d minutes (%s to %s):\n\n",
+				mergedCount, minutes,
+				earliest.Local().Format("15:04"),
+				latest.Local().Format("15:04"),
+			))
+		}
 	} else {
 		b.WriteString(fmt.Sprintf("\n%d stories processed:\n\n", len(stories)))
 	}
@@ -173,6 +186,7 @@ func groupByWave(stories []state.Story, timings map[string]storyTiming) []WaveIn
 		w.Stories = append(w.Stories, StoryInfo{
 			Title:    s.Title,
 			PRNumber: prNum,
+			Merged:   s.Status == "merged",
 		})
 
 		t := timings[s.ID]

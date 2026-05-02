@@ -58,6 +58,36 @@ type RecoveryItem struct {
 	Timestamp   string `json:"timestamp"`
 }
 
+// HumanReviewItem surfaces a HUMAN_REVIEW_NEEDED event so the dashboard
+// can show a prominent banner with the diagnosis and any suggested
+// directives. Carries enough context that an operator can decide and
+// dispatch a corrective directive without leaving the page.
+type HumanReviewItem struct {
+	StoryID    string   `json:"story_id"`
+	Reason     string   `json:"reason"`
+	Diagnosis  string   `json:"diagnosis"`
+	Directives []string `json:"directives"`
+	Timestamp  string   `json:"timestamp"`
+}
+
+// AgentTrace summarises the latest progress events for one agent,
+// supporting the dashboard's agent drill-down panel.
+type AgentTrace struct {
+	AgentID string             `json:"agent_id"`
+	StoryID string             `json:"story_id"`
+	Recent  []AgentProgressRow `json:"recent"`
+}
+
+// AgentProgressRow is one row of the drill-down: a STORY_PROGRESS event
+// rendered as iteration / phase / detail / tool.
+type AgentProgressRow struct {
+	Iteration int    `json:"iteration"`
+	Phase     string `json:"phase"`
+	Detail    string `json:"detail"`
+	Tool      string `json:"tool"`
+	Timestamp string `json:"timestamp"`
+}
+
 // MetricsCache reads metrics.jsonl via a Recorder and caches the summary
 // for up to 10 seconds to avoid repeated file I/O on every WebSocket tick.
 type MetricsCache struct {

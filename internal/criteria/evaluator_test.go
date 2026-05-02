@@ -66,6 +66,35 @@ func TestCommandSucceeds_Pass(t *testing.T) {
 	}
 }
 
+func TestCommandSucceeds_GoBuildDoesNotLeaveRootBinary(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module buildpkg\n\ngo 1.21\n"), 0644)
+	os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\nfunc main() {}\n"), 0644)
+
+	r := Evaluate(context.Background(), dir, Criterion{Type: TypeCommandSucceeds, Target: "go build ./..."})
+	if !r.Passed {
+		t.Fatalf("expected pass, got: %s\n%s", r.Message, r.Actual)
+	}
+	if _, err := os.Stat(filepath.Join(dir, filepath.Base(dir))); !os.IsNotExist(err) {
+		t.Fatalf("go build artifact should be removed, stat err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "buildpkg")); !os.IsNotExist(err) {
+		t.Fatalf("module-named go build artifact should be removed, stat err=%v", err)
+	}
+}
+
+func TestTestPasses_AcceptsFullGoTestCommand(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module testpasses\n\ngo 1.21\n"), 0644)
+	os.WriteFile(filepath.Join(dir, "main.go"), []byte("package testpasses\nfunc Add(a, b int) int { return a + b }\n"), 0644)
+	os.WriteFile(filepath.Join(dir, "main_test.go"), []byte("package testpasses\nimport \"testing\"\nfunc TestAdd(t *testing.T) { if Add(1, 2) != 3 { t.Fatal(\"bad add\") } }\n"), 0644)
+
+	r := Evaluate(context.Background(), dir, Criterion{Type: TypeTestPasses, Target: "go test ./..."})
+	if !r.Passed {
+		t.Fatalf("expected pass for full command target, got: %s\n%s", r.Message, r.Actual)
+	}
+}
+
 func TestCommandSucceeds_Fail(t *testing.T) {
 	// `go test` on an empty dir fails (no go.mod) — allowlisted but exits non-zero.
 	r := Evaluate(context.Background(), t.TempDir(), Criterion{Type: TypeCommandSucceeds, Target: "go test ./..."})

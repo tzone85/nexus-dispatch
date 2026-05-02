@@ -110,9 +110,9 @@ func TestSlogBridge_FiltersBelowLevel(t *testing.T) {
 	buf, reset := captureSlog(t, slog.LevelWarn)
 	defer reset()
 
-	log.Printf("[planner] info-level line")           // Info — should be filtered
-	log.Printf("[merger] WARNING something off")      // Warn — kept
-	log.Printf("[runtime] ERROR billing exhausted")   // Error — kept
+	log.Printf("[planner] info-level line")         // Info — should be filtered
+	log.Printf("[merger] WARNING something off")    // Warn — kept
+	log.Printf("[runtime] ERROR billing exhausted") // Error — kept
 
 	got := decodeRecords(t, buf)
 	if len(got) != 2 {
@@ -197,6 +197,22 @@ func TestSetup_Idempotent(t *testing.T) {
 	second := slog.Default()
 	if first != second {
 		t.Error("Setup should be idempotent on second call")
+	}
+}
+
+func TestReconfigure_ReplacesExistingLogger(t *testing.T) {
+	configured.Store(false)
+	defer configured.Store(true)
+
+	Setup("info", "text")
+	first := slog.Default()
+	Reconfigure("debug", "json")
+	second := slog.Default()
+	if first == second {
+		t.Error("Reconfigure should replace the logger installed by early Setup")
+	}
+	if !IsConfigured() {
+		t.Error("expected configured after Reconfigure")
 	}
 }
 

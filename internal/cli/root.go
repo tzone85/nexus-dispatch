@@ -53,6 +53,7 @@ func init() {
 	rootCmd.AddCommand(newLearnCmd())
 	rootCmd.AddCommand(newSpecCmd())
 	rootCmd.AddCommand(newDirectCmd())
+	rootCmd.AddCommand(newImproveCmd())
 }
 
 func Execute() error {

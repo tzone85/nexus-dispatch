@@ -203,10 +203,13 @@ func runReq(cmd *cobra.Command, args []string) error {
 		s.Proj.Project(invEvt)
 	}
 
+	planStart := time.Now()
 	result, err := planner.PlanWithContext(ctx, reqID, requirement, repoPath, reqCtx)
 	if err != nil {
+		engine.EmitStageCompleted(s.Events, s.Proj, "planner", "", "plan", "failure", planStart)
 		return fmt.Errorf("planning failed: %w", err)
 	}
+	engine.EmitStageCompleted(s.Events, s.Proj, "planner", "", "plan", "success", planStart)
 
 	// Print plan summary
 	fmt.Fprintf(out, "Plan created with %d stories:\n\n", len(result.Stories))

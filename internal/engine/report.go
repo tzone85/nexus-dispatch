@@ -3,6 +3,7 @@ package engine
 import (
 	"fmt"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"github.com/tzone85/nexus-dispatch/internal/config"
@@ -44,21 +45,24 @@ type ReportData struct {
 
 	// AgentStats summarises work done by each agent role.
 	AgentStats []AgentStat
+
+	// LLMUsage breaks token and cost usage down by story and model.
+	LLMUsage []StoryLLMUsage
 }
 
 // ReportStory holds per-story delivery data for the report.
 type ReportStory struct {
-	ID               string
-	Title            string
-	Status           string
-	Complexity       int
-	PRUrl            string
-	PRNumber         int
-	Wave             int
-	EscalationCount  int
-	RetryCount       int
-	Duration         time.Duration
-	EscalationTier   int
+	ID              string
+	Title           string
+	Status          string
+	Complexity      int
+	PRUrl           string
+	PRNumber        int
+	Wave            int
+	EscalationCount int
+	RetryCount      int
+	Duration        time.Duration
+	EscalationTier  int
 }
 
 // TimelineEntry is a single significant event in the delivery timeline.
@@ -71,9 +75,21 @@ type TimelineEntry struct {
 
 // AgentStat summarises work performed by a given agent role.
 type AgentStat struct {
-	AgentID    string
+	AgentID       string
 	StoriesWorked int
 	Escalations   int
+}
+
+// StoryLLMUsage summarises token usage and estimated cost for one story/model
+// pair. StoryID is "(pipeline)" for requirement-level calls without a story.
+type StoryLLMUsage struct {
+	StoryID   string
+	Model     string
+	Calls     int
+	TokensIn  int
+	TokensOut int
+	Cost      float64
+	Currency  string
 }
 
 // ReportBuilder assembles ReportData from the event and projection stores.
@@ -111,6 +127,7 @@ func (rb *ReportBuilder) Build(reqID string) (ReportData, error) {
 	effort := rb.buildEffort(stories)
 	timeline := rb.buildTimeline(reqID, stories)
 	agentStats := rb.buildAgentStats(stories)
+	llmUsage := rb.buildLLMUsage(reqID)
 
 	status := rb.classifyStatus(req, reportStories)
 
@@ -126,6 +143,7 @@ func (rb *ReportBuilder) Build(reqID string) (ReportData, error) {
 		Effort:        effort,
 		Timeline:      timeline,
 		AgentStats:    agentStats,
+		LLMUsage:      llmUsage,
 	}, nil
 }
 
@@ -223,22 +241,81 @@ func (rb *ReportBuilder) buildEffort(stories []state.Story) Estimate {
 // sumTokenUsage reads the metrics.jsonl file and sums all token counts.
 // Returns (0, 0) if the file doesn't exist or can't be read.
 func (rb *ReportBuilder) sumTokenUsage() (inputTokens, outputTokens int) {
+	entries := rb.readMetricEntries()
+	for _, e := range entries {
+		inputTokens += e.TokensIn
+		outputTokens += e.TokensOut
+	}
+	return inputTokens, outputTokens
+}
+
+func (rb *ReportBuilder) readMetricEntries() []metrics.MetricEntry {
 	stateDir := rb.cfg.Workspace.StateDir
 	if stateDir == "" {
-		return 0, 0
+		return nil
 	}
 	// Expand ~ manually since report may run without CLI helpers.
 	metricsPath := filepath.Join(stateDir, "metrics.jsonl")
 	recorder := metrics.NewRecorder(metricsPath)
 	entries, err := recorder.ReadAll()
 	if err != nil || len(entries) == 0 {
-		return 0, 0
+		return nil
 	}
+	return entries
+}
+
+func (rb *ReportBuilder) buildLLMUsage(reqID string) []StoryLLMUsage {
+	entries := rb.readMetricEntries()
+	if len(entries) == 0 {
+		return nil
+	}
+
+	type usageKey struct {
+		storyID string
+		model   string
+	}
+	byKey := make(map[usageKey]*StoryLLMUsage)
 	for _, e := range entries {
-		inputTokens += e.TokensIn
-		outputTokens += e.TokensOut
+		if e.ReqID != "" && e.ReqID != reqID {
+			continue
+		}
+		storyID := e.StoryID
+		if storyID == "" {
+			storyID = "(pipeline)"
+		}
+		k := usageKey{storyID: storyID, model: e.Model}
+		usage := byKey[k]
+		if usage == nil {
+			usage = &StoryLLMUsage{StoryID: storyID, Model: e.Model, Currency: rb.cfg.Billing.Currency}
+			byKey[k] = usage
+		}
+		usage.Calls++
+		usage.TokensIn += e.TokensIn
+		usage.TokensOut += e.TokensOut
 	}
-	return inputTokens, outputTokens
+
+	result := make([]StoryLLMUsage, 0, len(byKey))
+	for _, usage := range byKey {
+		usage.Cost = rb.llmCostForModel(usage.Model, usage.TokensIn, usage.TokensOut)
+		result = append(result, *usage)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].StoryID == result[j].StoryID {
+			return result[i].Model < result[j].Model
+		}
+		return result[i].StoryID < result[j].StoryID
+	})
+	return result
+}
+
+func (rb *ReportBuilder) llmCostForModel(model string, inputTokens, outputTokens int) float64 {
+	if rb.cfg.Billing.LLMCosts.Mode != "per_token" {
+		return 0
+	}
+	if rate, ok := rb.cfg.Billing.LLMCosts.Rates[model]; ok {
+		return float64(inputTokens)/1000.0*rate.InputPer1K + float64(outputTokens)/1000.0*rate.OutputPer1K
+	}
+	return CalculateLLMCost(rb.cfg.Billing, inputTokens, outputTokens)
 }
 
 // buildTimeline builds an ordered list of significant delivery events.

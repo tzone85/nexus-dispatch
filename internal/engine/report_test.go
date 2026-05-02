@@ -8,6 +8,7 @@ import (
 
 	"github.com/tzone85/nexus-dispatch/internal/config"
 	"github.com/tzone85/nexus-dispatch/internal/engine"
+	"github.com/tzone85/nexus-dispatch/internal/metrics"
 	"github.com/tzone85/nexus-dispatch/internal/state"
 )
 
@@ -242,6 +243,55 @@ func TestReportBuilder_Build_EffortAndCost(t *testing.T) {
 	}
 	if report.Effort.Summary.StoryCount != 2 {
 		t.Errorf("Effort.Summary.StoryCount: want 2, got %d", report.Effort.Summary.StoryCount)
+	}
+}
+
+func TestReportBuilder_Build_LLMUsageBreakdown(t *testing.T) {
+	es, ps, cleanup := setupReportStores(t)
+	defer cleanup()
+
+	dir := t.TempDir()
+	rec := metrics.NewRecorder(filepath.Join(dir, "metrics.jsonl"))
+	now := time.Now()
+	for _, entry := range []metrics.MetricEntry{
+		{Timestamp: now, ReqID: "req-001", StoryID: "s-001", Model: "model-a", TokensIn: 1000, TokensOut: 500, Success: true},
+		{Timestamp: now, ReqID: "req-001", StoryID: "s-001", Model: "model-a", TokensIn: 250, TokensOut: 250, Success: true},
+		{Timestamp: now, ReqID: "req-001", StoryID: "s-002", Model: "model-b", TokensIn: 100, TokensOut: 50, Success: true},
+		{Timestamp: now, ReqID: "other-req", StoryID: "s-999", Model: "model-a", TokensIn: 9999, TokensOut: 9999, Success: true},
+	} {
+		if err := rec.Record(entry); err != nil {
+			t.Fatalf("record metric: %v", err)
+		}
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("close metrics recorder: %v", err)
+	}
+
+	cfg := config.DefaultConfig()
+	cfg.Workspace.StateDir = dir
+	cfg.Billing.LLMCosts.Mode = "per_token"
+	cfg.Billing.LLMCosts.Rates = map[string]config.TokenRate{
+		"model-a": {InputPer1K: 0.01, OutputPer1K: 0.02},
+		"model-b": {InputPer1K: 0.10, OutputPer1K: 0.20},
+	}
+	rb := engine.NewReportBuilder(es, ps, cfg)
+
+	report, err := rb.Build("req-001")
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(report.LLMUsage) != 2 {
+		t.Fatalf("expected 2 usage rows, got %d: %#v", len(report.LLMUsage), report.LLMUsage)
+	}
+	first := report.LLMUsage[0]
+	if first.StoryID != "s-001" || first.Model != "model-a" || first.Calls != 2 {
+		t.Fatalf("unexpected first usage row: %#v", first)
+	}
+	if first.TokensIn != 1250 || first.TokensOut != 750 {
+		t.Fatalf("unexpected token totals: %#v", first)
+	}
+	if first.Cost < 0.0274 || first.Cost > 0.0276 {
+		t.Fatalf("unexpected cost: %.4f", first.Cost)
 	}
 }
 

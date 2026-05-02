@@ -2,13 +2,41 @@ package cli
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/tzone85/nexus-dispatch/internal/config"
 	"github.com/tzone85/nexus-dispatch/internal/nlog"
 	"github.com/tzone85/nexus-dispatch/internal/state"
 )
+
+// noticesPrinted dedupes config.Notices() output across multiple
+// loadConfig calls in the same process. Without this guard the same
+// "same-model review" warning printed up to 3 times per command:
+// PersistentPreRun → loadConfig → Validate, then the command's own
+// loadConfig → Validate, then any explicit cfg.Validate() call. We log
+// each unique notice at most once per process — operators read it on
+// startup, no point repeating it.
+var (
+	noticesMu      sync.Mutex
+	noticesPrinted = map[string]struct{}{}
+)
+
+// logNoticesOnce prints any new notices the loaded config carries,
+// suppressing repeats within the same process.
+func logNoticesOnce(cfg config.Config) {
+	noticesMu.Lock()
+	defer noticesMu.Unlock()
+	for _, n := range cfg.Notices() {
+		if _, seen := noticesPrinted[n]; seen {
+			continue
+		}
+		noticesPrinted[n] = struct{}{}
+		log.Printf("[config] WARNING: %s", n)
+	}
+}
 
 // stores bundles the event store and projection store opened from a config.
 // Both must be closed by the caller.
@@ -26,10 +54,10 @@ func loadStores(cfgPath string) (stores, error) {
 		return stores{}, err
 	}
 
-	// Apply log-level / log-format from workspace config. nlog.Setup is
-	// idempotent; main.go calls it earlier with env vars, so this only
-	// "promotes" the level if the user pinned it in YAML.
-	nlog.Setup(cfg.Workspace.LogLevel, cfg.Workspace.LogFormat)
+	// Apply log-level / log-format from workspace config. main.go installs an
+	// early env-based logger before config is available; after YAML load we
+	// must reconfigure so workspace.log_level / log_format take effect.
+	nlog.Reconfigure(cfg.Workspace.LogLevel, cfg.Workspace.LogFormat)
 
 	stateDir := expandHome(cfg.Workspace.StateDir)
 
@@ -87,6 +115,7 @@ func loadConfig(cfgPath string) (config.Config, error) {
 
 	cfg, err := config.LoadFromFile(cfgPath)
 	if err == nil {
+		logNoticesOnce(cfg)
 		return cfg, nil
 	}
 
@@ -105,6 +134,7 @@ func loadConfig(cfgPath string) (config.Config, error) {
 	if altErr != nil {
 		return config.Config{}, fmt.Errorf("no config: tried %s (%v) and %s (%v)", cfgPath, err, altPath, altErr)
 	}
+	logNoticesOnce(cfg)
 	return cfg, nil
 }
 

@@ -98,11 +98,8 @@ func evalFileContains(workDir string, c Criterion) Result {
 }
 
 func evalTestPasses(ctx context.Context, workDir string, c Criterion) Result {
-	target := c.Target
-	if target == "" {
-		target = "./..."
-	}
-	cmd := exec.CommandContext(ctx, "go", "test", target)
+	args := normalizeGoTestArgs(c.Target)
+	cmd := exec.CommandContext(ctx, "go", append([]string{"test"}, args...)...)
 	cmd.Dir = workDir
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -113,6 +110,17 @@ func evalTestPasses(ctx context.Context, workDir string, c Criterion) Result {
 		}
 	}
 	return Result{Criterion: c, Passed: true, Actual: "passed", Message: "all tests pass"}
+}
+
+func normalizeGoTestArgs(target string) []string {
+	fields := strings.Fields(target)
+	if len(fields) >= 2 && fields[0] == "go" && fields[1] == "test" {
+		fields = fields[2:]
+	}
+	if len(fields) == 0 {
+		return []string{"./..."}
+	}
+	return fields
 }
 
 func evalCoverageAbove(ctx context.Context, workDir string, c Criterion) Result {
@@ -198,6 +206,10 @@ func evalCommandSucceeds(ctx context.Context, workDir string, c Criterion) Resul
 	if len(parts) == 0 {
 		return Result{Criterion: c, Passed: false, Message: "empty command"}
 	}
+	if isGoBuildCommand(parts) {
+		cleanup := cleanupGoBuildArtifacts(workDir)
+		defer cleanup()
+	}
 	cmd := exec.CommandContext(ctx, parts[0], parts[1:]...)
 	cmd.Dir = workDir
 	out, err := cmd.CombinedOutput()
@@ -209,6 +221,72 @@ func evalCommandSucceeds(ctx context.Context, workDir string, c Criterion) Resul
 		}
 	}
 	return Result{Criterion: c, Passed: true, Actual: "exit 0", Message: "command succeeded"}
+}
+
+func isGoBuildCommand(parts []string) bool {
+	return len(parts) >= 2 && parts[0] == "go" && parts[1] == "build"
+}
+
+func cleanupGoBuildArtifacts(workDir string) func() {
+	candidates := []string{
+		filepath.Join(workDir, filepath.Base(workDir)),
+	}
+	if moduleBinary := moduleBinaryPath(workDir); moduleBinary != "" {
+		candidates = append(candidates, moduleBinary)
+	}
+	existed := make(map[string]bool, len(candidates))
+	for _, path := range candidates {
+		_, statErr := os.Stat(path)
+		existed[path] = statErr == nil
+	}
+	before := untrackedFiles(workDir)
+	return func() {
+		for _, path := range candidates {
+			if !existed[path] {
+				_ = os.Remove(path)
+			}
+		}
+		after := untrackedFiles(workDir)
+		for path := range after {
+			if _, ok := before[path]; ok {
+				continue
+			}
+			abs := filepath.Join(workDir, path)
+			if info, err := os.Stat(abs); err == nil && !info.IsDir() {
+				_ = os.Remove(abs)
+			}
+		}
+	}
+}
+
+func moduleBinaryPath(workDir string) string {
+	data, err := os.ReadFile(filepath.Join(workDir, "go.mod"))
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 2 && fields[0] == "module" {
+			return filepath.Join(workDir, filepath.Base(fields[1]))
+		}
+	}
+	return ""
+}
+
+func untrackedFiles(workDir string) map[string]struct{} {
+	cmd := exec.Command("git", "status", "--porcelain", "--untracked-files=all")
+	cmd.Dir = workDir
+	out, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+	files := make(map[string]struct{})
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(line, "?? ") {
+			files[strings.TrimSpace(strings.TrimPrefix(line, "?? "))] = struct{}{}
+		}
+	}
+	return files
 }
 
 // parseCoverage extracts the coverage percentage from go test -cover output.

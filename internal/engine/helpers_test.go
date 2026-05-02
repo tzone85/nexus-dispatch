@@ -97,13 +97,25 @@ func TestConfigCriteriaToRuntime_Converts(t *testing.T) {
 	if result[1].Target != "go build ./..." {
 		t.Errorf("criteria[1].Target = %q, want 'go build ./...'", result[1].Target)
 	}
-	// test_passes: value → target
-	if result[2].Target != "go test ./..." {
-		t.Errorf("criteria[2].Target = %q, want 'go test ./...'", result[2].Target)
+	// test_passes: full command → package target
+	if result[2].Target != "./..." {
+		t.Errorf("criteria[2].Target = %q, want './...'", result[2].Target)
 	}
 	// file_contains: path → target, value → expected
 	if result[3].Target != "main.go" || result[3].Expected != "package main" {
 		t.Errorf("criteria[3] = %+v, want target=main.go expected=package main", result[3])
+	}
+}
+
+func TestConfigCriteriaToRuntime_TestPassesPathFallback(t *testing.T) {
+	result := ConfigCriteriaToRuntime([]config.SuccessCriterion{
+		{Kind: "test_passes", Path: "./internal/..."},
+	})
+	if len(result) != 1 {
+		t.Fatalf("expected one criterion, got %d", len(result))
+	}
+	if result[0].Target != "./internal/..." {
+		t.Errorf("Target = %q, want ./internal/...", result[0].Target)
 	}
 }
 

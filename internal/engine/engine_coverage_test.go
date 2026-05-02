@@ -245,6 +245,36 @@ func TestIsGitignoreOnlyDiff(t *testing.T) {
 	}
 }
 
+func TestDryRunSimulationProducesReviewableDiff(t *testing.T) {
+	dir := t.TempDir()
+	cmds := [][]string{
+		{"git", "init"},
+		{"git", "config", "user.email", "test@test.com"},
+		{"git", "config", "user.name", "Test"},
+	}
+	for _, args := range cmds {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%v: %s", err, out)
+		}
+	}
+
+	os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n"), 0o644)
+	exec.Command("git", "-C", dir, "add", ".").Run()
+	exec.Command("git", "-C", dir, "commit", "-m", "init").Run()
+	exec.Command("git", "-C", dir, "switch", "-c", "nxd/story-1").Run()
+
+	simulateDryRunChanges(dir, "story-1")
+	diff, err := gitDiff(dir)
+	if err != nil {
+		t.Fatalf("gitDiff: %v", err)
+	}
+	if !strings.Contains(diff, "dry-run-simulation.txt") {
+		t.Fatalf("expected dry-run simulation file in diff, got:\n%s", diff)
+	}
+}
+
 // --- mapEscalationActionToManagerAction ---
 
 func TestMapEscalationActionToManagerAction(t *testing.T) {
@@ -317,7 +347,6 @@ func TestConvertToolResultToManagerAction_Empty(t *testing.T) {
 		t.Errorf("expected empty action for empty result, got %q", ma.Action)
 	}
 }
-
 
 // --- Executor.SetProjectDir ---
 

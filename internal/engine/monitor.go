@@ -444,6 +444,7 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 
 	// 1. Code Review
 	if m.reviewer != nil {
+		reviewStart := time.Now()
 		// Run blast-radius analysis if codegraph is available.
 		blastRadius := ""
 		if m.codeGraph != nil && m.codeGraph.Available() {
@@ -462,6 +463,7 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 		fileTree := captureFileTree(ag.WorktreePath)
 		result, err := m.reviewer.Review(ctx, storyID, storyTitle, storyAC, diff, blastRadius, fileTree)
 		if err != nil {
+			EmitStageCompleted(m.eventStore, m.projStore, "monitor", storyID, "review", "failure", reviewStart)
 			// Fatal API errors (auth failures, billing exhaustion,
 			// permission denied) will never succeed on retry -- pause
 			// the entire requirement to stop the infinite loop.
@@ -501,16 +503,20 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 		}
 
 		if !result.Passed {
+			EmitStageCompleted(m.eventStore, m.projStore, "monitor", storyID, "review", "failure", reviewStart)
 			m.resetStoryToDraft(storyID, "reviewer", fmt.Sprintf("review rejected: %s", result.Summary))
 			return
 		}
+		EmitStageCompleted(m.eventStore, m.projStore, "monitor", storyID, "review", "success", reviewStart)
 		log.Printf("[pipeline] review passed for %s", storyID)
 	}
 
 	// 2. QA
 	if m.qa != nil {
+		qaStart := time.Now()
 		result, err := m.qa.Run(ctx, storyID, ag.WorktreePath)
 		if err != nil {
+			EmitStageCompleted(m.eventStore, m.projStore, "monitor", storyID, "qa", "failure", qaStart)
 			log.Printf("[pipeline] QA error for %s: %v", storyID, err)
 			m.resetStoryToDraft(storyID, "qa", fmt.Sprintf("QA error: %v", err))
 			return
@@ -525,6 +531,7 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 		}
 
 		if !result.Passed {
+			EmitStageCompleted(m.eventStore, m.projStore, "monitor", storyID, "qa", "failure", qaStart)
 			log.Printf("[pipeline] QA failed for %s", storyID)
 
 			// Collect QA failure output from failed checks.
@@ -564,6 +571,7 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 
 			return
 		}
+		EmitStageCompleted(m.eventStore, m.projStore, "monitor", storyID, "qa", "success", qaStart)
 		log.Printf("[pipeline] QA passed for %s", storyID)
 	}
 
@@ -586,9 +594,11 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 	if m.merger != nil {
 		m.mergeMu.Lock()
 		defer m.mergeMu.Unlock()
+		mergeStart := time.Now()
 		result, err := m.rebaseAndMerge(ctx, storyID, branch, repoDir, ag.WorktreePath)
 
 		if err != nil {
+			EmitStageCompleted(m.eventStore, m.projStore, "monitor", storyID, "merge", "failure", mergeStart)
 			// Fatal API errors during conflict resolution (credits exhausted,
 			// auth failure) must pause the requirement immediately.
 			if llm.IsFatalAPIError(err) {
@@ -600,6 +610,7 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 			m.resetStoryToDraft(storyID, "merger", fmt.Sprintf("merge/rebase error: %v", err))
 			return
 		}
+		EmitStageCompleted(m.eventStore, m.projStore, "monitor", storyID, "merge", "success", mergeStart)
 		log.Printf("[pipeline] %s -> PR #%d (%s) merged=%v",
 			storyID, result.PRNumber, result.PRURL, result.Merged)
 
@@ -971,11 +982,14 @@ func (m *Monitor) dispatchNextWave(ctx context.Context, rc *RunContext, repoDir 
 	}
 
 	rc.WaveNumber++
+	dispatchStart := time.Now()
 	assignments, err := m.dispatcher.DispatchWave(rc.DAG, completed, rc.ReqID, rc.PlannedStories, rc.WaveNumber)
 	if err != nil {
+		EmitStageCompleted(m.eventStore, m.projStore, "auto-resume", "", "dispatch", "failure", dispatchStart)
 		log.Printf("[auto-resume] dispatch error: %v", err)
 		return nil
 	}
+	EmitStageCompleted(m.eventStore, m.projStore, "auto-resume", "", "dispatch", "success", dispatchStart)
 	if len(assignments) == 0 {
 		// Stall detection: check if stories remain but none are dispatchable
 		pendingCount := 0
@@ -1061,18 +1075,19 @@ func (m *Monitor) handleManagerEscalation(ctx context.Context, story PlannedStor
 	os.WriteFile(logPath, []byte(fmt.Sprintf("Diagnosis: %s\nCategory: %s\nAction: %s\n",
 		action.Diagnosis, action.Category, action.Action)), 0o644)
 
-	switch action.Action {
-	case "retry":
-		m.executeRetryAction(storyID, action, worktreePath)
-	case "rewrite":
-		m.executeRewriteAction(storyID, action)
-	case "split":
-		m.executeSplitAction(ctx, storyID, action, rc, story)
-	case "escalate_to_techlead":
-		m.escalateToTier(storyID, 3, "manager escalated: "+action.Diagnosis)
-	default:
-		m.resetStoryToDraft(storyID, "manager", "unknown action: "+action.Action)
+	if handler := LookupManagerAction(action.Action); handler != nil {
+		handler(ManagerActionContext{
+			Ctx:          ctx,
+			Monitor:      m,
+			StoryID:      storyID,
+			WorktreePath: worktreePath,
+			Action:       action,
+			RunContext:   rc,
+			Story:        story,
+		})
+		return
 	}
+	m.resetStoryToDraft(storyID, "manager", "unknown action: "+action.Action)
 }
 
 // executeRetryAction resets a story to a lower tier for re-dispatch,
@@ -1548,7 +1563,6 @@ var nxdArtifactPatterns = []string{
 	"CLAUDE.md",
 	".nxd-prompts/",
 	".serena/",
-	"dry-run-simulation.txt",
 }
 
 func isArtifactFile(path string) bool {
