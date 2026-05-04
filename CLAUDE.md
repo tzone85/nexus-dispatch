@@ -45,7 +45,24 @@ go test ./... -timeout 180s       # full test suite
 go vet ./...                      # static analysis
 go install ./cmd/nxd              # install binary to ~/go/bin/nxd
 make test                         # tests with race detection + coverage report
+make setup                        # one-shot bootstrap (Go deps + MemPalace + doctor)
+make mempalace-check              # smoke the MemPalace bridge end-to-end
 ```
+
+## Core Infrastructure: MemPalace
+
+MemPalace is the local-first semantic memory layer NXD relies on for
+mining diffs / review feedback / QA failures and retrieving prior work
+as agent prompt context. **Offline-first by design** (ChromaDB local
+backend, zero API calls — see https://github.com/milla-jovovich/mempalace).
+Pinned at `mempalace==2.0.0` in `requirements.txt`. The Python bridge
+lives at `scripts/mempalace_bridge.py` and is wrapped by
+`internal/memory/mempalace.go`.
+
+Install: `pip install -r requirements.txt` (or `make install-mempalace`).
+CI verifies the bridge contract via the `mempalace` workflow job.
+Argv-mismatch regressions are caught by
+`internal/memory/bridge_args_test.go`.
 
 ## Configuration
 

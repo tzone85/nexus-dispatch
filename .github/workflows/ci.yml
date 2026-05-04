@@ -105,6 +105,34 @@ jobs:
       - name: Build container image
         run: docker build -t nxd:ci .
 
+  mempalace:
+    name: MemPalace bridge
+    runs-on: ubuntu-latest
+    # Verifies our pinned MemPalace install + the Python bridge contract
+    # hasn't drifted (search --results vs --max-results, wake-up vs
+    # wakeup, etc.). Catches integration breakage that the unit tests
+    # alone can't because they stub the bridge.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install MemPalace
+        run: pip install -r requirements.txt
+
+      - name: Bridge health
+        run: |
+          python3 scripts/mempalace_bridge.py health | tee /dev/stderr | grep -q '"status": "ok"'
+
+      - name: Bridge mine + search round-trip
+        run: |
+          python3 scripts/mempalace_bridge.py mine --wing ci-test --room smoke --text "ci roundtrip $(date)"
+          python3 scripts/mempalace_bridge.py search --query "ci roundtrip" --wing ci-test --results 3 | tee /dev/stderr | grep -q '"status": "ok"'
+
   vulncheck:
     name: Vulnerability scan
     runs-on: ubuntu-latest

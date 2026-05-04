@@ -77,7 +77,7 @@ func (mp *MemPalace) Search(query, wing, room string, maxResults int) ([]SearchR
 		args = append(args, "--room", room)
 	}
 	if maxResults > 0 {
-		args = append(args, "--max-results", fmt.Sprintf("%d", maxResults))
+		args = append(args, "--results", fmt.Sprintf("%d", maxResults))
 	}
 
 	out, err := mp.runBridge(args...)
@@ -112,7 +112,7 @@ func (mp *MemPalace) WakeUp(wing string) (string, error) {
 	if !mp.available {
 		return "", nil
 	}
-	args := []string{"wakeup", "--wing", wing}
+	args := []string{"wake-up", "--wing", wing}
 	out, err := mp.runBridge(args...)
 	if err != nil {
 		return "", nil

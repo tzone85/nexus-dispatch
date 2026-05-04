@@ -1,5 +1,6 @@
 .PHONY: build test lint clean install release release-snapshot vet check \
-        fmt tidy bench coverage-html watch vulncheck doctor notice
+        fmt tidy bench coverage-html watch vulncheck doctor notice \
+        install-mempalace mempalace-check setup
 
 BINARY=nxd
 VERSION?=0.1.0
@@ -52,6 +53,33 @@ vulncheck:
 # `make doctor` proxies to the runtime preflight check.
 doctor: build
 	./$(BINARY) doctor
+
+# `make install-mempalace` installs the pinned MemPalace version into the
+# active Python environment. MemPalace is core infrastructure for NXD —
+# the engine mines diffs / review feedback / QA failures into a local
+# semantic-memory palace and queries it for prior-work context. It is
+# offline-first (ChromaDB local backend, zero API calls) so installing it
+# does not weaken the offline guarantee.
+install-mempalace:
+	@command -v python3 >/dev/null 2>&1 || { echo "python3 not installed"; exit 1; }
+	@command -v pip3 >/dev/null 2>&1 || { echo "pip3 not installed"; exit 1; }
+	pip3 install -r requirements.txt
+
+# `make mempalace-check` runs an end-to-end smoke through the bridge so
+# any future API drift (search --results vs --max-results, wake-up vs
+# wakeup, ...) fails the build instead of silently returning empty
+# results at runtime.
+mempalace-check:
+	@command -v python3 >/dev/null 2>&1 || { echo "python3 not installed"; exit 1; }
+	python3 scripts/mempalace_bridge.py health | grep -q '"status": "ok"' || \
+	  { echo "mempalace bridge unhealthy — run 'make install-mempalace'"; exit 1; }
+	@echo "mempalace bridge: ok"
+
+# `make setup` is the one-shot bootstrap a new contributor runs after
+# cloning. Installs Go deps, MemPalace, and runs doctor to verify
+# everything is reachable.
+setup: tidy install-mempalace
+	@$(MAKE) doctor || true
 
 # `make notice` regenerates the NOTICE file from go.mod's transitive
 # dependencies. Requires go-licenses

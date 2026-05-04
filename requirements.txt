@@ -1,0 +1,12 @@
+# Pinned Python dependencies for NXD's offline-first core infrastructure.
+#
+# MemPalace is the local-first semantic memory layer NXD uses for:
+#   - mining story diffs / review feedback / QA failures into a project palace
+#   - retrieving relevant prior work as agent prompt context
+#   - powering the dashboard's MemPalace status indicator
+#
+# Everything stays on disk (ChromaDB local backend); nothing leaves the
+# machine unless the operator opts in. Pinning a known-good version keeps
+# the bridge args (search --results, wake-up, mine, ...) stable across
+# upstream upgrades — see internal/memory/bridge_args_test.go.
+mempalace==2.0.0

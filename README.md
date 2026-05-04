@@ -50,8 +50,14 @@ Submit a natural-language requirement and NXD decomposes it into stories, assign
    Bigger models produce better planning, reviews, and code — but are not required.
    </details>
 
-3. **Aider** (optional runtime, for non-Gemma models) — `pip install aider-chat`
-4. **tmux** — `brew install tmux` (macOS) or `apt install tmux` (Linux)
+3. **MemPalace** — local-first semantic memory used by the planner / reviewer / native runtime to mine prior work and surface relevant context. Offline-first by design (ChromaDB local backend, zero API calls). Pinned in `requirements.txt`:
+   ```bash
+   make install-mempalace        # or: pip install -r requirements.txt
+   make mempalace-check          # roundtrip smoke
+   ```
+   The bridge degrades gracefully if MemPalace is unavailable (status shows in `nxd doctor`), but core infrastructure expects it installed.
+4. **Aider** (optional runtime, for non-Gemma models) — `pip install aider-chat`
+5. **tmux** — `brew install tmux` (macOS) or `apt install tmux` (Linux)
 
 ### Hardware Recommendations
 
@@ -67,6 +73,7 @@ All three setups run the complete NXD pipeline. The difference is output quality
 
 ```bash
 go install github.com/tzone85/nexus-dispatch/cmd/nxd@latest
+pip install -r requirements.txt          # installs pinned MemPalace
 nxd init
 nxd req "Build a REST API for user management with CRUD endpoints"
 nxd status
