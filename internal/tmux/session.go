@@ -60,8 +60,23 @@ func ListSessions() ([]string, error) {
 	return sessions, nil
 }
 
+// runFn and outputFn are package-private function variables wrapping
+// the real exec.Command calls. Tests in this package swap them out so
+// session/capture/send logic can be exercised without a live tmux
+// binary on PATH (CI containers don't ship tmux). Production callers
+// always reach the real implementations via run/output.
+var (
+	runFn    = realRun
+	outputFn = realOutput
+)
+
 // run executes a tmux subcommand and returns any error.
-func run(args ...string) error {
+func run(args ...string) error { return runFn(args...) }
+
+// output executes a tmux subcommand and returns its combined stdout/stderr.
+func output(args ...string) (string, error) { return outputFn(args...) }
+
+func realRun(args ...string) error {
 	cmd := exec.Command("tmux", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -70,8 +85,7 @@ func run(args ...string) error {
 	return nil
 }
 
-// output executes a tmux subcommand and returns its combined stdout/stderr.
-func output(args ...string) (string, error) {
+func realOutput(args ...string) (string, error) {
 	cmd := exec.Command("tmux", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
