@@ -72,7 +72,7 @@ func TestTierForRole(t *testing.T) {
 }
 
 func TestConfigCriteriaToRuntime_Empty(t *testing.T) {
-	result := configCriteriaToRuntime(nil)
+	result := ConfigCriteriaToRuntime(nil)
 	if result != nil {
 		t.Errorf("expected nil for empty input, got %v", result)
 	}
@@ -85,7 +85,7 @@ func TestConfigCriteriaToRuntime_Converts(t *testing.T) {
 		{Kind: "test_passes", Value: "go test ./..."},
 		{Kind: "file_contains", Path: "main.go", Value: "package main"},
 	}
-	result := configCriteriaToRuntime(input)
+	result := ConfigCriteriaToRuntime(input)
 	if len(result) != 4 {
 		t.Fatalf("expected 4 criteria, got %d", len(result))
 	}
