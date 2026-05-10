@@ -619,8 +619,11 @@ func (e *Executor) spawnNative(ctx context.Context, repoDir string, a Assignment
 	return result
 }
 
-// configCriteriaToRuntime converts config.SuccessCriterion slice to
-// criteria.Criterion slice for use by the native runtime.
+// ConfigCriteriaToRuntime converts config.SuccessCriterion slice to
+// criteria.Criterion slice for use by the executor, native runtime, and QA
+// pipeline. Command criteria accept the historical `value:` form and the
+// newer `path:` fallback. `test_passes` normalizes a full "go test ..." command
+// to the package/flag args expected by criteria.TypeTestPasses.
 //
 // Live-test discovery (LB6): for `command_succeeds` and `test_passes` the
 // Target IS the command (e.g. "go build ./..."). Config users typically put
@@ -632,15 +635,6 @@ func (e *Executor) spawnNative(ctx context.Context, repoDir string, a Assignment
 //   - command_succeeds / test_passes: command lives in value, fall back to path
 //   - file_exists / file_contains: path is the target
 //   - coverage_above: path = package, value = threshold
-func configCriteriaToRuntime(cfgCriteria []config.SuccessCriterion) []criteria.Criterion {
-	return ConfigCriteriaToRuntime(cfgCriteria)
-}
-
-// ConfigCriteriaToRuntime converts config.SuccessCriterion slice to
-// criteria.Criterion slice for use by the executor, native runtime, and QA
-// pipeline. Command criteria accept the historical `value:` form and the
-// newer `path:` fallback. `test_passes` normalizes a full "go test ..." command
-// to the package/flag args expected by criteria.TypeTestPasses.
 func ConfigCriteriaToRuntime(cfgCriteria []config.SuccessCriterion) []criteria.Criterion {
 	if len(cfgCriteria) == 0 {
 		return nil

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -254,14 +255,23 @@ func findLatestVersion(current string, available map[string]bool) string {
 }
 
 // RunCheck performs a full check against both Ollama and Google AI, returning a
-// combined CheckResult.
+// combined CheckResult. Per-source errors are logged (not returned) so a
+// single broken source doesn't block reporting on the other — but the
+// log line gives operators a hook to investigate stale data instead of
+// silently degrading to "no updates available".
 func (c *Checker) RunCheck(ctx context.Context, ollamaModels, googleModels []string) CheckResult {
 	result := CheckResult{CheckedAt: time.Now()}
 
-	ollamaResults, _ := c.CheckOllama(ctx, ollamaModels)
+	ollamaResults, err := c.CheckOllama(ctx, ollamaModels)
+	if err != nil {
+		log.Printf("[update] WARNING: ollama check failed: %v", err)
+	}
 	result.Models = append(result.Models, ollamaResults...)
 
-	googleResults, _ := c.CheckGoogleAI(ctx, googleModels)
+	googleResults, err := c.CheckGoogleAI(ctx, googleModels)
+	if err != nil {
+		log.Printf("[update] WARNING: google AI check failed: %v", err)
+	}
 	result.Models = append(result.Models, googleResults...)
 
 	return result

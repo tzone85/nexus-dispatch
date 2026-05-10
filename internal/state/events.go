@@ -3,6 +3,7 @@ package state
 import (
 	"crypto/rand"
 	"encoding/json"
+	"log"
 	"time"
 
 	"github.com/oklog/ulid/v2"
@@ -128,10 +129,23 @@ func DecodePayload(payload []byte) map[string]any {
 
 // NewEvent creates a new Event with a ULID identifier and current timestamp.
 // If data is nil, the payload will be nil (not an empty JSON object).
+//
+// json.Marshal can only fail on unsupported types (chans, funcs,
+// complex numbers); NXD only puts string/int/float/bool/slice/map
+// values into payloads, so failure is functionally impossible. We log
+// at warn level if it ever happens so the bug isn't silently swallowed
+// — the alternative (returning an error) would force a wide-reaching
+// API change for a path that has no realistic failure mode.
 func NewEvent(eventType EventType, agentID, storyID string, data map[string]any) Event {
 	var payload []byte
 	if data != nil {
-		payload, _ = json.Marshal(data)
+		marshalled, err := json.Marshal(data)
+		if err != nil {
+			log.Printf("[state] WARNING: NewEvent json.Marshal failed for %s (%T payload): %v",
+				eventType, data, err)
+		} else {
+			payload = marshalled
+		}
 	}
 
 	id := ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader)
