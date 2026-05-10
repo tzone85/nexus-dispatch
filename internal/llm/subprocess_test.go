@@ -33,7 +33,11 @@ cat <<'RESP'
 RESP
 `)
 
-	client := llm.NewSubprocessClient(script, 5*time.Second)
+	// 30s headroom: under heavy parallel test load (full suite + race
+	// detector) bash fork+exec on a busy CI box can exceed 5s and hit
+	// the boundary exactly at the 5.00s mark. Real production use
+	// allows operators to set their own timeout via config.
+	client := llm.NewSubprocessClient(script, 30*time.Second)
 
 	resp, err := client.Complete(context.Background(), llm.CompletionRequest{
 		Model:    "custom-model",
@@ -65,7 +69,11 @@ read input
 exit 1
 `)
 
-	client := llm.NewSubprocessClient(script, 5*time.Second)
+	// 30s headroom: under heavy parallel test load (full suite + race
+	// detector) bash fork+exec on a busy CI box can exceed 5s and hit
+	// the boundary exactly at the 5.00s mark. Real production use
+	// allows operators to set their own timeout via config.
+	client := llm.NewSubprocessClient(script, 30*time.Second)
 
 	_, err := client.Complete(context.Background(), llm.CompletionRequest{
 		Model: "test",
@@ -84,7 +92,11 @@ read input
 echo "this is not json"
 `)
 
-	client := llm.NewSubprocessClient(script, 5*time.Second)
+	// 30s headroom: under heavy parallel test load (full suite + race
+	// detector) bash fork+exec on a busy CI box can exceed 5s and hit
+	// the boundary exactly at the 5.00s mark. Real production use
+	// allows operators to set their own timeout via config.
+	client := llm.NewSubprocessClient(script, 30*time.Second)
 
 	_, err := client.Complete(context.Background(), llm.CompletionRequest{
 		Model: "test",
