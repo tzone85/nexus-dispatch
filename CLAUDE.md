@@ -132,7 +132,7 @@ rm -f ~/.nxd/nxd.lock ~/.nxd/events.jsonl ~/.nxd/nxd.db
 
 ## Current State (2026-05-04)
 
-- **Coverage**: 77.4% total (target 80%); 19 packages above 85%; total is held back by architectural ceilings on engine (heavy I/O coupling), cli (Cobra/Bubbletea), and tmux (needs live sessions)
+- **Coverage**: 77.8% total (target 80% — 95% requires major refactor; see ceilings below); 20 packages above 85%; tmux refactored for testability with injectable `runFn/outputFn` (now 73% from 58%)
 - **CI**: test + vet + build + MemPalace bridge round-trip all pass; lint non-blocking (golangci-lint doesn't support Go 1.26 yet)
 - **DryRunClient**: `--dry-run` flag on `nxd req` and `nxd resume` simulates full pipeline without API calls
 - **Controller**: disabled by default, production-ready with reprioritize/restart/cancel + 19 tests
@@ -149,7 +149,7 @@ rm -f ~/.nxd/nxd.lock ~/.nxd/events.jsonl ~/.nxd/nxd.db
 Above 95%: sanitize (100%), memory (99%), graph (96%), nlog (96%)
 90–95%: llm (91%), config (90%), metrics (90%), plugin (90%), update (91%), artifact (90%)
 80–90%: routing (89%), nlog (88%), agent (86%), codegraph (86%), scratchboard (84%), dashboard (84%), criteria (84%), git (83%), runtime (83%), state (82%), repolearn (81%)
-Below 80%: web (78%), engine (73%), cli (66%), tmux (59%)
+Below 80%: web (78%), engine (74%), tmux (73%), cli (66%)
 
 Architectural ceilings (low-coverage packages cannot reach 95% without major refactor):
 - cli (66%) — Cobra/Bubbletea coupling; interactive code is hard to fake without redesign.
