@@ -74,7 +74,13 @@ func runResume(cmd *cobra.Command, args []string) error {
 		default:
 			fmt.Fprintf(cmd.OutOrStdout(), "Multiple active requirements:\n")
 			for _, r := range active {
-				fmt.Fprintf(cmd.OutOrStdout(), "  [%s] %s (%s)\n", r.ID[:8], r.Title, r.Status)
+				// Trim to 8 chars for display, but never panic on
+				// shorter IDs (test fixtures, plugin-injected reqs).
+				idShort := r.ID
+				if len(idShort) > 8 {
+					idShort = idShort[:8]
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "  [%s] %s (%s)\n", idShort, r.Title, r.Status)
 			}
 			return fmt.Errorf("specify which requirement to resume: nxd resume <req-id>")
 		}
