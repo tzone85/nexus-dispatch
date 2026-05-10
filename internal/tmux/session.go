@@ -76,6 +76,25 @@ func run(args ...string) error { return runFn(args...) }
 // output executes a tmux subcommand and returns its combined stdout/stderr.
 func output(args ...string) (string, error) { return outputFn(args...) }
 
+// SetTestExec swaps the package-level runFn/outputFn for tests in
+// other packages. Returns a function that restores the originals;
+// defer it. Pass nil for either parameter to leave that side
+// untouched. Test-only API — production code never calls this.
+func SetTestExec(runResp func(args ...string) error, outResp func(args ...string) (string, error)) func() {
+	prevRun := runFn
+	prevOut := outputFn
+	if runResp != nil {
+		runFn = runResp
+	}
+	if outResp != nil {
+		outputFn = outResp
+	}
+	return func() {
+		runFn = prevRun
+		outputFn = prevOut
+	}
+}
+
 func realRun(args ...string) error {
 	cmd := exec.Command("tmux", args...)
 	out, err := cmd.CombinedOutput()
