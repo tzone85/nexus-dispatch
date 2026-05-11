@@ -105,6 +105,34 @@ jobs:
       - name: Build container image
         run: docker build -t nxd:ci .
 
+  tmux-integration:
+    name: tmux integration
+    runs-on: ubuntu-latest
+    # Runs the live-tmux test lane (build-tagged so the default
+    # `go test ./...` lane doesn't try to spin up a tmux server in
+    # CI containers that don't ship it). Covers the realRun /
+    # realOutput paths that the mocked unit tests can't reach.
+    # Non-blocking on PR so a transient tmux issue doesn't gate
+    # merges, but failures are visible to operators.
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - name: Install tmux
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends tmux
+          tmux -V
+
+      - name: Run live-tmux tests
+        run: go test -tags live_tmux -v -timeout 60s ./internal/tmux/...
+
   mempalace:
     name: MemPalace bridge
     runs-on: ubuntu-latest
