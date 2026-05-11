@@ -165,8 +165,13 @@ func detectBranchPattern(repoPath string) string {
 	cmd := exec.Command("git", "branch", "-r", "--format=%(refname:short)")
 	cmd.Dir = repoPath
 	out, err := cmd.Output()
-	if err != nil {
-		// Fallback: try local branches
+	// Fall back to local branches when:
+	//   - git branch -r errors (not a git repo, etc.), OR
+	//   - the repo has no remote so -r produces empty output.
+	// Without the empty-output fallback, a repo with local-only
+	// branches always returns "main-only" regardless of its real
+	// branch-naming convention.
+	if err != nil || len(strings.TrimSpace(string(out))) == 0 {
 		cmd = exec.Command("git", "branch", "--format=%(refname:short)")
 		cmd.Dir = repoPath
 		out, err = cmd.Output()
@@ -181,14 +186,20 @@ func detectBranchPattern(repoPath string) string {
 	scanner := bufio.NewScanner(strings.NewReader(string(out)))
 	for scanner.Scan() {
 		branch := strings.TrimSpace(scanner.Text())
-		// Strip remote prefix (origin/)
-		if idx := strings.Index(branch, "/"); idx >= 0 {
-			rest := branch[idx+1:]
-			// Check for pattern prefix like feature/, fix/, etc.
-			if slashIdx := strings.Index(rest, "/"); slashIdx >= 0 {
-				prefix := rest[:slashIdx]
-				prefixCounts[prefix]++
-			}
+		if branch == "" {
+			continue
+		}
+		// Normalise: strip a leading "origin/" prefix so remote
+		// listings ("origin/feature/a") and local listings
+		// ("feature/a") parse the same. The old code assumed every
+		// input had an "origin/" prefix and stripped the first path
+		// segment unconditionally — for local-only branches that
+		// dropped the actual prefix (feature) and left no pattern
+		// to count, which made the function always return
+		// "freeform" for local-only repos.
+		work := strings.TrimPrefix(branch, "origin/")
+		if slashIdx := strings.Index(work, "/"); slashIdx >= 0 {
+			prefixCounts[work[:slashIdx]]++
 		}
 		total++
 	}
