@@ -11,31 +11,26 @@ This document explains how NXD works internally — the event-sourced pipeline, 
 
 ## System Architecture
 
-```
-                    nxd req "..."
-                         |
-                    [CLI Layer]
-                    (Cobra commands)
-                         |
-            +------------+------------+
-            |                         |
-       [Event Store]          [Projection Store]
-       (events.jsonl)         (SQLite nxd.db)
-            |                         |
-            +--------+--------+-------+
-                     |
-              [Orchestrator Engine]
-              |    |    |    |    |    |    |    |
-           Plan  Disp Watch Super Rev  QA  Merge Reap
-              |    |    |    |    |    |    |    |
-         [Agent Runtime Layer]
-         (tmux + Aider/Claude/Codex)
-              |
-         [Infrastructure]
-         (git worktrees, branches)
-```
+![NXD system overview](../diagrams/system-overview.svg)
+
+The diagram above shows the five layers and how they communicate:
+
+- **CLI Layer** — Cobra commands that operators run (`nxd req`, `nxd resume`, `nxd improve`, …).
+- **Orchestrator Engine** — planner, wave dispatcher, monitor, reviewer, QA runner, merger.
+- **State Layer** — append-only `events.jsonl` projected into a SQLite materialized view.
+- **MemPalace** — local-first semantic memory the planner and reviewer query for relevant prior work (offline; ChromaDB local backend).
+- **Agent Runtime** — native in-process Gemma goroutines or tmux-hosted CLI agents (Aider, Claude Code, Codex).
+- **Git worktrees** — each story runs in an isolated worktree branched from the base.
+
+The pipeline that drives those components, end to end, looks like this:
+
+![NXD pipeline flow](../diagrams/pipeline-flow.svg)
+
+Stories progress left to right; the dashed arrows are failure paths that loop back into the agent for self-correction (criteria gate, review request_changes, QA fail).
 
 ## Event Sourcing Model
+
+![Event-sourced state model](../diagrams/event-sourcing.svg)
 
 ### Events Are Immutable Facts
 
@@ -84,6 +79,8 @@ SQLite tables:
 **Why both?** The event log is the authoritative history (append-only, auditable, replayable). SQLite projections are derived views optimized for queries (list stories by status, find agents by role). If projections get corrupted, they can be rebuilt by replaying all events.
 
 ## Agent Hierarchy
+
+![Agent hierarchy + complexity routing](../diagrams/agent-hierarchy.svg)
 
 NXD models a complete agile development team:
 

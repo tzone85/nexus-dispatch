@@ -1,0 +1,88 @@
+direction: down
+
+title: |md
+  # Native Gemma Runtime — Tool-Call Loop with Criteria Gate
+| {near: top-center; style.font-size: 22; style.bold: true}
+
+start: Story dispatched\nto Gemma runtime {
+  shape: oval
+  style.fill: "#e8f0fe"
+}
+
+prompt: Build prompt {
+  style.fill: "#fef7e0"
+  desc: |md
+    System prompt
+    + story context
+    + scratchboard recall
+    + acceptance criteria
+  |
+}
+
+llm: Ollama call\n(gemma4:e4b) {
+  shape: cylinder
+  style.fill: "#fce8e6"
+}
+
+decide: Parse response {
+  shape: diamond
+  style.fill: "#f5f5f5"
+}
+
+tools: Tool execution {
+  style.fill: "#e8eaf6"
+  read: read_file
+  write: write_file
+  edit: edit_file
+  cmd: run_command\n(allowlist gated)
+  scratch: scratchboard ops
+}
+
+complete_claim: task_complete\nclaimed? {
+  shape: diamond
+  style.fill: "#fef7e0"
+}
+
+criteria: Criteria Gate {
+  shape: hexagon
+  style.fill: "#fde7e9"
+  desc: |md
+    `go build ./...`
+    `go vet ./...`
+    `go test ./...`
+    (configurable per project)
+  |
+}
+
+self_correct: Self-correct {
+  style.fill: "#fef7e0"
+  desc: |md
+    Feed criteria failure
+    back to agent
+    Up to N retries
+    (rejection budget)
+  |
+}
+
+done: Story marked\ndone {
+  shape: oval
+  style.fill: "#e6f4ea"
+}
+
+escalate: Escalate to\nhigher tier {
+  shape: oval
+  style.fill: "#fce8e6"
+}
+
+start -> prompt
+prompt -> llm
+llm -> decide
+decide -> tools: tool_call
+tools -> prompt: tool result {style.stroke-dash: 3}
+decide -> complete_claim: text response
+complete_claim -> prompt: keep iterating {style.stroke-dash: 3}
+complete_claim -> criteria: task_complete
+criteria -> done: all pass
+criteria -> self_correct: any fail {style.stroke: "#d93025"}
+self_correct -> prompt: retry
+self_correct -> escalate: budget exhausted {style.stroke: "#d93025"; style.bold: true}

@@ -185,6 +185,36 @@ monitor:
 - Permission prompts (`[Y/n]`) — auto-approves with "Y"
 - Plan mode (`Plan mode`) — sends Escape to exit
 
+### controller
+
+The **active controller** is an opt-in supervisor loop that detects stuck stories and corrects them (cancel / restart / escalate tier). Disabled by default — turn on for unattended long runs.
+
+```yaml
+controller:
+  enabled: false            # off by default; flip on for unattended runs
+  interval_s: 60            # how often the controller tick fires
+  max_stuck_duration_s: 300 # consider a story "stuck" after 5 minutes of no progress
+  auto_restart: true        # reset stuck stories to draft
+  auto_reprioritize: false  # escalate tier + reset (takes priority over restart)
+  auto_cancel: false        # cancel only, no reset
+  max_actions_per_tick: 1   # rate-limit corrective actions
+  cooldown_s: 120           # min seconds between actions on the same story
+```
+
+Each tick emits `CONTROLLER_ANALYSIS`, `CONTROLLER_ACTION`, and (when triggered) `CONTROLLER_STUCK_DETECTED` events. The web dashboard shows these on the activity timeline.
+
+### routing — Bayesian role assignment
+
+Beyond the Fibonacci complexity router above, NXD also keeps **Beta-distribution priors** per (role, complexity) cell and uses them to nudge tier assignment when historical success rates skew. The priors are persisted to `<state_dir>/bayesian_priors.json` and updated after every story outcome.
+
+There's no YAML knob for this — it's always on, decays slowly (`ApplyDecay()` per resume tick), and starts from a uniform prior. To reset: delete `bayesian_priors.json`. To inspect: read the JSON file directly — it's a simple map of `(role, complexity) → {alpha, beta}` pairs.
+
+### scratchboard
+
+Each requirement has a cross-agent JSONL scratchboard at `<state_dir>/scratchboards/<req-id>.jsonl`. Agents can `read_scratchboard()` / `write_scratchboard()` via tool calls — useful for sharing intermediate findings (test failures, gotchas, design decisions) across waves of the same requirement.
+
+No YAML config; on by default. Wipe a requirement's scratchboard by deleting its file.
+
 ### cleanup
 
 Controls post-merge cleanup behavior.

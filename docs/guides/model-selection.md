@@ -5,6 +5,8 @@ Choosing the right local models is critical to NXD's output quality. This guide 
 > [!IMPORTANT]
 > **Don't use the same model for `senior` and `junior` roles.** When the reviewer and the coder are the same model, the reviewer shares the coder's hallucinations and overconfidence — bad code gets approved because both sides have the same blind spots. NXD logs a `WARNING` at startup if you do this anyway; the warning is informational, not blocking.
 
+![Two-model split: reviewer vs coder](../diagrams/two-model-split.svg)
+
 ## The Recommended Split (qwen + gemma4)
 
 NXD's default — and what every new install should start with — is a two-model setup:

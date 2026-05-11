@@ -1,0 +1,63 @@
+direction: right
+
+title: |md
+  # Event-Sourced State Model
+| {near: top-center; style.font-size: 22; style.bold: true}
+
+writers: Writers {
+  style.fill: "#fef7e0"
+  cli: CLI commands
+  orch: Orchestrator
+  agents: Agents
+}
+
+es: EventStore.Append() {
+  shape: hexagon
+  style.fill: "#e8f0fe"
+}
+
+log: events.jsonl\n(append-only) {
+  shape: page
+  style.fill: "#f5f5f5"
+  desc: |md
+    REQ_CREATED
+    STORY_PLANNED
+    AGENT_SPAWNED
+    STORY_QA_PASSED
+    STORY_MERGED
+    CONTROLLER_ACTION
+    ...
+  |
+}
+
+proj: ProjectionStore.Project() {
+  shape: hexagon
+  style.fill: "#e8f0fe"
+}
+
+db: SQLite (nxd.db) {
+  shape: cylinder
+  style.fill: "#e6f4ea"
+  tables: |md
+    `requirements`
+    `stories`
+    `agents`
+    `events`
+    `escalations`
+  |
+}
+
+readers: Readers {
+  style.fill: "#fce8e6"
+  status: nxd status
+  dashboard: Web dashboard
+  bus: EventBus → WS clients
+  improver: nxd improve
+}
+
+writers -> es: facts
+es -> log: append
+log -> proj: replay / tail
+proj -> db: materialize
+db -> readers: queries
+log -> readers.bus: pub/sub fan-out

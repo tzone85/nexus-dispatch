@@ -1,0 +1,70 @@
+direction: down
+
+title: |md
+  # NXD System Overview
+| {near: top-center; style.font-size: 22; style.bold: true}
+
+user: User\n(developer) {
+  shape: person
+  style.fill: "#e8f0fe"
+}
+
+cli: CLI Layer {
+  style.fill: "#f5f5f5"
+  cmds: |md
+    `nxd req`
+    `nxd resume`
+    `nxd status`
+    `nxd dashboard`
+    `nxd improve`
+  |
+}
+
+orch: Orchestrator Engine {
+  style.fill: "#fef7e0"
+  planner: Planner\n(Tech Lead LLM)
+  dispatch: Wave Dispatcher
+  monitor: Monitor + Watchdog
+  reviewer: Reviewer\n(Senior LLM)
+  qa: QA Runner
+  merger: Merge + Cleanup
+}
+
+state: State Layer {
+  style.fill: "#e6f4ea"
+  events: events.jsonl\n(append-only) {shape: page}
+  db: SQLite\n(projection) {shape: cylinder}
+  events -> db: project
+}
+
+mem: MemPalace\n(offline, ChromaDB) {
+  shape: cylinder
+  style.fill: "#fce8e6"
+}
+
+agents: Agent Runtime {
+  style.fill: "#e8eaf6"
+  native: Native Gemma\n(in-process)
+  tmux: tmux + Aider/Claude/Codex
+}
+
+git: Git Worktrees + Branches {
+  shape: cylinder
+  style.fill: "#f5f5f5"
+}
+
+ollama: Ollama (local)\nqwen + gemma4 {
+  shape: cylinder
+  style.fill: "#fce8e6"
+}
+
+user -> cli: requirements
+cli -> orch: commands
+orch -> state: append events
+state -> orch: read projection
+orch -> mem: recall prior work
+orch -> agents: spawn per wave
+agents -> ollama: LLM calls
+agents -> git: read/write code
+agents -> orch: status + events
+orch -> git: merge to base

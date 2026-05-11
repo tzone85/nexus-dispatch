@@ -82,6 +82,14 @@ NXD defines tools per role (e.g., `create_story`, `submit_review`). Gemma 4 resp
 
 For non-Gemma models, NXD falls back to text-based JSON parsing automatically. See [Function Calling Reference](function-calling.md).
 
+## Native Runtime Loop
+
+The native Gemma runtime runs as an in-process goroutine that drives a tool-call loop against Ollama. Each iteration: prompt → LLM call → parse tool call → execute → feed result back. When the agent claims `task_complete`, NXD runs the configured criteria gate (build / vet / test) **before** accepting the completion — if anything fails, the failure is fed back and the agent self-corrects up to the rejection budget.
+
+![Native Gemma runtime tool-call loop](../diagrams/native-runtime-loop.svg)
+
+This is what eliminates "the agent says it's done but the code doesn't compile" — the agent isn't allowed to declare done until the configured `qa.success_criteria` all pass in the worktree.
+
 ## Choosing a Runtime
 
 | Feature       | `gemma` (Native)                          | `aider`                          |
