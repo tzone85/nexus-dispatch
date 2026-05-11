@@ -2,7 +2,7 @@
 
 **Offline-first AI agent orchestration. Hand off a requirement, walk away, come back to merged code.**
 
-[![Go](https://img.shields.io/badge/Go-1.23+-00ADD8?logo=go&logoColor=white)](https://go.dev)
+[![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![CI](https://github.com/tzone85/nexus-dispatch/actions/workflows/ci.yml/badge.svg)](https://github.com/tzone85/nexus-dispatch/actions/workflows/ci.yml)
 
@@ -11,6 +11,8 @@
 NXD is a Go CLI that orchestrates autonomous AI agents through the full software development lifecycle — **entirely offline**. It uses local LLMs via [Ollama](https://ollama.com), local git merges (no GitHub dependency), and local coding runtimes like [Aider](https://github.com/paul-gauthier/aider).
 
 Submit a natural-language requirement and NXD decomposes it into stories, assigns them to agents based on complexity, executes work in parallel waves, runs code review and QA, and merges them — all without network access or API keys.
+
+![NXD system overview](docs/diagrams/system-overview.svg)
 
 ### Why Offline?
 

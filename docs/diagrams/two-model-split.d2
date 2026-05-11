@@ -1,0 +1,69 @@
+direction: down
+
+title: |md
+  # Two-Model Split: Why Reviewer ≠ Coder
+| {near: top-center; style.font-size: 22; style.bold: true}
+
+subtitle: |md
+  Different model families = different blind spots = real review
+| {near: top-center; style.font-size: 13}
+
+reviewer_side: Reviewer Side\n(qwen2.5-coder:14b) {
+  style.fill: "#e8f0fe"
+  style.stroke: "#1a73e8"
+  style.stroke-width: 2
+
+  tech_lead: Tech Lead\n(planning, decomposition)
+  senior: Senior\n(code review)
+  qa: QA\n(failure analysis)
+}
+
+coder_side: Coder Side\n(gemma4:e4b) {
+  style.fill: "#fce8e6"
+  style.stroke: "#d93025"
+  style.stroke-width: 2
+
+  junior: Junior\n(complexity 1-3)
+  intermediate: Intermediate\n(complexity 4-5)
+  supervisor: Supervisor\n(drift detection)
+}
+
+shared: Shared Constraints {
+  shape: cylinder
+  style.fill: "#f5f5f5"
+  desc: |md
+    Both run via Ollama, locally
+    Both use Q4_K_M quantization
+    Both stay fully offline
+  |
+}
+
+swap: GPU Swap Cost {
+  shape: hexagon
+  style.fill: "#fef7e0"
+  desc: |md
+    ~3-5s per role transition
+    on single-GPU machines.
+    Mitigate with
+    `OLLAMA_KEEP_ALIVE=24h` +
+    `OLLAMA_MAX_LOADED_MODELS=2`
+  |
+}
+
+vram: VRAM Footprint (Q4_K_M) {
+  shape: page
+  style.fill: "#f5f5f5"
+  desc: |md
+    qwen2.5-coder:14b ≈ 9 GB
+    gemma4:e4b       ≈ 6 GB
+    **Combined ≈ 15 GB**
+    Fits on most 24 GB cards
+  |
+}
+
+reviewer_side -> coder_side: review verdict {style.bold: true; style.stroke: "#1a73e8"}
+coder_side -> reviewer_side: code diff {style.bold: true; style.stroke: "#d93025"}
+reviewer_side -> shared
+coder_side -> shared
+shared -> swap: when both active
+shared -> vram

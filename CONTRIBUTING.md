@@ -83,7 +83,7 @@ chore: update dependencies
 
 ## Architecture Overview
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full architecture guide.
+See [docs/guides/architecture.md](docs/guides/architecture.md) for the full architecture guide.
 
 Key packages:
 - `internal/engine/` — Core orchestration (planner, dispatcher, monitor, reviewer, QA, merger)

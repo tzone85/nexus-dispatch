@@ -1,0 +1,91 @@
+direction: right
+
+title: |md
+  # Pipeline Flow: Requirement → Merged PR
+| {near: top-center; style.font-size: 22; style.bold: true}
+
+req: nxd req {
+  shape: oval
+  style.fill: "#e8f0fe"
+}
+
+plan: Plan {
+  style.fill: "#fef7e0"
+  desc: |md
+    **Tech Lead LLM** (qwen2.5-coder:14b)
+    - Decomposes into stories
+    - Assigns complexity (Fibonacci)
+    - Builds DAG of deps
+  |
+}
+
+dag: DAG of Stories {
+  shape: page
+  style.fill: "#f5f5f5"
+}
+
+wave: Wave Dispatcher {
+  style.fill: "#fef7e0"
+  desc: |md
+    Topological sort
+    Parallel per wave
+    Bayesian role routing
+  |
+}
+
+agents: Coding Agents {
+  shape: rectangle
+  style.fill: "#e8eaf6"
+  junior: Junior\n(gemma4:e4b)
+  intermediate: Intermediate\n(gemma4:e4b)
+  senior: Senior\n(gemma4:e4b → escalate)
+}
+
+criteria: Criteria Gate {
+  shape: hexagon
+  style.fill: "#fde7e9"
+  desc: |md
+    `go build ./...`
+    `go vet ./...`
+    `go test ./...`
+    must pass
+  |
+}
+
+review: Code Review {
+  style.fill: "#fef7e0"
+  desc: |md
+    **Senior reviewer** (qwen2.5-coder:14b)
+    Different family → catches blind spots
+  |
+}
+
+qa: QA {
+  style.fill: "#fef7e0"
+  desc: |md
+    Lint + build + test
+    LLM failure analysis
+  |
+}
+
+merge: Merge + Cleanup {
+  shape: oval
+  style.fill: "#e6f4ea"
+  desc: |md
+    `git merge --no-ff`
+    or GitHub PR
+    Worktree pruned
+  |
+}
+
+req -> plan
+plan -> dag
+dag -> wave
+wave -> agents
+agents -> criteria: task_complete claim
+criteria -> agents: fail → self-correct {style.stroke: "#d93025"; style.stroke-dash: 3}
+criteria -> review: pass
+review -> qa: approve
+review -> agents: request_changes {style.stroke: "#f9ab00"; style.stroke-dash: 3}
+qa -> merge: pass
+qa -> agents: fail → retry {style.stroke: "#d93025"; style.stroke-dash: 3}

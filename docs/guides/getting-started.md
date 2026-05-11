@@ -2,6 +2,14 @@
 
 This guide walks you through installing NXD, setting up your local AI stack, and running your first fully autonomous requirement. **Everything runs offline** — Ollama for LLMs, ChromaDB for memory, local git for merges.
 
+## What You're Building
+
+Here's the pipeline a requirement flows through, end to end:
+
+![Pipeline flow: requirement to merged PR](../diagrams/pipeline-flow.svg)
+
+You hand NXD a sentence; it decomposes the work, dispatches agents in waves, gates completion behind real `go build` / `go test` / `go vet` results, runs a code review with a different model family than the coder, runs QA, then merges. The dashed arrows are failure loops — when anything fails, the failing agent gets the failure back and self-corrects up to the rejection budget.
+
 ## Prerequisites
 
 ### 1. Install Go 1.26+
@@ -304,6 +312,9 @@ nxd dashboard --web
 The TUI dashboard shows all sections at once in a single pane: agents, a pipeline summary bar with progress, a scrollable stories table, the activity log, and collapsible escalations. Use `j`/`k` to scroll stories, `w` to open the web dashboard, and `q` to quit.
 
 The web dashboard opens at `http://localhost:8787` (change port with `--port`). It updates in real time via WebSocket and provides a full control panel: pause/resume requirements, retry/reassign/escalate stories, kill agents, and edit story details.
+
+> [!NOTE]
+> **Auth.** The dashboard generates a fresh random token per session and bakes it into the URL it prints (`http://localhost:8787/?token=<hex>`). The `/ws` and asset routes refuse requests without that token. Copy the URL exactly as printed — bookmarks lose the token when the next session starts. Health probes (`/healthz`, `/readyz`) are not token-gated.
 
 ### Step 4: Check Events
 
