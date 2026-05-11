@@ -130,10 +130,10 @@ kill <stale-pid>
 rm -f ~/.nxd/nxd.lock ~/.nxd/events.jsonl ~/.nxd/nxd.db
 ```
 
-## Current State (2026-05-04)
+## Current State (2026-05-11)
 
-- **Coverage**: 77.8% total (target 80% — 95% requires major refactor; see ceilings below); 20 packages above 85%; tmux refactored for testability with injectable `runFn/outputFn` (now 73% from 58%)
-- **CI**: test + vet + build + MemPalace bridge round-trip all pass; lint non-blocking (golangci-lint doesn't support Go 1.26 yet)
+- **Coverage**: **81.6% total** (was 73.8% in April; 7.8 points lifted via the 10-PR roadmap). 21 packages above 85%; 95% per-package on 5 packages; remaining gap concentrated in architecturally-bound paths (cli Cobra interactive, engine spawnNative, tmux production daemon).
+- **CI**: test + vet + build + MemPalace bridge + tmux-integration (build-tagged live) all pass; lint non-blocking (golangci-lint doesn't support Go 1.26 yet)
 - **DryRunClient**: `--dry-run` flag on `nxd req` and `nxd resume` simulates full pipeline without API calls
 - **Controller**: disabled by default, production-ready with reprioritize/restart/cancel + 19 tests
 - **Web dashboard**: DAG SVG visualization, review gates, metrics, recovery log, investigations
@@ -144,18 +144,37 @@ rm -f ~/.nxd/nxd.lock ~/.nxd/events.jsonl ~/.nxd/nxd.db
 - **Anti-hallucination**: criteria-gated completion + rejection budget (max 2 retries) + escalation; reviewer text fallback scans for rejection keywords; same-model review warning
 - **Live-tested**: full end-to-end pipeline validated on `tzone85/project-x` with gemma4 — requirement → PR #25 merged in 3 minutes
 
-### Per-Package Coverage (2026-05-04)
+### Per-Package Coverage (2026-05-11)
 
 Above 95%: sanitize (100%), memory (99%), graph (96%), nlog (96%)
-90–95%: llm (91%), config (90%), metrics (90%), plugin (90%), update (91%), artifact (90%)
-80–90%: routing (89%), nlog (88%), agent (86%), codegraph (86%), scratchboard (84%), dashboard (84%), criteria (84%), git (83%), runtime (83%), state (82%), repolearn (81%)
-Below 80%: web (78%), engine (74%), tmux (73%), cli (66%)
+90–95%: improver (94%), llm (92%), metrics (92%), agent (90%), config (90%), plugin (90%), update (90%), artifact (90%)
+85–90%: state (88.5%), routing (89%), criteria (87%), codegraph (86%), git (86%), scratchboard (86%), runtime (87%)
+80–85%: dashboard (84%), repolearn (84%), web (82%), engine (76%), cli (77%)
+Below 80%: tmux (62%, gap covered by live_tmux build-tagged CI job)
 
-Architectural ceilings (low-coverage packages cannot reach 95% without major refactor):
-- cli (66%) — Cobra/Bubbletea coupling; interactive code is hard to fake without redesign.
-- tmux (59%) — needs live tmux sessions; integration testing inflates CI flake rate.
-- engine (73%) — many monitor paths only fire under a full pipeline (planner → dispatcher → executor → reviewer → QA → merger). Each path needs heavy fixtures.
-- web (78%) — handler success paths require seeded projection state; the cheap accessor wins are taken; remaining gaps are integration-style.
+Architectural ceilings (cannot reach 95% without major refactor):
+- cli (77%) — runResume/runPlan happy paths need full-pipeline integration fixtures (worktree + LLM ReplayClient chain + tmux).
+- engine (76%) — spawnNative requires LLM-driven gemma runtime + scratchboard + criteria-gated completion fixtures.
+- tmux (62%) — realRun/realOutput need live tmux server; covered by build-tagged `live_tmux` CI lane instead of the default unit-test lane.
+- web (82%) — full pipeline-state handler paths require seeded `merge_ready` story state (review + QA + branch lifecycle).
+- dashboard (84%) — `fetchData` + `tickCmd` are Bubbletea-program closures; need a tea.Program runtime to drive.
+
+### Coverage roadmap PRs (all merged)
+
+- PR #22 — round 1: improver/update/artifact/nlog (75.8 → 77.4)
+- PR #23 — round 2: tmux refactor + engine helpers (77.4 → 77.8)
+- PR #35 — #24 cli direct tests (77.8 → 78.7)
+- PR #36 — #25 engine.monitor helpers (78.7 → 79.1)
+- PR #37 — #26 cli DI + bug fix (79.1 → 80.1)
+- PR #38 — #27 web error paths (80.1 → 80.2)
+- PR #39 — #28 engine.spawn integration (80.2 → 80.5)
+- PR #40 — #29 runtime CLIRuntime via tmux mock (80.5 → 80.7)
+- PR #41 — #29 git/agent/scratchboard (80.7 → 80.8)
+- PR #42 — #29 repolearn/criteria/state.Project sweep + repolearn bug fix (80.8 → 81.3)
+- PR #43 — #29 codegraph (81.3 → 81.3)
+- PR #44 — #30 live-tmux CI lane (81.3 → 81.3)
+- PR #45 — #32 web.Start lifecycle (81.3 → 81.4)
+- PR (#33 residual) — this PR (81.4 → 81.6)
 
 ## Test Infrastructure
 
