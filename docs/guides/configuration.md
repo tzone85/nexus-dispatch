@@ -7,20 +7,44 @@ NXD is configured via `nxd.yaml` in your project directory. Run `nxd init` to ge
 NXD looks for config in this order:
 1. `--config <path>` flag (any command)
 2. `nxd.yaml` in the current directory
+3. `~/.nxd/config.yaml` (only when `--config` is omitted)
+
+> [!IMPORTANT]
+> When `--config` is passed explicitly, NXD fails loudly if the file is missing or unparseable. The home-directory fallback only kicks in when `--config` is omitted entirely — this prevents `nxd --config /etc/nxd/prod.yaml ...` from quietly loading the wrong config.
 
 ## Full Reference
+
+### schema version
+
+```yaml
+version: "1.0"          # required pin — silences the "no version field" hint
+```
+
+NXD validates this against `CurrentSchemaVersion` at startup:
+
+- **Equal** → silent.
+- **Empty / unset** → logs a one-line hint suggesting you pin it.
+- **Older minor/patch** → advisory log, runs in compat mode.
+- **Older major** → warning log, runs in compat mode.
+- **Newer major** → error, refuses to start (your YAML expects features this binary doesn't have — upgrade NXD or downgrade the YAML).
 
 ### workspace
 
 ```yaml
 workspace:
-  state_dir: ~/.nxd           # Where NXD stores events, DB, logs
+  state_dir: ~/.nxd-myproject  # Where NXD stores events, DB, logs (one PER project)
   backend: sqlite              # "sqlite" (offline) or "dolt" (version-controlled)
   log_level: info              # debug, info, warn, error
+  log_format: text             # "text" (default) or "json" (structured/slog)
   log_retention_days: 30       # How long to keep session logs
 ```
 
-**state_dir** is expanded from `~` at runtime. All NXD state lives here: events.jsonl, nxd.db, logs/, worktrees/.
+**state_dir** is expanded from `~` at runtime. All NXD state lives here: events.jsonl, nxd.db, logs/, worktrees/, improvements.json.
+
+> [!WARNING]
+> **Use a separate `state_dir` per project.** Two projects sharing `~/.nxd` will fight over `nxd.lock` and corrupt each other's events. Recommended convention: `~/.nxd-<projectname>`.
+
+**log_format** = `"json"` switches the stdlib + slog output to one JSON object per line — useful when piping into a log aggregator. Override at runtime via `NXD_LOG_FORMAT=json` env var. Same goes for `log_level` via `NXD_LOG_LEVEL=debug`.
 
 ### models
 
@@ -80,6 +104,40 @@ The `google_model` field specifies the model name for Google AI API calls (e.g.,
 > **Authentication note:** These API keys are used for NXD's **internal operations** only -- planning, code review, and QA. They are **not** passed to spawned coding agents. If you use Claude Code as a runtime, it authenticates via its own OAuth session (your Max/Pro subscription via `claude login`), so spawned agents incur no additional API cost. The API key is only consumed by the lightweight internal LLM calls (a few per story per stage).
 
 You can mix providers -- for example, use Ollama for juniors and Google AI for the Tech Lead.
+
+> [!IMPORTANT]
+> **Use different model families for `senior` and `junior`.** When the same model writes and reviews code, the reviewer shares the coder's hallucinations and confidence patterns. NXD logs a `WARNING` at config-load time when `models.senior.model == models.junior.model` (or `== intermediate.model`).
+>
+> Recommended split: `qwen2.5-coder:14b` for `senior`, `gemma4:e4b` for everything else. See [Model Selection](model-selection.md) for the full rationale + GPU-swap trade-off.
+
+### memory (MemPalace)
+
+NXD's offline-first semantic memory layer. Used by the planner + reviewer to recall prior diffs, QA failures, and review feedback when handling related work.
+
+```yaml
+memory:
+  enabled: true                                 # default false; flip on after `pip install -r requirements.txt`
+  palace_path: ~/.mempalace                     # optional override; defaults to $HOME/.mempalace
+```
+
+> [!IMPORTANT]
+> **Offline-first guarantee.** MemPalace ships with the ChromaDB local backend pinned at `mempalace==2.0.0` — zero API calls, all embeddings computed locally. Enabling it does NOT introduce any network traffic. The Python bridge lives at `scripts/mempalace_bridge.py` and is wrapped by `internal/memory/mempalace.go`.
+
+Run `make mempalace-check` to verify the bridge end-to-end before the first real session. CI runs the same check, and `internal/memory/bridge_args_test.go` pins the argv contract so a future bridge refactor cannot silently desync Go and Python.
+
+### improver (`nxd improve`)
+
+The self-improvement module reads `metrics.jsonl` + the local state directory and emits a JSON file (`<state_dir>/improvements.json`) that the dashboard surfaces as popups.
+
+It has no `nxd.yaml` section — it's a CLI on top of analyzers. Flags:
+
+```bash
+nxd improve                                    # offline only — scans metrics + state
+nxd improve --feed https://example.com/tips.json   # optional online tips feed (HTTPS, JSON array of Suggestion)
+nxd improve --json                             # machine-readable output for tooling
+```
+
+The default offline-only run never makes network calls. `--feed` is opt-in. Suggestions are persisted to `<state_dir>/improvements.json` so the dashboard can render them across sessions without re-running the analyzers on each WebSocket tick.
 
 ### routing
 
@@ -212,30 +270,38 @@ Just add another block to `runtimes:` with the command, args, and detection patt
 
 ## Example Configurations
 
-### Gemma 4 Default (24GB+ RAM, recommended)
+### Recommended (24GB+ RAM, offline, two-model split)
+
+The default everyone should start with. `qwen2.5-coder:14b` reviews, `gemma4:e4b` writes — different model families means different blind spots.
 
 ```yaml
+version: "1.0"
 models:
-  tech_lead: { provider: ollama, model: gemma4:26b, max_tokens: 16000 }
-  senior:    { provider: ollama, model: gemma4:26b, max_tokens: 8000 }
-  intermediate: { provider: ollama, model: gemma4:26b, max_tokens: 4000 }
-  junior:    { provider: ollama, model: gemma4:26b, max_tokens: 4000 }
-  qa:        { provider: ollama, model: gemma4:26b, max_tokens: 8000 }
-  supervisor: { provider: ollama, model: gemma4:26b, max_tokens: 4000 }
+  tech_lead:    { provider: ollama, model: qwen2.5-coder:14b, max_tokens: 16000 }
+  senior:       { provider: ollama, model: qwen2.5-coder:14b, max_tokens: 8000 }
+  intermediate: { provider: ollama, model: gemma4:e4b,        max_tokens: 4000 }
+  junior:       { provider: ollama, model: gemma4:e4b,        max_tokens: 4000 }
+  qa:           { provider: ollama, model: qwen2.5-coder:14b, max_tokens: 8000 }
+  supervisor:   { provider: ollama, model: gemma4:e4b,        max_tokens: 4000 }
 update_check: true                # Check for model updates on startup
-update_interval_hours: 168        # Check weekly (168 hours)
+update_interval_hours: 168        # Weekly check
 ```
 
-### Minimal (16GB RAM laptop)
+> [!NOTE]
+> On a single-GPU machine, swapping between qwen + gemma4 adds ~3-5s per role switch. The blind-spot coverage is worth it; if you need raw throughput on a known-simple project, see [Minimal](#minimal-16gb-ram-laptop-or-single-model).
+
+### Minimal (16GB RAM laptop, or single-model)
+
+Single-family setup for low-RAM laptops or quick experiments. NXD will log a `WARNING` at startup about reviewer/coder overlap — this is expected for this config.
 
 ```yaml
 models:
-  tech_lead: { provider: ollama, model: gemma4:e4b, max_tokens: 4000 }
-  senior:    { provider: ollama, model: gemma4:e4b, max_tokens: 4000 }
+  tech_lead:    { provider: ollama, model: gemma4:e4b, max_tokens: 4000 }
+  senior:       { provider: ollama, model: gemma4:e4b, max_tokens: 4000 }
   intermediate: { provider: ollama, model: gemma4:e4b, max_tokens: 4000 }
-  junior:    { provider: ollama, model: gemma4:e4b, max_tokens: 4000 }
-  qa:        { provider: ollama, model: gemma4:e4b, max_tokens: 4000 }
-  supervisor: { provider: ollama, model: gemma4:e4b, max_tokens: 4000 }
+  junior:       { provider: ollama, model: gemma4:e4b, max_tokens: 4000 }
+  qa:           { provider: ollama, model: gemma4:e4b, max_tokens: 4000 }
+  supervisor:   { provider: ollama, model: gemma4:e4b, max_tokens: 4000 }
 ```
 
 ### Google AI + Ollama Fallback (free tier)

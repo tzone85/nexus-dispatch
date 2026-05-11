@@ -33,11 +33,124 @@ sudo systemctl start ollama
 # Check what models you have
 ollama list
 
-# Pull the default model
-ollama pull gemma4:26b
+# Pull both default models (recommended split)
+ollama pull qwen2.5-coder:14b   # reviewer / senior
+ollama pull gemma4:e4b          # coder / junior
 ```
 
 **Tip:** Model names in `nxd.yaml` must exactly match Ollama tags. Use `ollama list` to see exact names.
+
+### "same-model review reduces hallucination detection" warning
+
+**Cause:** `models.senior.model` matches `models.junior.model` or `models.intermediate.model` — the reviewer and coder are the same model, so the reviewer shares the coder's blind spots.
+
+**Symptoms:** at startup:
+```
+[config] WARN models.senior.model (gemma4:e4b) == models.junior.model — same-model review reduces hallucination detection. Consider using a stronger model for review.
+```
+
+**Fix:** Use a different model family for `senior`:
+```yaml
+models:
+  senior: { provider: ollama, model: qwen2.5-coder:14b, max_tokens: 8000 }
+  junior: { provider: ollama, model: gemma4:e4b,        max_tokens: 4000 }
+```
+
+The notice is informational — NXD continues to run. If you intentionally want a single-model setup (e.g. 16GB RAM minimal config), the warning is noise you can ignore; NXD only logs it up to 3 times per command.
+
+### qwen ↔ gemma4 model swap latency
+
+**Cause:** On a single-GPU machine, Ollama only keeps one model resident. Switching between `qwen2.5-coder:14b` (reviewer) and `gemma4:e4b` (coder) means a ~3-5s VRAM swap per role change.
+
+**Symptoms:** Each pipeline transition (plan → code → review → QA) takes a few extra seconds; `ollama ps` flips between the two models.
+
+**Fix (choose one):**
+- **Accept the latency.** Blind-spot coverage is worth a few seconds per role swap.
+- **Pin one model in RAM** if you have enough VRAM (most 24GB+ cards): start Ollama with `OLLAMA_KEEP_ALIVE=24h` and pre-load both: `ollama run qwen2.5-coder:14b ""; ollama run gemma4:e4b ""`.
+- **Use the single-model config** (see Minimal in [Configuration](configuration.md#minimal-16gb-ram-laptop-or-single-model)) — accepts the same-model warning but eliminates swap.
+
+### MemPalace bridge errors
+
+**Cause:** `make mempalace-check` fails, or runtime logs `mempalace bridge error: …`.
+
+**Symptoms:**
+- `python3: No module named mempalace`
+- `argv mismatch: --max-results` (legacy flag)
+- `command not found: mempalace`
+
+**Fix:**
+```bash
+# 1. Install the pinned version (offline-first, ChromaDB local backend)
+pip install -r requirements.txt
+
+# Or via make:
+make install-mempalace
+
+# 2. Verify the bridge end-to-end
+make mempalace-check
+```
+
+If `pip install` fails with `externally-managed-environment` (PEP 668, common on Debian/Ubuntu 23+), create a virtualenv:
+```bash
+python3 -m venv ~/.nxd/venv
+source ~/.nxd/venv/bin/activate
+pip install -r requirements.txt
+```
+
+> [!NOTE]
+> NXD's Go wrapper uses argv flags pinned by `internal/memory/bridge_args_test.go`. If you see an argv mismatch error, you have a custom `scripts/mempalace_bridge.py` that drifted from the contract — restore the checked-in version.
+
+### "config schema version is newer than this binary supports"
+
+**Cause:** Your `nxd.yaml` declares a `version:` field whose major number is higher than the running `nxd` binary understands.
+
+**Symptoms:**
+```
+config schema version 2.0 in nxd.yaml is newer than this binary supports (v1). Upgrade nxd or pin schema to 1.0
+```
+
+**Fix:** Either upgrade NXD, or pin the YAML to the schema the binary understands:
+```yaml
+version: "1.0"
+```
+
+NXD only refuses to start on a major mismatch (newer YAML → older binary). Older-major YAMLs run in compat mode with an advisory log.
+
+### "pipeline already running (pid X)"
+
+**Cause:** Another `nxd resume` is holding `<state_dir>/nxd.lock`.
+
+**Fix:**
+```bash
+# 1. Confirm the process is actually alive
+ps -p <pid>
+
+# 2. If alive — let it finish, or kill it cleanly:
+kill <pid>
+
+# 3. Stale locks (PID is dead) are auto-removed on next acquire. If your shell crashed mid-run, just re-run:
+nxd resume <req-id>
+```
+
+If a stale lock is somehow not cleaned up automatically, remove it manually:
+```bash
+rm ~/.nxd/nxd.lock     # adjust path for per-project state_dir
+```
+
+### `nxd improve` returns "No suggestions"
+
+**Cause:** No metrics have been recorded yet — `metrics.jsonl` in your state dir is empty.
+
+**Symptoms:** `No suggestions — looking healthy.`
+
+**Fix:** Run at least one full pipeline first (`nxd req "..."` → `nxd resume <id>`). The improver scans `metrics.jsonl` and the local state directory; with no data it correctly reports nothing. If you've run pipelines and still see this:
+```bash
+# Verify metrics are being written
+ls -lh <state_dir>/metrics.jsonl
+
+# Force a re-scan in machine-readable form
+nxd improve --json
+```
 
 ### Gemma 4 model not loading
 
@@ -159,7 +272,7 @@ Only add commands you trust -- this allowlist is a safety boundary preventing ar
    ```yaml
    tech_lead:
      provider: ollama
-     model: gemma4:26b    # 26B MoE recommended for good planning
+     model: qwen2.5-coder:14b   # strong structured-output planner
      max_tokens: 16000
    ```
 
