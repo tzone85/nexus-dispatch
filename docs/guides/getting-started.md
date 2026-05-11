@@ -1,22 +1,22 @@
 # Getting Started with NXD
 
-This guide walks you through installing NXD, setting up your local AI stack, and running your first fully autonomous requirement.
+This guide walks you through installing NXD, setting up your local AI stack, and running your first fully autonomous requirement. **Everything runs offline** — Ollama for LLMs, ChromaDB for memory, local git for merges.
 
 ## Prerequisites
 
-### 1. Install Go 1.23+
+### 1. Install Go 1.26+
 
 ```bash
 # macOS
 brew install go
 
 # Linux
-wget https://go.dev/dl/go1.23.0.linux-amd64.tar.gz
-sudo tar -C /usr/local -xzf go1.23.0.linux-amd64.tar.gz
+wget https://go.dev/dl/go1.26.0.linux-amd64.tar.gz
+sudo tar -C /usr/local -xzf go1.26.0.linux-amd64.tar.gz
 export PATH=$PATH:/usr/local/go/bin
 ```
 
-Verify: `go version` should show 1.23 or higher.
+Verify: `go version` should show 1.26 or higher.
 
 ### 2. Install Ollama
 
@@ -38,39 +38,47 @@ ollama serve
 
 This runs in the background on `http://localhost:11434`. Keep this terminal open or run it as a service.
 
-### 3. Pull a Model
+### 3. Pull the Recommended Models
 
-You only need **one model** to run the full NXD pipeline. The default is **Gemma 4 26B MoE** -- a 26B Mixture-of-Experts model with only 3.8B active parameters per token, giving strong coding performance (77.1% LiveCodeBench) on consumer hardware.
-
-```bash
-# Recommended (~18GB download) — 24GB+ RAM
-ollama pull gemma4:26b
-```
-
-Set all agent roles to the same model in `nxd.yaml` and the complete pipeline (planning, execution, review, QA, merge) works end to end.
-
-**Smaller hardware?** Pull a lighter Gemma 4 variant:
+NXD's recommended setup uses **two models from different families** so the reviewer's blind spots don't match the coder's:
 
 ```bash
-# 16GB RAM — good function calling, lower code quality
+# Coder (junior/intermediate/tech-lead/QA roles) — ~10 GB
 ollama pull gemma4:e4b
 
-# Minimal devices (4GB RAM)
-ollama pull gemma4:e2b
+# Reviewer (senior role) — ~9 GB
+ollama pull qwen2.5-coder:14b
 ```
 
-**Want maximum quality?** Pull the dense 31B model for leadership roles:
+> [!IMPORTANT]
+> **Why two models?** When the same model writes and reviews code, the reviewer shares the coder's hallucinations and confidence patterns. NXD's config validator warns when `models.senior.model == models.junior.model`. The qwen senior + gemma4 junior split gives genuinely independent verification.
+
+**Smaller hardware?** You can run everything on one model and accept the same-model warning:
 
 ```bash
-ollama pull gemma4:31b   # Dense 31B (~20GB, needs 64GB+ RAM)
-ollama pull gemma4:26b   # MoE 26B for workers
+ollama pull gemma4:e4b   # Use for every role on 16 GB RAM
 ```
 
-See [Gemma 4 Guide](gemma-4-guide.md) for detailed setup and hardware tuning, or [Model Selection](model-selection.md) for all model recommendations per role and hardware tier.
+**Want maximum quality on bigger hardware?** See [Gemma 4 Guide](gemma-4-guide.md) and [Model Selection](model-selection.md) for the full team setup.
 
-### 4. Install tmux
+### 4. Install MemPalace (core infrastructure)
 
-NXD runs agent sessions inside tmux for isolation and monitoring.
+MemPalace is the local-first semantic memory layer NXD uses to mine past diffs and surface relevant context to agents. **Offline-first by design** (ChromaDB local backend, zero API calls). Pinned at `mempalace==2.0.0` in `requirements.txt`.
+
+```bash
+# From the cloned nexus-dispatch repo (recommended — runs the doctor too):
+make setup
+
+# Or just MemPalace, pinned version:
+pip install -r requirements.txt
+make mempalace-check    # round-trip smoke
+```
+
+If you skip this step, the bridge degrades gracefully (`nxd doctor` will flag it), but core agents lose access to prior-work retrieval and the dashboard's MemPalace status panel.
+
+### 5. Install tmux
+
+NXD runs CLI-based agent sessions inside tmux for isolation and monitoring. The native Gemma runtime (recommended) doesn't need tmux — it runs as goroutines — but it's still a hard dependency for any non-Gemma runtime.
 
 ```bash
 # macOS
@@ -80,15 +88,16 @@ brew install tmux
 sudo apt install tmux
 ```
 
-### 5. Install a Coding Runtime (Optional)
+### 6. Install a CLI Coding Runtime (Optional)
 
-The default coding runtime is [Aider](https://github.com/paul-gauthier/aider):
+If you want to use Anthropic Claude, OpenAI, or Google Gemini instead of (or alongside) local Gemma, NXD can drive their CLIs via tmux:
 
 ```bash
-pip install aider-chat
+pip install aider-chat       # works with any model via Ollama
+# or: install claude-code, codex, or gemini CLI per their docs
 ```
 
-Aider connects to Ollama automatically when configured in `nxd.yaml`.
+For the default offline workflow with Gemma + qwen, **you can skip this step**.
 
 ## Installation
 
@@ -129,11 +138,86 @@ source ~/.zshrc
 
 Then re-run `make install` and proceed to verification below.
 
-> **Note:** Windows setup may differ — refer to the [Go installation docs](https://go.dev/doc/install) for platform-specific guidance on configuring `GOPATH` and `PATH`.
+#### Linux: Additional Setup
+
+NXD is regularly run on Ubuntu, Debian, Fedora, and Arch. The Linux flow is the same as macOS plus a few distribution-specific touches.
+
+**1. Install build dependencies.** Go itself is enough to compile NXD, but MemPalace's ChromaDB backend pulls in sqlite + a few native wheels. Make sure pip can build them:
+
+```bash
+# Debian / Ubuntu
+sudo apt update
+sudo apt install -y build-essential git python3-pip python3-venv tmux
+
+# Fedora / RHEL
+sudo dnf install -y @development-tools git python3-pip tmux
+
+# Arch
+sudo pacman -Syu --needed base-devel git python tmux
+```
+
+**2. Add `$(go env GOPATH)/bin` to your shell rc.** On Linux this is usually `~/.bashrc` (Bash) or `~/.zshrc` (Zsh):
+
+```bash
+echo 'export PATH="$HOME/go/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+```
+
+**3. Use a Python virtualenv for MemPalace** (recommended on Linux — avoids polluting the system Python and dodges PEP 668's "externally-managed-environment" error on newer distros):
+
+```bash
+cd ~/Sites/nexus-dispatch
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+make mempalace-check
+```
+
+Reactivate the venv (`source .venv/bin/activate`) in every shell where you run `nxd`, or wire `direnv` to do it automatically per-directory.
+
+**4. Run Ollama as a service** (so it survives reboots):
+
+```bash
+# The installer script creates a systemd unit already; enable it:
+sudo systemctl enable --now ollama
+
+# Verify:
+systemctl status ollama
+curl -s http://127.0.0.1:11434/api/tags | head -3
+```
+
+If Ollama binds to a non-default host (common on remote servers), set `OLLAMA_HOST` in `/etc/systemd/system/ollama.service.d/override.conf` and restart the unit. NXD picks up `OLLAMA_HOST` from the environment automatically.
+
+**5. tmux on headless servers.** If you're running NXD over SSH on a server without a display, the dashboard's `--web` mode is the right call (TUI mode needs a terminal). Bind the web server to localhost and SSH-forward the port:
+
+```bash
+ssh -L 8787:localhost:8787 user@server
+# On the server:
+nxd dashboard --web --port 8787
+# Then open http://localhost:8787 on your laptop.
+```
+
+> **Windows setup may differ** — refer to the [Go installation docs](https://go.dev/doc/install) for platform-specific guidance on `GOPATH` and `PATH`. NXD's native runtime + git path resolution have been tested on macOS and Linux; Windows is best-effort via WSL2.
 
 Verify: `nxd --version` should show `0.1.0`.
 
 ## Configuration
+
+After `nxd init` (next step) you'll have an `nxd.yaml` in your project root. The key sections are documented in [Configuration](configuration.md); two fields to know up front:
+
+```yaml
+version: "1.0"                  # schema version — pin it to silence the hint
+
+workspace:
+  state_dir: ~/.nxd-myproject   # one state dir PER project (NEVER share between repos)
+
+models:
+  senior: {provider: ollama, model: qwen2.5-coder:14b, max_tokens: 8000}
+  junior: {provider: ollama, model: gemma4:e4b,        max_tokens: 4000}
+  # ... other roles
+```
+
+The `state_dir` warning is real — two projects pointing at the same `state_dir` will fight over `nxd.lock` and corrupt each other's events. See [Troubleshooting](troubleshooting.md).
 
 ## First Run
 
@@ -187,7 +271,7 @@ Example output:
 
 ```
 Requirement submitted: req-01HZ...
-Planning with Tech Lead (gemma4:26b)...
+Planning with Tech Lead (qwen2.5-coder:14b)...
 
 Stories created:
   [1] story-01 | Add User model with password hashing      | Complexity: 2 | Deps: none
@@ -234,7 +318,24 @@ nxd events --story story-01
 nxd events --type STORY_MERGED
 ```
 
-### Step 5: Clean Up After Completion
+### Step 5: Surface Self-Improvement Suggestions
+
+After a few requirements have run, ask NXD what it learned:
+
+```bash
+nxd improve
+```
+
+The improver scans `metrics.jsonl` (recorded per-LLM-call by the pipeline) and surfaces issues from a set of offline analyzers — high failure rate, repeated escalations, slow average latency, runaway tokens-per-story. Each suggestion includes severity (critical/warning/info), a one-sentence diagnosis, the evidence, and a recommended action.
+
+```bash
+nxd improve --json                          # machine-readable for scripting
+nxd improve --feed https://your-tips.json   # opt-in online feed (default: offline only)
+```
+
+Suggestions persist to `~/.nxd/improvements.json` so the dashboard's **Suggestions** panel can render them as popups in subsequent sessions.
+
+### Step 6: Clean Up After Completion
 
 ```bash
 # Preview what would be cleaned up
@@ -272,24 +373,29 @@ vhs docs/demo.tape
 
 This produces `docs/demo.gif` showing the full `nxd init` through `nxd dashboard` workflow.
 
-## Alternative Models (Legacy)
+## Alternative Models
 
-If you prefer DeepSeek or Qwen models instead of Gemma 4, they still work with NXD:
+If you prefer a different family for the coder/reviewer split, NXD works with any Ollama model. Common alternatives:
 
 ```bash
-ollama pull deepseek-coder-v2:latest  # Tech Lead + Supervisor (~9GB)
-ollama pull qwen2.5-coder:32b        # Senior (~20GB, needs 24GB+ VRAM)
-ollama pull qwen2.5-coder:14b        # Intermediate + QA (~9GB)
-ollama pull qwen2.5-coder:7b         # Junior (~4.5GB)
+# Larger reviewer (better quality, needs more VRAM)
+ollama pull qwen2.5-coder:32b        # ~20 GB, 24 GB+ VRAM
+
+# Smaller / faster coder
+ollama pull qwen2.5-coder:7b         # ~4.5 GB, runs on 8 GB GPU
+ollama pull deepseek-coder-v2:latest # ~9 GB, no native function calling
+
+# Single-model setup (accepts the same-model warning)
+ollama pull gemma4:26b               # ~18 GB, 24 GB+ RAM
 ```
 
-These models do not support native function calling, so NXD falls back to text-based JSON parsing. See [Model Selection](model-selection.md) for configuration details.
+Non-Gemma / non-qwen models that lack native function calling fall back to text-based JSON parsing — slower, but still works. See [Model Selection](model-selection.md) for the full matrix.
 
 ## Next Steps
 
-- [Gemma 4 Guide](./gemma-4-guide.md) — detailed Gemma 4 setup, hardware tuning, and features
-- [Configuration Guide](./configuration.md) — customize models, routing, runtimes
-- [Architecture Deep Dive](./architecture.md) — understand event sourcing, agent hierarchy
-- [Troubleshooting](./troubleshooting.md) — common issues and fixes
-- [Model Selection Guide](./model-selection.md) — pick the right models for your hardware
-- [Migration Guide](./migration-from-v0.md) — upgrading from DeepSeek/Qwen configurations
+- [Configuration Guide](./configuration.md) — `nxd.yaml` schema, MemPalace, `nxd improve`, model routing
+- [Model Selection](./model-selection.md) — coder/reviewer split, GPU swap caveat, hardware matrix
+- [Troubleshooting](./troubleshooting.md) — same-model warning, MemPalace bridge, schema mismatch, stale lock
+- [Gemma 4 Guide](./gemma-4-guide.md) — Gemma-specific hardware tuning + features
+- [Architecture Deep Dive](./architecture.md) — event sourcing, agent hierarchy, pipeline stages
+- [Migration Guide](./migration-from-v0.md) — upgrading from DeepSeek/Qwen-only configurations

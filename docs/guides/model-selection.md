@@ -1,29 +1,72 @@
 # Model Selection Guide
 
-Choosing the right local models is critical to NXD's performance. This guide helps you pick models based on your hardware and quality requirements.
+Choosing the right local models is critical to NXD's output quality. This guide explains why NXD recommends a **two-model split** by default, when to deviate, and how to size models to your hardware.
 
-## Gemma 4 (Recommended)
+> [!IMPORTANT]
+> **Don't use the same model for `senior` and `junior` roles.** When the reviewer and the coder are the same model, the reviewer shares the coder's hallucinations and overconfidence — bad code gets approved because both sides have the same blind spots. NXD logs a `WARNING` at startup if you do this anyway; the warning is informational, not blocking.
 
-NXD defaults to Google's **Gemma 4** model family. These models offer native function calling, strong coding benchmarks, and efficient inference. See the [Gemma 4 Guide](gemma-4-guide.md) for detailed setup.
+## The Recommended Split (qwen + gemma4)
 
-| Model | Params | Active Params | RAM | LiveCodeBench | Best For |
-|-------|--------|--------------|-----|---------------|----------|
-| `gemma4:26b` | 26B MoE | 3.8B | 12GB+ | 77.1% | **Recommended for all roles** |
-| `gemma4:31b` | 31B dense | 30.7B | 20GB+ | 80% | Best quality (leadership roles) |
-| `gemma4:e4b` | 4.5B | 4.5B | 6GB | 52% | Lightweight / 16GB machines |
-| `gemma4:e2b` | 2.3B | 2.3B | 4GB | 44% | Minimal devices |
+NXD's default — and what every new install should start with — is a two-model setup:
 
-**Key advantages over legacy models:**
-- Native function calling with structured tool-call tokens (no JSON parsing heuristics)
-- 256K context window (vs 4K-32K for DeepSeek/Qwen)
-- MoE architecture gives near-32B quality at ~7B inference cost
-- Apache 2.0 license with no usage restrictions
+| Role         | Model                  | Why                                                                   |
+|--------------|------------------------|-----------------------------------------------------------------------|
+| `tech_lead`  | `qwen2.5-coder:14b`    | Strong structured-output planner; excels at multi-step decomposition  |
+| `senior`     | `qwen2.5-coder:14b`    | Reviewer — different family from coder catches what the coder missed |
+| `qa`         | `qwen2.5-coder:14b`    | QA failure analysis benefits from the same reasoning pattern          |
+| `intermediate` | `gemma4:e4b`         | Coder — native function calling, fast, runs on modest VRAM            |
+| `junior`     | `gemma4:e4b`           | Coder — same                                                          |
+| `supervisor` | `gemma4:e4b`           | Drift detection; lightweight role, no need to spend qwen GPU time     |
+
+**Why two different families:**
+- `qwen2.5-coder` is a dense transformer trained on a slightly different code corpus.
+- `gemma4` is a MoE model with native function-calling tokens.
+- Both are strong coders individually. Their *failures* don't overlap — when gemma4 hallucinates an import, qwen catches it (and vice versa).
+
+**The trade-off:** GPU swap. On a single-GPU machine, Ollama only holds one model in VRAM at a time. Each pipeline transition (plan → code → review → QA) swaps models, adding **~3-5s per role change**. The blind-spot coverage is worth those seconds — but see [Single-Model Mode](#single-model-mode-16gb-ram-or-throughput-priority) below if your workload prefers raw throughput.
 
 ## Hardware Tiers
 
-### Tier 1: Minimum (16GB RAM)
+### Tier 1: Recommended (24GB+ RAM, the default)
 
-Run `gemma4:e4b` for all roles. Suitable for sequential story execution.
+The two-model split. Both models fit comfortably on 24GB VRAM with Q4_K_M quantization.
+
+```yaml
+version: "1.0"
+models:
+  tech_lead:     { provider: ollama, model: qwen2.5-coder:14b, max_tokens: 16000 }
+  senior:        { provider: ollama, model: qwen2.5-coder:14b, max_tokens: 8000 }
+  intermediate:  { provider: ollama, model: gemma4:e4b,        max_tokens: 4000 }
+  junior:        { provider: ollama, model: gemma4:e4b,        max_tokens: 4000 }
+  qa:            { provider: ollama, model: qwen2.5-coder:14b, max_tokens: 8000 }
+  supervisor:    { provider: ollama, model: gemma4:e4b,        max_tokens: 4000 }
+```
+
+**What to expect:**
+- ~3-5s extra per role swap on single-GPU
+- Meaningful story decomposition + structured tool-call coding
+- Reviewer catches coder mistakes the coder couldn't see
+- Best for: daily development, production-quality output
+
+### Tier 2: Heavy (64GB+ RAM, no compromises)
+
+Pin both models in VRAM and use larger qwen for the reviewer:
+
+```yaml
+models:
+  tech_lead:     { provider: ollama, model: qwen2.5-coder:32b, max_tokens: 16000 }
+  senior:        { provider: ollama, model: qwen2.5-coder:32b, max_tokens: 8000 }
+  intermediate:  { provider: ollama, model: gemma4:26b,        max_tokens: 4000 }
+  junior:        { provider: ollama, model: gemma4:26b,        max_tokens: 4000 }
+  qa:            { provider: ollama, model: qwen2.5-coder:32b, max_tokens: 8000 }
+  supervisor:    { provider: ollama, model: gemma4:26b,        max_tokens: 4000 }
+```
+
+Start Ollama with `OLLAMA_KEEP_ALIVE=24h` and pre-load both models at session start. Eliminates the GPU swap entirely.
+
+### Single-Model Mode (16GB RAM, or throughput priority)
+
+If you don't have VRAM for two models, or you genuinely want raw throughput on a known-simple project, fall back to a single small model:
 
 ```yaml
 models:
@@ -35,122 +78,74 @@ models:
   supervisor:    { provider: ollama, model: gemma4:e4b, max_tokens: 4000 }
 ```
 
-**What to expect:**
-- Planning works but may produce overly simple decompositions
-- Function calling works (structured tool outputs)
-- Junior tasks (complexity 1-3) work well
-- Best for: small projects, learning NXD, constrained hardware
+NXD will print a `same-model review` warning at startup. That's expected for this config. Accept the reduced hallucination detection in exchange for zero model-swap latency. Suitable for: laptops, learning NXD, small projects where bug rate is already low.
 
-### Tier 2: Recommended (24GB+ RAM)
-
-Run `gemma4:26b` for all roles. The MoE architecture keeps active parameters low (~3.8B) while delivering strong results.
-
-```yaml
-models:
-  tech_lead:     { provider: ollama, model: gemma4:26b, max_tokens: 16000 }
-  senior:        { provider: ollama, model: gemma4:26b, max_tokens: 8000 }
-  intermediate:  { provider: ollama, model: gemma4:26b, max_tokens: 4000 }
-  junior:        { provider: ollama, model: gemma4:26b, max_tokens: 4000 }
-  qa:            { provider: ollama, model: gemma4:26b, max_tokens: 8000 }
-  supervisor:    { provider: ollama, model: gemma4:26b, max_tokens: 4000 }
-```
-
-**What to expect:**
-- Good planning with meaningful story decomposition
-- Native function calling for reliable structured outputs
-- All task complexities handled well
-- Best for: daily development, medium-complexity projects
-
-### Tier 3: Full Team (64GB+ RAM)
-
-Use `gemma4:31b` (dense) for leadership roles and `gemma4:26b` (MoE) for workers.
-
-```yaml
-models:
-  tech_lead:     { provider: ollama, model: gemma4:31b, max_tokens: 16000 }
-  senior:        { provider: ollama, model: gemma4:31b, max_tokens: 8000 }
-  intermediate:  { provider: ollama, model: gemma4:26b, max_tokens: 4000 }
-  junior:        { provider: ollama, model: gemma4:26b, max_tokens: 4000 }
-  qa:            { provider: ollama, model: gemma4:26b, max_tokens: 8000 }
-  supervisor:    { provider: ollama, model: gemma4:31b, max_tokens: 4000 }
-```
-
-**What to expect:**
-- High-quality planning with proper architecture considerations
-- Thorough code reviews (80% LiveCodeBench on dense 31B)
-- Parallel wave execution with efficient MoE workers
-- Best for: complex projects, production-quality output
-
-## Model Recommendations by Role
+## Per-Role Sizing
 
 ### Tech Lead (Planning + Decomposition)
 
-The most demanding role -- needs strong reasoning to decompose requirements into properly-scoped stories with accurate complexity scores and dependency graphs.
+The most demanding role — decomposes requirements into properly-scoped stories with accurate complexity scores and dependency graphs.
 
-| Model | Size | Quality | Speed |
-|-------|------|---------|-------|
-| **gemma4:31b** | 31B dense | Best | Moderate |
-| **gemma4:26b** | 26B MoE | Good | Fast |
-| gemma4:e4b | 4.5B | Basic | Fast |
-
-**Key skill:** Structured JSON output. Gemma 4 models use native function calling to return valid JSON tool calls, eliminating parsing failures common with text-based approaches.
+| Model                  | Size  | Quality | Notes                                           |
+|------------------------|-------|---------|-------------------------------------------------|
+| `qwen2.5-coder:32b`    | 32B   | Best    | If you have 64GB+ RAM                           |
+| `qwen2.5-coder:14b`    | 14B   | Good    | **Default** for 24GB machines                   |
+| `gemma4:26b` (MoE)     | 26B   | Good    | Alternative if you prefer single-family setups  |
+| `gemma4:e4b`           | 4.5B  | Basic   | Acceptable for 16GB machines                    |
 
 ### Senior (Code Review)
 
-Reviews git diffs against acceptance criteria. Needs to understand code patterns, spot bugs, and assess test coverage.
+Reviews git diffs against acceptance criteria. Quality matters here more than speed — a bad review approves broken code.
 
-| Model | Size | Quality | Speed |
-|-------|------|---------|-------|
-| **gemma4:31b** | 31B dense | Best | Moderate |
-| **gemma4:26b** | 26B MoE | Good | Fast |
-| gemma4:e4b | 4.5B | Basic | Fast |
-
-**Key skill:** Code comprehension. The reviewer reads full diffs and must understand multi-file changes. The 256K context window handles large diffs well.
+| Model                  | Size  | Quality | Notes                                          |
+|------------------------|-------|---------|------------------------------------------------|
+| `qwen2.5-coder:32b`    | 32B   | Best    | 64GB+ RAM                                      |
+| `qwen2.5-coder:14b`    | 14B   | Good    | **Default**, paired with gemma4 coder          |
+| `gemma4:31b` (dense)   | 31B   | Good    | Only viable if junior uses a different family  |
 
 ### Junior / Intermediate (Implementation)
 
-These agents write code via the native Gemma runtime or Aider in tmux sessions. The model needs to understand the codebase and produce working, tested code.
+These agents write code via the native Gemma runtime. Native function calling is critical — it eliminates JSON parsing heuristics.
 
-| Model | Size | Best For |
-|-------|------|----------|
-| **gemma4:26b** | 26B MoE | All task complexities (recommended) |
-| gemma4:e4b | 4.5B | Simple tasks (complexity 1-3) |
-| gemma4:e2b | 2.3B | Trivial tasks on constrained devices |
-
-**Key skill:** Code generation with proper imports, error handling, and test writing.
+| Model         | Size  | Best For                                       |
+|---------------|-------|------------------------------------------------|
+| `gemma4:26b`  | 26B MoE | All task complexities; 24GB+ RAM             |
+| `gemma4:e4b`  | 4.5B  | **Default** — fast, low VRAM, function calls  |
+| `gemma4:e2b`  | 2.3B  | Trivial tasks on constrained devices          |
 
 ### QA (Test Analysis)
 
-Runs lint/build/test commands and interprets results. Mostly shell-driven, but uses LLM for failure analysis.
+Runs lint/build/test and interprets results. Mostly shell-driven but uses LLM for failure analysis.
 
-| Model | Size | Notes |
-|-------|------|-------|
-| **gemma4:26b** | 26B MoE | Good balance of speed and analysis |
-| gemma4:e4b | 4.5B | Sufficient since QA is mostly shell commands |
+| Model                  | Size  | Notes                                          |
+|------------------------|-------|------------------------------------------------|
+| `qwen2.5-coder:14b`    | 14B   | **Default** — strong on failure analysis       |
+| `gemma4:e4b`           | 4.5B  | Sufficient for shell-driven QA                 |
 
 ### Supervisor (Drift Detection)
 
-Periodically reviews whether stories are on track. Needs to compare story progress against the original requirement.
+Lightweight periodic role — compare story progress against the original requirement.
 
-| Model | Size | Notes |
-|-------|------|-------|
-| **gemma4:31b** | 31B dense | Best reasoning for drift detection |
-| **gemma4:26b** | 26B MoE | Good for most projects |
+| Model                  | Size  | Notes                                                  |
+|------------------------|-------|--------------------------------------------------------|
+| `gemma4:e4b`           | 4.5B  | **Default** — same family as coder keeps VRAM warm     |
+| `qwen2.5-coder:14b`    | 14B   | If you already have it loaded for senior anyway        |
 
 ## Pulling Models
 
 ```bash
-# List available models
+# Recommended split — pull both
+ollama pull qwen2.5-coder:14b
+ollama pull gemma4:e4b
+
+# List what's installed
 ollama list
 
-# Pull the recommended model
-ollama pull gemma4:26b
+# Inspect a model
+ollama show qwen2.5-coder:14b
 
-# Check model details
-ollama show gemma4:26b
-
-# Remove an unused model (free disk space)
-ollama rm gemma4:e4b
+# Free disk space
+ollama rm gemma4:26b
 ```
 
 ## Performance Tips
@@ -159,64 +154,60 @@ ollama rm gemma4:e4b
 
 Ollama automatically uses your GPU if available. Check with:
 ```bash
-ollama ps  # Shows running models and GPU layers
+ollama ps   # shows running models + GPU layers
 ```
 
-For NVIDIA GPUs, ensure CUDA drivers are installed. For Apple Silicon, Metal acceleration is automatic.
+For NVIDIA, install CUDA drivers. Apple Silicon uses Metal automatically.
 
-### 2. Model Concurrency
+### 2. Reducing Model Swap
 
-Ollama loads one model at a time by default. When NXD switches between roles (e.g., Junior -> Reviewer), Ollama swaps models. This takes 5-30 seconds depending on model size.
+Default Ollama behavior unloads idle models after ~5 minutes. With the two-model split this means a swap on every role change.
 
-To reduce swapping, use the same model for multiple roles (this is the default with Gemma 4):
-```yaml
-# All roles use gemma4:26b — no model swapping at all
-senior:        { provider: ollama, model: gemma4:26b }
-intermediate:  { provider: ollama, model: gemma4:26b }
-qa:            { provider: ollama, model: gemma4:26b }
+To pin both models in VRAM (24GB+ recommended):
+```bash
+export OLLAMA_KEEP_ALIVE=24h
+# pre-load at session start
+ollama run qwen2.5-coder:14b ""
+ollama run gemma4:e4b ""
 ```
 
 ### 3. Quantization
 
-Ollama models are typically Q4_K_M quantized (good quality/size balance). The Gemma 4 26B MoE at Q4_K_M uses ~10GB, fitting comfortably on 24GB machines.
+Ollama models default to Q4_K_M (good quality/size balance). At Q4_K_M:
+- `qwen2.5-coder:14b` ≈ 9GB VRAM
+- `gemma4:e4b` ≈ 6GB VRAM
+- Combined ≈ 15GB — fits on most 24GB cards
 
 ### 4. Context Length
 
-Gemma 4 supports a 256K context window, which handles most codebases comfortably. For very large projects:
+`qwen2.5-coder` supports 128K, `gemma4` supports 256K. Both handle realistic codebases. For huge monorepos:
 - Keep stories small (complexity 1-5)
-- Use clear, focused acceptance criteria
+- Write clear, focused acceptance criteria
 - Let NXD's wave dispatch handle orchestration
 
-## Comparison: Local vs Cloud
+## Local vs Cloud
 
-| Aspect | Local (Ollama) | Cloud (Anthropic/OpenAI) |
-|--------|---------------|--------------------------|
-| Cost per token | $0 | $3-75 per million tokens |
-| Latency (first token) | 1-5s | 0.5-2s |
-| Throughput | 10-50 tok/s | 50-100 tok/s |
-| Context window | 4K-32K | 128K-200K |
-| Code quality (planning) | Good (16B+) | Excellent |
-| Code quality (implementation) | Good (7B+) | Excellent |
-| Privacy | Full | Data leaves machine |
-| Availability | Always (if hardware works) | Depends on API uptime |
+| Aspect                    | Local (Ollama)            | Cloud (Anthropic/OpenAI)         |
+|---------------------------|---------------------------|----------------------------------|
+| Cost per token            | $0                        | $3-75 per million tokens         |
+| Latency (first token)     | 1-5s                      | 0.5-2s                           |
+| Throughput                | 10-50 tok/s               | 50-100 tok/s                     |
+| Context window            | 128K-256K (qwen/gemma4)   | 128K-200K                        |
+| Code quality (planning)   | Good (14B+)               | Excellent                        |
+| Code quality (review)     | Good (14B+, different fam)| Excellent                        |
+| Privacy                   | Full — offline-first      | Data leaves machine              |
+| Availability              | Always (if hardware works)| Depends on API uptime + quota    |
 
-## Recommended Upgrade Path
+## Upgrade Path
 
-1. Start with `gemma4:26b` for all roles (recommended default)
-2. On 16GB machines, start with `gemma4:e4b` for everything
-3. Upgrade Tech Lead and Senior to `gemma4:31b` when planning/review quality matters (64GB+ RAM)
-4. Enable Google AI free tier for fast cloud primary with Ollama fallback
-5. Switch to cloud models (Anthropic/OpenAI) for specific roles if needed (hybrid mode)
+1. Start with the recommended split: `qwen2.5-coder:14b` + `gemma4:e4b` (24GB+ RAM).
+2. On 16GB machines, use single-model mode with `gemma4:e4b`. Accept the warning.
+3. When planning/review quality matters more than swap latency, upgrade qwen to `qwen2.5-coder:32b` (64GB+ RAM).
+4. Enable Google AI free tier for cloud primary with Ollama fallback — see [Configuration](configuration.md).
+5. Switch specific roles to Anthropic/OpenAI only if quality requires it (hybrid mode).
 
-## Legacy Models (Alternative)
+## See Also
 
-DeepSeek Coder V2 and Qwen 2.5 Coder are still supported but are no longer the default. These models lack native function calling, so NXD uses text-based JSON parsing (less reliable for structured outputs).
-
-| Model | Size | Notes |
-|-------|------|-------|
-| `deepseek-coder-v2:latest` | 16B | Previously recommended for Tech Lead/Supervisor |
-| `qwen2.5-coder:32b` | 32B | Previously recommended for Senior |
-| `qwen2.5-coder:14b` | 14B | Previously recommended for Intermediate/QA |
-| `qwen2.5-coder:7b` | 7B | Previously recommended for Junior |
-
-To use legacy models, set them explicitly in `nxd.yaml`. See [Migration Guide](migration-from-v0.md) for details on switching from legacy to Gemma 4.
+- [Configuration Guide](configuration.md) — full `nxd.yaml` reference
+- [Gemma 4 Guide](gemma-4-guide.md) — native runtime details
+- [Migration from v0](migration-from-v0.md) — legacy DeepSeek/Qwen setups

@@ -88,28 +88,31 @@ SQLite tables:
 NXD models a complete agile development team:
 
 ```
-        Tech Lead (Opus-class model)
+        Tech Lead (qwen2.5-coder:14b)
         Decomposes requirements into stories
               |
      +--------+--------+
      |                  |
    Senior            Supervisor
-   (Sonnet-class)    (Sonnet-class)
-   Reviews code,     Periodic drift
-   handles 6+        detection,
-   complexity        reprioritization
+   (qwen2.5-coder    (gemma4:e4b)
+    :14b reviewer)   Periodic drift
+   Different family  detection,
+   from coder catches reprioritization
+   coder's blind spots
      |
      +--------+--------+
      |                  |
   Intermediate       Junior
-  (14B model)        (7B model)
+  (gemma4:e4b)       (gemma4:e4b)
   Handles 4-5        Handles 1-3
   complexity         complexity
               |
               QA
-              (14B model)
-              Lint, build, test
+              (qwen2.5-coder:14b)
+              Lint, build, test + failure analysis
 ```
+
+> The model labels above are the **recommended default**. NXD works with any Ollama model — the architectural roles are stable, but operators choose models per role via `nxd.yaml`. See [Model Selection](model-selection.md) for the rationale behind pairing different model families.
 
 ### Execution Modes
 
@@ -125,9 +128,9 @@ NXD models a complete agile development team:
 ### Complexity Routing (Fibonacci)
 
 ```
-Complexity 1-3:  -> Junior      (qwen2.5-coder:7b)
-Complexity 4-5:  -> Intermediate (qwen2.5-coder:14b)
-Complexity 6-8:  -> Senior      (qwen2.5-coder:32b)
+Complexity 1-3:  -> Junior       (gemma4:e4b — coder)
+Complexity 4-5:  -> Intermediate (gemma4:e4b — coder)
+Complexity 6-8:  -> Senior       (qwen2.5-coder:14b — reviewer/escalation)
 Complexity 9-13: -> Senior decomposes further, then assigns
 ```
 

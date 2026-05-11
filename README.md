@@ -32,22 +32,32 @@ Submit a natural-language requirement and NXD decomposes it into stories, assign
 ## Prerequisites
 
 1. **Go 1.26+** — [install](https://go.dev/dl/)
-2. **Ollama** — [install](https://ollama.com) then pull **one** model to get started:
+2. **Ollama** — [install](https://ollama.com) then pull the **two recommended models**:
    ```bash
-   ollama pull gemma4:26b                  # ~18GB — MoE, native function calling, 256K context
+   ollama pull qwen2.5-coder:14b           # ~9GB — reviewer + planner
+   ollama pull gemma4:e4b                  # ~6GB — coder, native function calling
    ```
-   A single model is all you need. NXD assigns models to agent roles via config — point every role at the same model and the full pipeline works. See [Gemma 4 Guide](docs/guides/gemma-4-guide.md) for hardware tuning and [Model Selection](docs/guides/model-selection.md) for alternatives.
+   NXD pairs different model families so the reviewer doesn't share the coder's blind spots. See [Model Selection](docs/guides/model-selection.md) for the rationale + the GPU-swap trade-off, and [Gemma 4 Guide](docs/guides/gemma-4-guide.md) for hardware tuning.
 
    <details>
-   <summary>Full team setup (~38GB, for 64GB+ RAM machines)</summary>
+   <summary>Single-model fallback (16GB RAM)</summary>
 
-   For maximum quality, use dedicated models per tier:
+   If you don't have VRAM for two models, use `gemma4:e4b` for every role. NXD will print a `same-model review` warning at startup — that's expected for this config.
    ```bash
-   ollama pull gemma4:31b                  # Tech Lead + Senior (~20GB)
-   ollama pull gemma4:26b                  # Intermediate + QA + Supervisor (~18GB)
-   ollama pull gemma4:e4b                  # Junior (~10GB)
+   ollama pull gemma4:e4b
    ```
-   Bigger models produce better planning, reviews, and code — but are not required.
+   </details>
+
+   <details>
+   <summary>Heavy setup (~38GB, for 64GB+ RAM machines)</summary>
+
+   For maximum quality, pin both larger models in VRAM:
+   ```bash
+   ollama pull qwen2.5-coder:32b           # Reviewer / Tech Lead (~19GB)
+   ollama pull gemma4:26b                  # Coder (~18GB)
+   export OLLAMA_KEEP_ALIVE=24h            # eliminate model-swap latency
+   export OLLAMA_MAX_LOADED_MODELS=2
+   ```
    </details>
 
 3. **MemPalace** — local-first semantic memory used by the planner / reviewer / native runtime to mine prior work and surface relevant context. Offline-first by design (ChromaDB local backend, zero API calls). Pinned in `requirements.txt`:
@@ -63,11 +73,11 @@ Submit a natural-language requirement and NXD decomposes it into stories, assign
 
 | Setup | RAM | GPU VRAM | Models | Disk Space |
 |-------|-----|----------|--------|------------|
-| Minimal | 16GB | 8GB | `gemma4:e4b` for all roles | ~10GB |
-| Recommended | 24GB | 16GB | `gemma4:26b` for all roles | ~18GB |
-| Full Team | 64GB+ | 24GB+ | Dedicated Gemma 4 per tier | ~38GB |
+| Minimal | 16GB | 8GB | `gemma4:e4b` for all roles (single-model warning) | ~6GB |
+| **Recommended** | **24GB** | **16GB** | **`qwen2.5-coder:14b` + `gemma4:e4b` (two-model split)** | **~15GB** |
+| Heavy | 64GB+ | 24GB+ | `qwen2.5-coder:32b` + `gemma4:26b` pinned in VRAM | ~38GB |
 
-All three setups run the complete NXD pipeline. The difference is output quality — larger models produce better planning, reviews, and code. Start minimal and upgrade individual roles as needed.
+All three setups run the complete NXD pipeline. The difference is **bug detection** (the two-model split catches mistakes a single model misses) and output quality. Start with the recommended split if you have the VRAM — single-model is a fallback, not the goal.
 
 ## Quick Start
 
@@ -232,12 +242,12 @@ Events are appended at every stage. SQLite projections materialize the current s
 
 | Role | Default Model | Responsibility |
 |------|---------------|----------------|
-| Tech Lead | Gemma 4 26B MoE | Requirement decomposition, story planning, dependency graphs |
-| Senior | Gemma 4 26B MoE | Complex stories (5+ points), code review of junior/intermediate work |
-| Intermediate | Gemma 4 26B MoE | Medium stories (3-5 points) |
-| Junior | Gemma 4 26B MoE | Simple stories (1-3 points) |
-| QA | Gemma 4 26B MoE | Lint, build, test execution per story |
-| Supervisor | Gemma 4 26B MoE | Drift detection, reprioritization, escalation handling |
+| Tech Lead | `qwen2.5-coder:14b` | Requirement decomposition, story planning, dependency graphs |
+| Senior | `qwen2.5-coder:14b` | Code review of junior/intermediate work (different family from coder) |
+| Intermediate | `gemma4:e4b` | Medium stories (3-5 points), native function calling |
+| Junior | `gemma4:e4b` | Simple stories (1-3 points), native function calling |
+| QA | `qwen2.5-coder:14b` | Lint, build, test execution per story; failure analysis |
+| Supervisor | `gemma4:e4b` | Drift detection, reprioritization, escalation handling |
 
 ## Project Structure
 

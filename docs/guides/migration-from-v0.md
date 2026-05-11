@@ -1,61 +1,74 @@
-# Migration Guide: v0 to Gemma 4
+# Migration Guide: v0 to v1 (two-model split)
 
-NXD now defaults to Gemma 4 26B MoE. This guide covers upgrading from DeepSeek/Qwen defaults.
+NXD's recommended setup is now a **two-model split**: `qwen2.5-coder:14b` for reviewer/planner roles and `gemma4:e4b` for coder roles. This guide covers upgrading from earlier single-model defaults (DeepSeek, single-Qwen, or all-Gemma).
 
 ## What Changed
 
-| Aspect | Before (v0) | After |
-|--------|-------------|-------|
-| Default model | DeepSeek Coder V2 / Qwen2.5-Coder | Gemma 4 26B MoE |
-| Provider | `ollama` | `google+ollama` |
-| Output format | Free-text JSON parsing | Native function calling |
-| Coding runtime | Aider only | Aider + native `gemma` runtime |
+| Aspect          | Before (v0)                                | Now                                                        |
+|-----------------|--------------------------------------------|------------------------------------------------------------|
+| Default models  | DeepSeek / single Qwen / all-Gemma         | `qwen2.5-coder:14b` (reviewer) + `gemma4:e4b` (coder)      |
+| Schema version  | No `version` field                         | `version: "1.0"` (pinned; older configs run in compat mode)|
+| Output format   | Free-text JSON parsing                     | Native function calling on Gemma side                      |
+| Coding runtime  | Aider only                                 | Aider + native `gemma` runtime (criteria-gated completion) |
+| Memory layer    | None                                       | MemPalace (offline-first, pinned `mempalace==2.0.0`)       |
+| Same-model rule | No warning                                 | Logs `WARNING` if senior == junior model (informational)   |
 
 ## Your Existing Config Still Works
 
-Custom `nxd.yaml` with DeepSeek/Qwen models works unchanged. Function calling auto-falls back to text parsing for non-Gemma models.
+Older `nxd.yaml` files load unchanged. NXD logs a one-line hint suggesting you pin `version: "1.0"`, and a `same-model review` warning if every role uses the same model — both are informational, neither blocks startup. Function calling auto-falls back to text parsing for non-Gemma models.
 
-## Step-by-Step Migration
+## Step-by-Step Migration (recommended)
 
 ```bash
-# 1. Pull the new model
-ollama pull gemma4:26b
+# 1. Pull both recommended models
+ollama pull qwen2.5-coder:14b
+ollama pull gemma4:e4b
 
-# 2. Backup config
+# 2. Install MemPalace (offline-first, no network calls)
+make install-mempalace     # or: pip install -r requirements.txt
+make mempalace-check
+
+# 3. Backup config
 cp nxd.yaml nxd.yaml.backup
 
-# 3. Get fresh defaults (delete old config first)
+# 4. Get fresh defaults (delete old config first)
 rm nxd.yaml && nxd init
 
-# 4. Validate
+# 5. Validate
 nxd config validate
 nxd status
-
-# 5. (Optional) Google AI free tier
-export GOOGLE_AI_API_KEY=your-key-here
 ```
 
 ## Config Diff
 
-**Before:**
+**Before (single-model):**
 ```yaml
 models:
-  tech_lead:
-    provider: ollama
-    model: deepseek-coder-v2:latest
-    max_tokens: 16000
+  tech_lead:    { provider: ollama, model: deepseek-coder-v2:latest, max_tokens: 16000 }
+  senior:       { provider: ollama, model: deepseek-coder-v2:latest, max_tokens: 8000 }
+  intermediate: { provider: ollama, model: deepseek-coder-v2:latest, max_tokens: 4000 }
+  junior:       { provider: ollama, model: deepseek-coder-v2:latest, max_tokens: 4000 }
 ```
 
-**After:**
+**After (two-model split):**
 ```yaml
+version: "1.0"
 models:
-  tech_lead:
-    provider: google+ollama
-    model: gemma4:26b
-    google_model: gemma-4-26b-a4b-it
-    max_tokens: 16000
-    fallback_cooldown_s: 60
+  tech_lead:    { provider: ollama, model: qwen2.5-coder:14b, max_tokens: 16000 }
+  senior:       { provider: ollama, model: qwen2.5-coder:14b, max_tokens: 8000 }
+  intermediate: { provider: ollama, model: gemma4:e4b,        max_tokens: 4000 }
+  junior:       { provider: ollama, model: gemma4:e4b,        max_tokens: 4000 }
+  qa:           { provider: ollama, model: qwen2.5-coder:14b, max_tokens: 8000 }
+  supervisor:   { provider: ollama, model: gemma4:e4b,        max_tokens: 4000 }
+memory:
+  enabled: true
 ```
+
+## On Single-GPU Machines
+
+The two-model split adds ~3-5s per role swap on a single GPU. If that's a problem:
+- **64GB+ RAM:** pin both with `OLLAMA_KEEP_ALIVE=24h OLLAMA_MAX_LOADED_MODELS=2` — eliminates swap.
+- **16GB RAM:** stay on single-model `gemma4:e4b`. Accept the `same-model review` warning. See [Model Selection](model-selection.md#single-model-mode-16gb-ram-or-throughput-priority).
 
 ## Rollback
 

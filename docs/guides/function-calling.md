@@ -11,9 +11,9 @@ NXD uses function calling to get structured outputs from LLMs instead of parsing
 
 ## Supported Models
 
-Native tool calling: Gemma 4 (all variants), Anthropic (Claude), OpenAI (GPT).
+Native tool calling: Gemma 4 (all variants) via Ollama, Anthropic (Claude), OpenAI (GPT), Google AI.
 
-For other models (DeepSeek, Qwen, CodeLlama): schemas injected into system prompt, JSON parsed from text. Existing configs work unchanged.
+For other models (DeepSeek, Qwen, CodeLlama) via Ollama: schemas are injected into the system prompt and JSON is parsed from text output. This is the path the **recommended `qwen2.5-coder:14b` reviewer takes**, and is fully supported — not a legacy/degraded mode. JSON parsing has been hardened with markdown-fence stripping and per-field validation (see `ParseToolCallsFromText` in `internal/llm/tool_compat.go`).
 
 ## Tool Definitions by Role
 
