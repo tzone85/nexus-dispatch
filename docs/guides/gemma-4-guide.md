@@ -3,7 +3,7 @@
 NXD uses Google's Gemma 4 family as the **coder** in its default two-model split. This guide covers setup, hardware tuning, and how Gemma fits into the recommended workflow.
 
 > [!IMPORTANT]
-> **Gemma 4 is the coder, not the reviewer.** NXD's default setup pairs `gemma4:e4b` (junior/intermediate) with `qwen2.5-coder:14b` (senior/QA reviewer) — different model families catch different bugs. See [Model Selection](model-selection.md) for the full rationale.
+> **Gemma 4 is the coder, not the reviewer.** NXD's recommended setup pairs `gemma4:e4b` (junior/intermediate) with `qwen3-coder:30b` (senior/QA reviewer) — different model families catch different bugs. On 24GB machines, use `qwen2.5-coder:14b` as the budget reviewer alternative. See [Model Selection](model-selection.md) for the full rationale.
 
 ## Why Gemma 4 (as the coder)
 
@@ -18,7 +18,7 @@ NXD uses Google's Gemma 4 family as the **coder** in its default two-model split
 
 ```bash
 # 1. Pull both models — reviewer + coder
-ollama pull qwen2.5-coder:14b    # senior / QA reviewer (~9GB)
+ollama pull qwen3-coder          # senior / QA reviewer (~19GB, 262K context)
 ollama pull gemma4:e4b           # junior / intermediate coder (~6GB)
 
 # 2. Initialize NXD (writes the recommended split into nxd.yaml)
@@ -62,12 +62,13 @@ If you don't set the API key, NXD uses Ollama only. This is the recommended offl
 | Setup            | RAM   | Models                              | Disk    | Notes                                            |
 |------------------|-------|-------------------------------------|---------|--------------------------------------------------|
 | Minimal          | 16GB  | `gemma4:e4b` (single)               | ~6GB    | Function calling works, same-model warning       |
-| **Recommended**  | 24GB+ | `qwen2.5-coder:14b` + `gemma4:e4b`  | ~15GB   | **Two-model split, best blind-spot coverage**    |
-| Heavy            | 64GB+ | `qwen2.5-coder:32b` + `gemma4:26b`  | ~38GB   | Pin both in VRAM via `OLLAMA_KEEP_ALIVE=24h`     |
+| Budget           | 24GB  | `qwen2.5-coder:14b` + `gemma4:e4b`  | ~15GB   | Two-model split, fits on 24GB machines           |
+| **Recommended**  | 32GB+ | `qwen3-coder:30b` + `gemma4:e4b`    | ~25GB   | **Best reviewer quality, 262K context window**   |
+| Heavy            | 64GB+ | `qwen3-coder:30b` + `gemma4:26b`    | ~37GB   | Pin both in VRAM via `OLLAMA_KEEP_ALIVE=24h`     |
 
 ### Apple Silicon Notes
 
-Ollama uses unified memory. The recommended split (qwen 14b + gemma4 e4b) at Q4_K_M uses ~15GB total, leaving headroom for macOS on 24GB machines.
+Ollama uses unified memory. The recommended split (`qwen3-coder:30b` + `gemma4:e4b`) at Q4_K_M uses ~25GB total — requires 32GB unified memory to leave headroom for macOS. On 24GB machines, use the budget split (`qwen2.5-coder:14b` + `gemma4:e4b`, ~15GB).
 
 ```bash
 export OLLAMA_KEEP_ALIVE=24h          # Keep both models loaded — kills GPU swap latency

@@ -9,15 +9,17 @@ import (
 
 func TestRecommendedModels_AllRolesCovered(t *testing.T) {
 	models := llm.RecommendedModels()
-	if len(models) != 8 {
-		t.Fatalf("expected 8 recommended models, got %d", len(models))
+	if len(models) != 9 {
+		t.Fatalf("expected 9 recommended models, got %d", len(models))
 	}
 
-	// First 4 models must be Gemma 4 family
-	for i := 0; i < 4; i++ {
-		if !strings.HasPrefix(models[i].Name, "gemma4:") {
-			t.Errorf("model[%d] expected gemma4 prefix, got %q", i, models[i].Name)
-		}
+	// First model must be qwen3-coder (recommended reviewer/planner)
+	if !strings.HasPrefix(models[0].Name, "qwen3-coder") {
+		t.Errorf("model[0] expected qwen3-coder prefix (recommended reviewer), got %q", models[0].Name)
+	}
+	// Second model must be gemma4:e4b (recommended coder)
+	if models[1].Name != "gemma4:e4b" {
+		t.Errorf("model[1] expected gemma4:e4b (recommended coder), got %q", models[1].Name)
 	}
 
 	// Every model must have required fields populated

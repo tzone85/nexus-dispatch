@@ -85,14 +85,14 @@ SQLite tables:
 NXD models a complete agile development team:
 
 ```
-        Tech Lead (qwen2.5-coder:14b)
+        Tech Lead (qwen3-coder:30b)
         Decomposes requirements into stories
               |
      +--------+--------+
      |                  |
    Senior            Supervisor
-   (qwen2.5-coder    (gemma4:e4b)
-    :14b reviewer)   Periodic drift
+   (qwen3-coder      (gemma4:e4b)
+    :30b reviewer)   Periodic drift
    Different family  detection,
    from coder catches reprioritization
    coder's blind spots
@@ -105,7 +105,7 @@ NXD models a complete agile development team:
   complexity         complexity
               |
               QA
-              (qwen2.5-coder:14b)
+              (qwen3-coder:30b)
               Lint, build, test + failure analysis
 ```
 
@@ -127,7 +127,7 @@ NXD models a complete agile development team:
 ```
 Complexity 1-3:  -> Junior       (gemma4:e4b — coder)
 Complexity 4-5:  -> Intermediate (gemma4:e4b — coder)
-Complexity 6-8:  -> Senior       (qwen2.5-coder:14b — reviewer/escalation)
+Complexity 6-8:  -> Senior       (qwen3-coder:30b — reviewer/escalation)
 Complexity 9-13: -> Senior decomposes further, then assigns
 ```
 

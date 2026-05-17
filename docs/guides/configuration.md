@@ -108,7 +108,7 @@ You can mix providers -- for example, use Ollama for juniors and Google AI for t
 > [!IMPORTANT]
 > **Use different model families for `senior` and `junior`.** When the same model writes and reviews code, the reviewer shares the coder's hallucinations and confidence patterns. NXD logs a `WARNING` at config-load time when `models.senior.model == models.junior.model` (or `== intermediate.model`).
 >
-> Recommended split: `qwen2.5-coder:14b` for `senior`, `gemma4:e4b` for everything else. See [Model Selection](model-selection.md) for the full rationale + GPU-swap trade-off.
+> Recommended split: `qwen3-coder:30b` for `senior`/`tech_lead`/`qa` (32GB+ machines), `gemma4:e4b` for `junior`/`intermediate`/`supervisor`. Budget alternative on 24GB: `qwen2.5-coder:14b` + `gemma4:e4b`. See [Model Selection](model-selection.md) for the full rationale + GPU-swap trade-off.
 
 ### memory (MemPalace)
 
@@ -300,9 +300,29 @@ Just add another block to `runtimes:` with the command, args, and detection patt
 
 ## Example Configurations
 
-### Recommended (24GB+ RAM, offline, two-model split)
+### Recommended (32GB+ RAM, offline, two-model split)
 
-The default everyone should start with. `qwen2.5-coder:14b` reviews, `gemma4:e4b` writes — different model families means different blind spots.
+The default for 32GB+ machines. `qwen3-coder:30b` reviews (262K context, SWE-bench 51.6%), `gemma4:e4b` writes — different model families, different blind spots.
+
+```yaml
+version: "1.0"
+models:
+  tech_lead:    { provider: ollama, model: qwen3-coder:30b, max_tokens: 16000 }
+  senior:       { provider: ollama, model: qwen3-coder:30b, max_tokens: 8000 }
+  intermediate: { provider: ollama, model: gemma4:e4b,      max_tokens: 4000 }
+  junior:       { provider: ollama, model: gemma4:e4b,      max_tokens: 4000 }
+  qa:           { provider: ollama, model: qwen3-coder:30b, max_tokens: 8000 }
+  supervisor:   { provider: ollama, model: gemma4:e4b,      max_tokens: 4000 }
+update_check: true                # Check for model updates on startup
+update_interval_hours: 168        # Weekly check
+```
+
+> [!NOTE]
+> On a single-GPU machine, swapping between qwen3-coder + gemma4 adds ~3-5s per role switch. The blind-spot coverage is worth it. On 24GB machines, use `qwen2.5-coder:14b` instead (see budget config below). For raw throughput on simple projects, see [Minimal](#minimal-16gb-ram-laptop-or-single-model).
+
+### Budget (24GB RAM, offline, two-model split)
+
+Same two-model principle, smaller reviewer that fits within 24GB (qwen3-coder:30b + gemma4:e4b = ~25GB, over the limit).
 
 ```yaml
 version: "1.0"
@@ -313,12 +333,7 @@ models:
   junior:       { provider: ollama, model: gemma4:e4b,        max_tokens: 4000 }
   qa:           { provider: ollama, model: qwen2.5-coder:14b, max_tokens: 8000 }
   supervisor:   { provider: ollama, model: gemma4:e4b,        max_tokens: 4000 }
-update_check: true                # Check for model updates on startup
-update_interval_hours: 168        # Weekly check
 ```
-
-> [!NOTE]
-> On a single-GPU machine, swapping between qwen + gemma4 adds ~3-5s per role switch. The blind-spot coverage is worth it; if you need raw throughput on a known-simple project, see [Minimal](#minimal-16gb-ram-laptop-or-single-model).
 
 ### Minimal (16GB RAM laptop, or single-model)
 

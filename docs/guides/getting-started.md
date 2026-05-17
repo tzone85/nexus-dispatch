@@ -51,17 +51,26 @@ This runs in the background on `http://localhost:11434`. Keep this terminal open
 NXD's recommended setup uses **two models from different families** so the reviewer's blind spots don't match the coder's:
 
 ```bash
-# Coder (junior/intermediate/tech-lead/QA roles) — ~10 GB
+# Coder (junior/intermediate/supervisor roles) — ~6 GB
 ollama pull gemma4:e4b
 
-# Reviewer (senior role) — ~9 GB
-ollama pull qwen2.5-coder:14b
+# Reviewer + Planner (senior/tech_lead/QA roles) — ~19 GB
+ollama pull qwen3-coder
 ```
 
 > [!IMPORTANT]
-> **Why two models?** When the same model writes and reviews code, the reviewer shares the coder's hallucinations and confidence patterns. NXD's config validator warns when `models.senior.model == models.junior.model`. The qwen senior + gemma4 junior split gives genuinely independent verification.
+> **Why two models?** When the same model writes and reviews code, the reviewer shares the coder's hallucinations and confidence patterns. NXD's config validator warns when `models.senior.model == models.junior.model`. The `qwen3-coder` senior + `gemma4` junior split gives genuinely independent verification — different families, different failure modes.
+>
+> `qwen3-coder:30b` is MoE (3.3B active params per token) so inference speed tracks the active size despite 30B total weights. It brings a 262K context window and ~51.6% SWE-bench score to the reviewer/planner roles.
 
-**Smaller hardware?** You can run everything on one model and accept the same-model warning:
+**24GB machine?** Use the smaller reviewer that fits with gemma4:
+
+```bash
+ollama pull qwen2.5-coder:14b   # ~9 GB — reviewer/planner for 24 GB machines
+ollama pull gemma4:e4b           # ~6 GB — coder
+```
+
+**16GB machine?** Run everything on one model and accept the same-model warning:
 
 ```bash
 ollama pull gemma4:e4b   # Use for every role on 16 GB RAM
@@ -220,8 +229,9 @@ workspace:
   state_dir: ~/.nxd-myproject   # one state dir PER project (NEVER share between repos)
 
 models:
-  senior: {provider: ollama, model: qwen2.5-coder:14b, max_tokens: 8000}
-  junior: {provider: ollama, model: gemma4:e4b,        max_tokens: 4000}
+  senior: {provider: ollama, model: qwen3-coder:30b, max_tokens: 8000}   # 32GB+
+  # senior: {provider: ollama, model: qwen2.5-coder:14b, max_tokens: 8000}  # 24GB budget
+  junior: {provider: ollama, model: gemma4:e4b,      max_tokens: 4000}
   # ... other roles
 ```
 
@@ -270,7 +280,7 @@ nxd req "Add user authentication with JWT tokens, login/register endpoints, and 
 
 NXD will:
 1. Emit a `REQ_SUBMITTED` event
-2. Call the Tech Lead model (Gemma 4 26B) to decompose the requirement
+2. Call the Tech Lead model (`qwen3-coder:30b`) to decompose the requirement
 3. Create stories with Fibonacci complexity scores
 4. Build a dependency graph
 5. Print the plan
@@ -279,7 +289,7 @@ Example output:
 
 ```
 Requirement submitted: req-01HZ...
-Planning with Tech Lead (qwen2.5-coder:14b)...
+Planning with Tech Lead (qwen3-coder:30b)...
 
 Stories created:
   [1] story-01 | Add User model with password hashing      | Complexity: 2 | Deps: none
@@ -389,11 +399,11 @@ This produces `docs/demo.gif` showing the full `nxd init` through `nxd dashboard
 If you prefer a different family for the coder/reviewer split, NXD works with any Ollama model. Common alternatives:
 
 ```bash
-# Larger reviewer (better quality, needs more VRAM)
-ollama pull qwen2.5-coder:32b        # ~20 GB, 24 GB+ VRAM
+# Budget reviewer (24GB machines — qwen3-coder:30b needs 32GB+)
+ollama pull qwen2.5-coder:14b        # ~9 GB — still a strong reviewer
 
 # Smaller / faster coder
-ollama pull qwen2.5-coder:7b         # ~4.5 GB, runs on 8 GB GPU
+ollama pull gemma4:e2b               # ~4 GB, very constrained devices
 ollama pull deepseek-coder-v2:latest # ~9 GB, no native function calling
 
 # Single-model setup (accepts the same-model warning)

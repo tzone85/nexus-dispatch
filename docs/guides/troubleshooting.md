@@ -33,9 +33,11 @@ sudo systemctl start ollama
 # Check what models you have
 ollama list
 
-# Pull both default models (recommended split)
-ollama pull qwen2.5-coder:14b   # reviewer / senior
-ollama pull gemma4:e4b          # coder / junior
+# Pull both default models (recommended split, 32GB+)
+ollama pull qwen3-coder         # reviewer / senior / tech_lead (~19GB)
+ollama pull gemma4:e4b          # coder / junior (~6GB)
+# Budget alternative for 24GB machines:
+# ollama pull qwen2.5-coder:14b && ollama pull gemma4:e4b
 ```
 
 **Tip:** Model names in `nxd.yaml` must exactly match Ollama tags. Use `ollama list` to see exact names.
@@ -52,21 +54,22 @@ ollama pull gemma4:e4b          # coder / junior
 **Fix:** Use a different model family for `senior`:
 ```yaml
 models:
-  senior: { provider: ollama, model: qwen2.5-coder:14b, max_tokens: 8000 }
-  junior: { provider: ollama, model: gemma4:e4b,        max_tokens: 4000 }
+  senior: { provider: ollama, model: qwen3-coder:30b, max_tokens: 8000 }   # 32GB+ machines
+  # senior: { provider: ollama, model: qwen2.5-coder:14b, max_tokens: 8000 }  # 24GB budget
+  junior: { provider: ollama, model: gemma4:e4b, max_tokens: 4000 }
 ```
 
 The notice is informational — NXD continues to run. If you intentionally want a single-model setup (e.g. 16GB RAM minimal config), the warning is noise you can ignore; NXD only logs it up to 3 times per command.
 
 ### qwen ↔ gemma4 model swap latency
 
-**Cause:** On a single-GPU machine, Ollama only keeps one model resident. Switching between `qwen2.5-coder:14b` (reviewer) and `gemma4:e4b` (coder) means a ~3-5s VRAM swap per role change.
+**Cause:** On a single-GPU machine, Ollama only keeps one model resident. Switching between `qwen3-coder:30b` (reviewer) and `gemma4:e4b` (coder) means a ~3-5s VRAM swap per role change.
 
 **Symptoms:** Each pipeline transition (plan → code → review → QA) takes a few extra seconds; `ollama ps` flips between the two models.
 
 **Fix (choose one):**
 - **Accept the latency.** Blind-spot coverage is worth a few seconds per role swap.
-- **Pin one model in RAM** if you have enough VRAM (most 24GB+ cards): start Ollama with `OLLAMA_KEEP_ALIVE=24h` and pre-load both: `ollama run qwen2.5-coder:14b ""; ollama run gemma4:e4b ""`.
+- **Pin both models in RAM** (32GB+ VRAM): start Ollama with `OLLAMA_KEEP_ALIVE=24h` and pre-load both: `ollama run qwen3-coder ""; ollama run gemma4:e4b ""`.
 - **Use the single-model config** (see Minimal in [Configuration](configuration.md#minimal-16gb-ram-laptop-or-single-model)) — accepts the same-model warning but eliminates swap.
 
 ### MemPalace bridge errors

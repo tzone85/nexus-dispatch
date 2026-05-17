@@ -10,15 +10,13 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// gemma4Default returns a ModelConfig preset for the Gemma 4 26B model
-// using the google+ollama dual provider with the given token limit.
+// gemma4Default returns a ModelConfig preset for the Gemma 4 e4b model
+// using the local Ollama provider. Fully offline — no API key required.
 func gemma4Default(maxTokens int) ModelConfig {
 	return ModelConfig{
-		Provider:          "google+ollama",
-		Model:             "gemma4:26b",
-		GoogleModel:       "gemma-4-26b-a4b-it",
-		MaxTokens:         maxTokens,
-		FallbackCooldownS: 60,
+		Provider:  "ollama",
+		Model:     "gemma4:e4b",
+		MaxTokens: maxTokens,
 	}
 }
 

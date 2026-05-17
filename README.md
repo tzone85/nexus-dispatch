@@ -26,7 +26,7 @@ Submit a natural-language requirement and NXD decomposes it into stories, assign
 
 - **Event-sourced state management** with append-only event log and SQLite projections
 - **Full agile team hierarchy** — Tech Lead, Senior, Intermediate, Junior, QA, Supervisor
-- **Local LLM inference** via Ollama (Gemma 4, DeepSeek Coder V2, Qwen2.5-Coder)
+- **Local LLM inference** via Ollama (Gemma 4 coder + Qwen3-Coder reviewer)
 - **Pluggable runtimes** — Aider (default), Claude Code, Codex, Gemini CLI
 - **Local git merges** — no GitHub API required (optional GitHub mode available)
 - **Wave-based parallel execution** with topological dependency resolution
@@ -36,10 +36,21 @@ Submit a natural-language requirement and NXD decomposes it into stories, assign
 1. **Go 1.26+** — [install](https://go.dev/dl/)
 2. **Ollama** — [install](https://ollama.com) then pull the **two recommended models**:
    ```bash
-   ollama pull qwen2.5-coder:14b           # ~9GB — reviewer + planner
-   ollama pull gemma4:e4b                  # ~6GB — coder, native function calling
+   ollama pull qwen3-coder                 # ~19GB — reviewer + planner (262K context, SWE-bench 51.6%)
+   ollama pull gemma4:e4b                  # ~6GB  — coder, native function calling
    ```
-   NXD pairs different model families so the reviewer doesn't share the coder's blind spots. See [Model Selection](docs/guides/model-selection.md) for the rationale + the GPU-swap trade-off, and [Gemma 4 Guide](docs/guides/gemma-4-guide.md) for hardware tuning.
+   NXD pairs different model families so the reviewer doesn't share the coder's blind spots. `qwen3-coder:30b` is a MoE model — inference speed tracks its 3.3B active params, not the 30B total. See [Model Selection](docs/guides/model-selection.md) for the rationale + GPU-swap trade-off, and [Gemma 4 Guide](docs/guides/gemma-4-guide.md) for hardware tuning.
+
+   <details>
+   <summary>Budget two-model split (24GB RAM)</summary>
+
+   `qwen3-coder:30b` + `gemma4:e4b` needs ~25GB combined. On 24GB machines use the smaller reviewer:
+   ```bash
+   ollama pull qwen2.5-coder:14b           # ~9GB — reviewer + planner
+   ollama pull gemma4:e4b                  # ~6GB — coder
+   ```
+   Update `nxd.yaml` to set `senior`, `tech_lead`, and `qa` to `model: qwen2.5-coder:14b`.
+   </details>
 
    <details>
    <summary>Single-model fallback (16GB RAM)</summary>
@@ -51,11 +62,11 @@ Submit a natural-language requirement and NXD decomposes it into stories, assign
    </details>
 
    <details>
-   <summary>Heavy setup (~38GB, for 64GB+ RAM machines)</summary>
+   <summary>Heavy setup (~37GB, for 64GB+ RAM machines)</summary>
 
-   For maximum quality, pin both larger models in VRAM:
+   For maximum quality, pin both models in VRAM — upgrade the coder to the larger Gemma:
    ```bash
-   ollama pull qwen2.5-coder:32b           # Reviewer / Tech Lead (~19GB)
+   ollama pull qwen3-coder                 # Reviewer / Tech Lead (~19GB)
    ollama pull gemma4:26b                  # Coder (~18GB)
    export OLLAMA_KEEP_ALIVE=24h            # eliminate model-swap latency
    export OLLAMA_MAX_LOADED_MODELS=2
@@ -76,8 +87,9 @@ Submit a natural-language requirement and NXD decomposes it into stories, assign
 | Setup | RAM | GPU VRAM | Models | Disk Space |
 |-------|-----|----------|--------|------------|
 | Minimal | 16GB | 8GB | `gemma4:e4b` for all roles (single-model warning) | ~6GB |
-| **Recommended** | **24GB** | **16GB** | **`qwen2.5-coder:14b` + `gemma4:e4b` (two-model split)** | **~15GB** |
-| Heavy | 64GB+ | 24GB+ | `qwen2.5-coder:32b` + `gemma4:26b` pinned in VRAM | ~38GB |
+| Budget | 24GB | 16GB | `qwen2.5-coder:14b` + `gemma4:e4b` (two-model split) | ~15GB |
+| **Recommended** | **32GB+** | **24GB+** | **`qwen3-coder:30b` + `gemma4:e4b` (two-model split)** | **~25GB** |
+| Heavy | 64GB+ | 48GB+ | `qwen3-coder:30b` + `gemma4:26b` pinned in VRAM | ~37GB |
 
 All three setups run the complete NXD pipeline. The difference is **bug detection** (the two-model split catches mistakes a single model misses) and output quality. Start with the recommended split if you have the VRAM — single-model is a fallback, not the goal.
 
@@ -244,11 +256,11 @@ Events are appended at every stage. SQLite projections materialize the current s
 
 | Role | Default Model | Responsibility |
 |------|---------------|----------------|
-| Tech Lead | `qwen2.5-coder:14b` | Requirement decomposition, story planning, dependency graphs |
-| Senior | `qwen2.5-coder:14b` | Code review of junior/intermediate work (different family from coder) |
+| Tech Lead | `qwen3-coder:30b` | Requirement decomposition, story planning, dependency graphs |
+| Senior | `qwen3-coder:30b` | Code review of junior/intermediate work (different family from coder) |
 | Intermediate | `gemma4:e4b` | Medium stories (3-5 points), native function calling |
 | Junior | `gemma4:e4b` | Simple stories (1-3 points), native function calling |
-| QA | `qwen2.5-coder:14b` | Lint, build, test execution per story; failure analysis |
+| QA | `qwen3-coder:30b` | Lint, build, test execution per story; failure analysis |
 | Supervisor | `gemma4:e4b` | Drift detection, reprioritization, escalation handling |
 
 ## Project Structure
