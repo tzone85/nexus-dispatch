@@ -143,6 +143,7 @@ rm -f ~/.nxd/nxd.lock ~/.nxd/events.jsonl ~/.nxd/nxd.db
 - **Security**: 7/8 vulnerabilities resolved (command injection, path traversal, input validation); SG-7 (secrets manager) deferred to Phase 2
 - **Anti-hallucination**: criteria-gated completion + rejection budget (max 2 retries) + escalation; reviewer text fallback scans for rejection keywords; same-model review warning
 - **Live-tested**: full end-to-end pipeline validated on `tzone85/project-x` with gemma4 — requirement → PR #25 merged in 3 minutes
+- **Ephemeral DBs (planned 2026-05-21)**: design spec at `docs/superpowers/specs/2026-05-21-ephemeral-dbs-master-design.md`. Docker-only port from VXD (no Ghost — stays offline-first). New `internal/devdb/` package, `.nxd-db/connect.env` worktree injection, `STORY_DB_CREATED/FAILED/DELETED` events, `nxd db` CLI, dashboard panel, 5 PRs (SP1+SP3 combined, SP4, SP5, SP6), Wave 3 live tests with local Docker.
 
 ### Per-Package Coverage (2026-05-11)
 

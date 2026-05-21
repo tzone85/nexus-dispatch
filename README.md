@@ -178,6 +178,30 @@ Run `nxd init` to generate `nxd.yaml` with sensible defaults, then customize:
 | `controller` | Active stuck detection: auto-restart, auto-reprioritize, cooldown |
 | `billing` | Cost estimation rates, currency, per-token LLM cost tracking |
 | `qa` | Declarative success criteria evaluated after agent task completion |
+| `devdb` | Per-story ephemeral Postgres (planned 2026-05-21). Backend (`docker`/`null`), template DB, on-failure retention. Docker-only — NXD stays offline. |
+
+### Ephemeral Databases (planned)
+
+> **Status:** Design spec complete (2026-05-21). See `docs/superpowers/specs/2026-05-21-ephemeral-dbs-master-design.md`.
+
+Each story can get its own throwaway local Postgres, forked from a template, deleted on completion. Inspired by [ghost.build](https://ghost.build) but Docker-backed and fully offline (NXD's design principle).
+
+**Shines for:** per-story migration testing, schema-aware code generation, destructive SQL testing, multi-agent experimentation.
+
+**Skip when:** pure-frontend stories, prod-touching ops, stories that finish in seconds.
+
+**Minimum config:**
+
+```yaml
+devdb:
+  provider: docker          # or null
+  template: my-test-snapshot
+  docker:
+    image: postgres:16
+    host_port_range: "5600-5699"
+```
+
+Agents read `DATABASE_URL` from `.nxd-db/connect.env` (auto-injected into the worktree). Humans use `nxd db list/connect/logs/delete` + dashboard's per-story DB column.
 
 ### Offline vs Cloud Mode
 

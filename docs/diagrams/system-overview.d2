@@ -58,6 +58,13 @@ ollama: Ollama (local)\nqwen + gemma4 {
   style.fill: "#fce8e6"
 }
 
+devdb: Ephemeral DBs (planned)\nDocker only — offline {
+  style.fill: "#dcfce7"
+  lifecycle: Lifecycle\n(Provision/Release)
+  docker: docker.Provider\n(local Postgres)
+  null: null.Provider\n(default)
+}
+
 user -> cli: requirements
 cli -> orch: commands
 orch -> state: append events
@@ -68,3 +75,6 @@ agents -> ollama: LLM calls
 agents -> git: read/write code
 agents -> orch: status + events
 orch -> git: merge to base
+orch -> devdb.lifecycle: provision per story
+devdb -> state.events: STORY_DB_CREATED/DELETED
+devdb.lifecycle -> devdb.docker
