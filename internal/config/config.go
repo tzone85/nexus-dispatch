@@ -227,6 +227,12 @@ type SuccessCriterion struct {
 	Value   string `yaml:"value,omitempty"`
 	Path    string `yaml:"path,omitempty"`
 	Message string `yaml:"message,omitempty"`
+
+	// SP5 additions — DB-touching criteria.
+	Command        string `yaml:"command,omitempty"`         // migration_succeeds: shell command to run
+	SQL            string `yaml:"sql,omitempty"`             // sql_query_returns: query to execute
+	ExpectedRows   *int   `yaml:"expected_rows,omitempty"`   // sql_query_returns: optional exact row count
+	SchemaBaseline string `yaml:"schema_baseline,omitempty"` // schema_changed: path to baseline file
 }
 
 // validCriteriaKinds is the set of allowed QA criteria kinds.
@@ -241,6 +247,10 @@ var validCriteriaKinds = map[string]bool{
 	"test_passes":         true,
 	"coverage_above":      true,
 	"command_succeeds":    true,
+	// SP5 DB criteria
+	"migration_succeeds": true,
+	"schema_changed":     true,
+	"sql_query_returns":  true,
 }
 
 // InvestigationConfig controls how the investigation agent operates.

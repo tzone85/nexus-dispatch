@@ -24,6 +24,12 @@ func Evaluate(ctx context.Context, workDir string, c Criterion) Result {
 		return evalCoverageAbove(ctx, workDir, c)
 	case TypeCommandSucceeds:
 		return evalCommandSucceeds(ctx, workDir, c)
+	case TypeMigrationSucceeds:
+		return evaluateMigrationSucceeds(ctx, workDir, c)
+	case TypeSchemaChanged:
+		return evaluateSchemaChanged(ctx, workDir, c)
+	case TypeSQLQueryReturns:
+		return evaluateSQLQueryReturns(ctx, workDir, c)
 	default:
 		return Result{Criterion: c, Passed: false, Message: fmt.Sprintf("unknown criterion type: %s", c.Type)}
 	}

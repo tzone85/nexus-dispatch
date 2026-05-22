@@ -691,9 +691,13 @@ func ConfigCriteriaToRuntime(cfgCriteria []config.SuccessCriterion) []criteria.C
 			expected = c.Value
 		}
 		result = append(result, criteria.Criterion{
-			Type:     criteria.Type(c.Kind),
-			Target:   target,
-			Expected: expected,
+			Type:           criteria.Type(c.Kind),
+			Target:         target,
+			Expected:       expected,
+			Command:        c.Command,
+			SQL:            c.SQL,
+			ExpectedRows:   c.ExpectedRows,
+			SchemaBaseline: c.SchemaBaseline,
 		})
 	}
 	return result

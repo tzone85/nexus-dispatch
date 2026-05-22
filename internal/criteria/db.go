@@ -1,0 +1,185 @@
+package criteria
+
+import (
+	"bufio"
+	"context"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+)
+
+// readDatabaseURL returns the DATABASE_URL value from .nxd-db/connect.env in workDir,
+// or empty string if the file is missing or the var isn't present.
+func readDatabaseURL(workDir string) string {
+	f, err := os.Open(filepath.Join(workDir, ".nxd-db", "connect.env"))
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := sc.Text()
+		if strings.HasPrefix(line, "DATABASE_URL=") {
+			return strings.TrimPrefix(line, "DATABASE_URL=")
+		}
+	}
+	return ""
+}
+
+// evaluateMigrationSucceeds runs the configured command in workDir with
+// DATABASE_URL set from .nxd-db/connect.env. Passes if exit code is zero.
+func evaluateMigrationSucceeds(ctx context.Context, workDir string, c Criterion) Result {
+	if c.Command == "" {
+		return Result{Criterion: c, Passed: false,
+			Message: "migration_succeeds requires `command` field"}
+	}
+	dsn := readDatabaseURL(workDir)
+	if dsn == "" {
+		return Result{Criterion: c, Passed: false,
+			Message: "no .nxd-db/connect.env in worktree — devdb not provisioned for this story"}
+	}
+	cmd := exec.CommandContext(ctx, "sh", "-c", c.Command)
+	cmd.Dir = workDir
+	cmd.Env = append(os.Environ(), "DATABASE_URL="+dsn)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return Result{Criterion: c, Passed: false,
+			Message: fmt.Sprintf("migration command failed: %v: %s", err, strings.TrimSpace(string(out)))}
+	}
+	return Result{Criterion: c, Passed: true,
+		Actual:  strings.TrimSpace(string(out)),
+		Message: "migration command succeeded"}
+}
+
+// evaluateSchemaChanged dumps the current schema and compares against either
+// the baseline file path (if SchemaBaseline is set) or .nxd-db/baseline-schema.txt
+// in the worktree. Passes if the dump differs from the baseline (non-empty diff).
+func evaluateSchemaChanged(ctx context.Context, workDir string, c Criterion) Result {
+	dsn := readDatabaseURL(workDir)
+	if dsn == "" {
+		return Result{Criterion: c, Passed: false,
+			Message: "no .nxd-db/connect.env in worktree — devdb not provisioned for this story"}
+	}
+	connCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	conn, err := pgx.Connect(connCtx, dsn)
+	if err != nil {
+		return Result{Criterion: c, Passed: false,
+			Message: fmt.Sprintf("schema_changed: pgx connect failed: %v", err)}
+	}
+	defer conn.Close(connCtx)
+
+	current, err := dumpSchemaText(connCtx, conn)
+	if err != nil {
+		return Result{Criterion: c, Passed: false,
+			Message: fmt.Sprintf("schema_changed: dump failed: %v", err)}
+	}
+
+	baselinePath := c.SchemaBaseline
+	if baselinePath == "" {
+		baselinePath = filepath.Join(workDir, ".nxd-db", "baseline-schema.txt")
+	} else if !filepath.IsAbs(baselinePath) {
+		baselinePath = filepath.Join(workDir, baselinePath)
+	}
+	baseline, err := os.ReadFile(baselinePath)
+	if err != nil {
+		return Result{Criterion: c, Passed: false,
+			Message: fmt.Sprintf("schema_changed: cannot read baseline %s: %v", baselinePath, err)}
+	}
+	if string(baseline) == current {
+		return Result{Criterion: c, Passed: false,
+			Message: "schema_changed: no diff between current and baseline schema"}
+	}
+	return Result{Criterion: c, Passed: true,
+		Actual:  "schema differs from baseline (as expected)",
+		Message: "schema_changed: schema differs from baseline"}
+}
+
+// evaluateSQLQueryReturns runs the configured SQL against the story DB.
+// Passes if the query returns at least one row, OR exactly ExpectedRows rows when set.
+func evaluateSQLQueryReturns(ctx context.Context, workDir string, c Criterion) Result {
+	if c.SQL == "" {
+		return Result{Criterion: c, Passed: false,
+			Message: "sql_query_returns requires `sql` field"}
+	}
+	dsn := readDatabaseURL(workDir)
+	if dsn == "" {
+		return Result{Criterion: c, Passed: false,
+			Message: "no .nxd-db/connect.env in worktree — devdb not provisioned for this story"}
+	}
+	connCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	conn, err := pgx.Connect(connCtx, dsn)
+	if err != nil {
+		return Result{Criterion: c, Passed: false,
+			Message: fmt.Sprintf("sql_query_returns: pgx connect failed: %v", err)}
+	}
+	defer conn.Close(connCtx)
+	rows, err := conn.Query(connCtx, c.SQL)
+	if err != nil {
+		return Result{Criterion: c, Passed: false,
+			Message: fmt.Sprintf("sql_query_returns: query failed: %v", err)}
+	}
+	defer rows.Close()
+	count := 0
+	for rows.Next() {
+		count++
+	}
+	if err := rows.Err(); err != nil {
+		return Result{Criterion: c, Passed: false,
+			Message: fmt.Sprintf("sql_query_returns: rows error: %v", err)}
+	}
+	if c.ExpectedRows != nil {
+		if count != *c.ExpectedRows {
+			return Result{Criterion: c, Passed: false,
+				Actual:  fmt.Sprintf("%d rows", count),
+				Message: fmt.Sprintf("sql_query_returns: got %d rows, want %d", count, *c.ExpectedRows)}
+		}
+		return Result{Criterion: c, Passed: true,
+			Actual:  fmt.Sprintf("%d rows", count),
+			Message: fmt.Sprintf("sql_query_returns: matched %d rows", count)}
+	}
+	if count == 0 {
+		return Result{Criterion: c, Passed: false,
+			Message: "sql_query_returns: query returned zero rows"}
+	}
+	return Result{Criterion: c, Passed: true,
+		Actual:  fmt.Sprintf("%d rows", count),
+		Message: fmt.Sprintf("sql_query_returns: returned %d rows", count)}
+}
+
+// dumpSchemaText returns a deterministic text representation of the connected
+// DB's schema. Mirrors DumpSchema in internal/devdb but uses pgx directly to
+// avoid an import cycle.
+func dumpSchemaText(ctx context.Context, conn *pgx.Conn) (string, error) {
+	rows, err := conn.Query(ctx, `
+		SELECT table_schema, table_name, column_name, data_type, is_nullable
+		FROM information_schema.columns
+		WHERE table_schema NOT IN ('pg_catalog','information_schema')
+		ORDER BY table_schema, table_name, ordinal_position
+	`)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	var b strings.Builder
+	curr := ""
+	for rows.Next() {
+		var schema, table, col, dtype, nullable string
+		if err := rows.Scan(&schema, &table, &col, &dtype, &nullable); err != nil {
+			return "", err
+		}
+		key := schema + "." + table
+		if key != curr {
+			b.WriteString("\nTABLE " + key + "\n")
+			curr = key
+		}
+		b.WriteString(fmt.Sprintf("  %s %s (nullable=%s)\n", col, dtype, nullable))
+	}
+	return b.String(), rows.Err()
+}

@@ -54,6 +54,7 @@ func init() {
 	rootCmd.AddCommand(newSpecCmd())
 	rootCmd.AddCommand(newDirectCmd())
 	rootCmd.AddCommand(newImproveCmd())
+	rootCmd.AddCommand(newDBCmd())
 }
 
 func Execute() error {

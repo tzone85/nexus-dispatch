@@ -178,13 +178,13 @@ Run `nxd init` to generate `nxd.yaml` with sensible defaults, then customize:
 | `controller` | Active stuck detection: auto-restart, auto-reprioritize, cooldown |
 | `billing` | Cost estimation rates, currency, per-token LLM cost tracking |
 | `qa` | Declarative success criteria evaluated after agent task completion |
-| `devdb` | Per-story ephemeral Postgres (planned 2026-05-21). Backend (`docker`/`null`), template DB, on-failure retention. Docker-only — NXD stays offline. |
+| `devdb` | Per-story ephemeral Postgres (shipped 2026-05-22). Backend (`docker`/`null`), template DB, on-failure retention. Docker-only — NXD stays offline. |
 
-### Ephemeral Databases (planned)
+### Ephemeral Databases (shipped)
 
-> **Status:** Design spec complete (2026-05-21). See `docs/superpowers/specs/2026-05-21-ephemeral-dbs-master-design.md`.
+> **Status:** Shipped 2026-05-22 (SP1+SP3+SP4+SP5+SP6-A/B/E ported from VXD). See `docs/superpowers/specs/2026-05-21-ephemeral-dbs-master-design.md`.
 
-Each story can get its own throwaway local Postgres, forked from a template, deleted on completion. Inspired by [ghost.build](https://ghost.build) but Docker-backed and fully offline (NXD's design principle).
+Each story gets its own throwaway local Postgres, forked from a template, deleted on completion. Docker-backed and fully offline (NXD's design principle).
 
 **Shines for:** per-story migration testing, schema-aware code generation, destructive SQL testing, multi-agent experimentation.
 
@@ -201,7 +201,28 @@ devdb:
     host_port_range: "5600-5699"
 ```
 
-Agents read `DATABASE_URL` from `.nxd-db/connect.env` (auto-injected into the worktree). Humans use `nxd db list/connect/logs/delete` + dashboard's per-story DB column.
+Agents read `DATABASE_URL` from `.nxd-db/connect.env` (auto-injected into the worktree). Use `nxd db --help` to inspect and manage story databases:
+
+- `nxd db list` — list all provisioned DBs
+- `nxd db connect <name>` — print DSN and psql command
+- `nxd db sql <name> <query>` — run a one-shot SQL query
+- `nxd db schema <name>` — print schema dump
+- `nxd db delete <name> --confirm` — delete permanently
+- `nxd db gc` — orphan recovery (clean up stale containers)
+- `nxd db ping` — verify provider is reachable
+- `nxd db template list/create` — manage template DBs (docker only)
+
+**DB criteria** (in `nxd.yaml` `qa.success_criteria`):
+
+```yaml
+qa:
+  success_criteria:
+    - kind: migration_succeeds
+      command: "goose up"
+    - kind: schema_changed
+    - kind: sql_query_returns
+      sql: "SELECT 1 FROM users LIMIT 1"
+```
 
 ### Offline vs Cloud Mode
 
