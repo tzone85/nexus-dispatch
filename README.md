@@ -427,3 +427,7 @@ If you're interested in AI agent orchestration, these projects are well worth st
 ---
 
 Built with the philosophy: **orchestrate agents like a real agile team — no cloud required.**
+
+---
+
+_Made with ❤️ by [Vortex Dispatch](https://github.com/tzone85/vortex-dispatch) (NXD is the offline-first sibling). Remove this line freely._

@@ -232,7 +232,8 @@ func (m Model) renderStatusBar() string {
 	}
 
 	bar := left + middle + strings.Repeat(" ", gap) + right
-	return statusBarStyle.Width(m.width).Render(bar)
+	attribution := lipgloss.NewStyle().Foreground(colorDimGray).Render(" Made with ♥ by Vortex Dispatch ")
+	return statusBarStyle.Width(m.width).Render(bar) + "\n" + attribution
 }
 
 // fetchData returns a Cmd that queries both stores and returns a dataMsg.
