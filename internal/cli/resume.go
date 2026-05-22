@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -13,6 +14,10 @@ import (
 	"github.com/tzone85/nexus-dispatch/internal/agent"
 	"github.com/tzone85/nexus-dispatch/internal/artifact"
 	"github.com/tzone85/nexus-dispatch/internal/codegraph"
+	"github.com/tzone85/nexus-dispatch/internal/config"
+	"github.com/tzone85/nexus-dispatch/internal/devdb"
+	devdbdocker "github.com/tzone85/nexus-dispatch/internal/devdb/docker"
+	devdbnull "github.com/tzone85/nexus-dispatch/internal/devdb/null"
 	"github.com/tzone85/nexus-dispatch/internal/engine"
 	nxdgit "github.com/tzone85/nexus-dispatch/internal/git"
 	"github.com/tzone85/nexus-dispatch/internal/graph"
@@ -217,6 +222,9 @@ func runResume(cmd *cobra.Command, args []string) error {
 		s.Proj.Project(recoveryEvt)
 	}
 
+	// DevDB orphan recovery: delete DB containers left by crashed pipelines.
+	runDevDBOrphanRecovery(out, s.Config, stories)
+
 	// Initialize Bayesian router for adaptive routing.
 	bayesianRouter := routing.NewBayesianRouter()
 	priorsPath := filepath.Join(expandHome(s.Config.Workspace.StateDir), "bayesian_priors.json")
@@ -305,6 +313,12 @@ func runResume(cmd *cobra.Command, args []string) error {
 	// Initialize periodic controller for stuck agent detection.
 	controller := engine.NewController(s.Config.Controller, nil, s.Events, s.Proj)
 
+	// Wire devdb Lifecycle if configured. Nil when provider is "" or "null".
+	devdbLifecycle := newDevDBLifecycle(s.Config, s.Events)
+	if devdbLifecycle != nil {
+		log.Printf("[startup] devdb enabled: provider=%s", s.Config.DevDB.Provider)
+	}
+
 	// Apply optional executor wiring as functional options. Each helper is
 	// nil-safe inside the option, so passing a nil store / scratchboard /
 	// client just skips wiring without an explicit guard at the call site.
@@ -317,6 +331,7 @@ func runResume(cmd *cobra.Command, args []string) error {
 		// Operator directive injection: native runtime checks for pending
 		// USER_DIRECTIVE events at iteration start. CLI: `nxd direct <id>`.
 		engine.WithExecDirectiveStore(engine.NewDirectiveStore(s.Events)),
+		engine.WithExecDevDBLifecycle(devdbLifecycle),
 	)
 
 	// Create cancellable context for spawn (parented to ctrl-c). The monitor
@@ -340,6 +355,7 @@ func runResume(cmd *cobra.Command, args []string) error {
 			Assignment:   r.Assignment,
 			WorktreePath: r.WorktreePath,
 			RuntimeName:  r.RuntimeName,
+			DB:           r.DB,
 		})
 	}
 
@@ -440,6 +456,7 @@ func runResume(cmd *cobra.Command, args []string) error {
 		// Auto-resume: when a wave completes, dispatch the next ready wave
 		// without waiting for the user to re-run "nxd resume".
 		engine.WithMonAutoResume(dispatcher, executor),
+		engine.WithMonDevDBLifecycle(devdbLifecycle),
 	)
 
 	rc := &engine.RunContext{
@@ -473,6 +490,85 @@ func runResume(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+// newDevDBProvider constructs a Provider from config, or nil for null/empty.
+func newDevDBProvider(cfg config.Config) (devdb.Provider, error) {
+	switch cfg.DevDB.Provider {
+	case "", "null":
+		return devdbnull.New(), nil
+	case "docker":
+		return devdbdocker.NewProvider(devdbdocker.Config{
+			Image:          cfg.DevDB.Docker.Image,
+			ContainerName:  cfg.DevDB.Docker.ContainerName,
+			TemplateVolume: cfg.DevDB.Docker.TemplateVolume,
+			Network:        cfg.DevDB.Docker.Network,
+			HostPortRange:  cfg.DevDB.Docker.HostPortRange,
+			Host:           cfg.DevDB.Docker.Host,
+		}), nil
+	default:
+		return nil, fmt.Errorf("devdb.provider %q is not supported by NXD (use docker or null)", cfg.DevDB.Provider)
+	}
+}
+
+// newDevDBLifecycle builds a Lifecycle from config. Returns nil when devdb is
+// disabled (provider == "" or "null").
+func newDevDBLifecycle(cfg config.Config, events state.EventStore) *devdb.Lifecycle {
+	if cfg.DevDB.Provider == "" || cfg.DevDB.Provider == "null" {
+		return nil
+	}
+	p, err := newDevDBProvider(cfg)
+	if err != nil {
+		log.Printf("[startup] devdb disabled: %v", err)
+		return nil
+	}
+	return devdb.NewLifecycle(p, events, devdb.Config{
+		Provider:     cfg.DevDB.Provider,
+		Template:     cfg.DevDB.Template,
+		KeepDBOnFail: cfg.DevDB.OnFailure.KeepDB,
+		RetainHours:  time.Duration(cfg.DevDB.OnFailure.RetainHours) * time.Hour,
+	})
+}
+
+// runDevDBOrphanRecovery finds and deletes DB containers left behind by
+// previously crashed pipelines. Skipped when devdb is disabled.
+func runDevDBOrphanRecovery(out io.Writer, cfg config.Config, stories []state.Story) {
+	if cfg.DevDB.Provider == "" || cfg.DevDB.Provider == "null" {
+		return
+	}
+	p, err := newDevDBProvider(cfg)
+	if err != nil {
+		fmt.Fprintf(out, "DevDB recovery: skipped (%v)\n", err)
+		return
+	}
+	if err := p.Ping(context.Background()); err != nil {
+		fmt.Fprintf(out, "DevDB recovery: provider unreachable (%v) — skipping\n", err)
+		return
+	}
+	active := make([]string, 0, len(stories))
+	for _, s := range stories {
+		if s.Status == "merged" || s.Status == "archived" {
+			continue
+		}
+		active = append(active, s.ID)
+	}
+	orphans, err := devdb.FindOrphans(context.Background(), p, devdb.PrefixNXD, active)
+	if err != nil {
+		fmt.Fprintf(out, "DevDB recovery: FindOrphans failed: %v\n", err)
+		return
+	}
+	if len(orphans) == 0 {
+		return
+	}
+	retainHours := time.Duration(cfg.DevDB.OnFailure.RetainHours) * time.Hour
+	if retainHours <= 0 {
+		retainHours = 24 * time.Hour
+	}
+	deleted, kept, err := devdb.ReleaseOrphans(context.Background(), p, orphans, retainHours)
+	fmt.Fprintf(out, "DevDB recovery: scanned %d orphans, deleted %d, kept %d\n", len(orphans), len(deleted), len(kept))
+	if err != nil {
+		fmt.Fprintf(out, "DevDB recovery: some deletes failed: %v\n", err)
+	}
 }
 
 // rebuildDAG reconstructs the dependency graph from the story_deps table

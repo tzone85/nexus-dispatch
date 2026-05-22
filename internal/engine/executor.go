@@ -14,6 +14,7 @@ import (
 	"github.com/tzone85/nexus-dispatch/internal/artifact"
 	"github.com/tzone85/nexus-dispatch/internal/config"
 	"github.com/tzone85/nexus-dispatch/internal/criteria"
+	"github.com/tzone85/nexus-dispatch/internal/devdb"
 	nxdgit "github.com/tzone85/nexus-dispatch/internal/git"
 	"github.com/tzone85/nexus-dispatch/internal/llm"
 	"github.com/tzone85/nexus-dispatch/internal/memory"
@@ -29,6 +30,7 @@ type ActiveAgent struct {
 	Assignment   Assignment
 	WorktreePath string
 	RuntimeName  string
+	DB           devdb.DB
 }
 
 // Executor spawns agents for dispatched assignments by creating git worktrees,
@@ -45,12 +47,22 @@ type Executor struct {
 	controller    *Controller
 	directives    *DirectiveStore // optional: feeds operator directives into native runtime iterations
 	projectDir    string          // path to project state dir (for loading RepoProfile)
+	lifecycle     *devdb.Lifecycle
 }
 
 // SetProjectDir sets the project state directory for loading RepoProfile.
 func (e *Executor) SetProjectDir(dir string) {
 	e.projectDir = dir
 }
+
+// SetDevDBLifecycle wires a devdb Lifecycle for per-story DB provisioning.
+func (e *Executor) SetDevDBLifecycle(lc *devdb.Lifecycle) { e.lifecycle = lc }
+
+// HasDevDBLifecycle reports whether a devdb Lifecycle has been configured.
+func (e *Executor) HasDevDBLifecycle() bool { return e.lifecycle != nil }
+
+// GetDevDBLifecycle returns the configured devdb Lifecycle, or nil if not set.
+func (e *Executor) GetDevDBLifecycle() *devdb.Lifecycle { return e.lifecycle }
 
 // NewExecutor creates an Executor wired to the runtime registry, configuration,
 // event store, projection store, and optional MemPalace client. Pass nil for
@@ -98,6 +110,7 @@ type SpawnResult struct {
 	WorktreePath string
 	RuntimeName  string
 	Error        error
+	DB           devdb.DB
 }
 
 // SpawnAll creates worktrees and launches tmux sessions for each assignment.
@@ -160,6 +173,21 @@ func (e *Executor) spawn(ctx context.Context, repoDir string, a Assignment, stor
 	if err := nxdgit.CreateWorktree(repoDir, worktreePath, a.Branch); err != nil {
 		result.Error = fmt.Errorf("create worktree for %s: %w", a.StoryID, err)
 		return result
+	}
+
+	// Provision a per-story ephemeral DB if a Lifecycle is configured.
+	if e.lifecycle != nil {
+		project := filepath.Base(e.config.Workspace.StateDir)
+		if project == "" || project == "." {
+			project = "default"
+		}
+		db, err := e.lifecycle.Provision(ctx, a.StoryID, project, worktreePath)
+		if err != nil {
+			log.Printf("[executor] devdb provision failed for %s: %v", a.StoryID, err)
+			_ = devdb.WriteFallbackNotice(worktreePath, err)
+		} else {
+			result.DB = db
+		}
 	}
 
 	// CLAUDE.md is now written unconditionally in Spawn() on every launch,

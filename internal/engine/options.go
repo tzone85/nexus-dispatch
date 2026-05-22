@@ -3,6 +3,7 @@ package engine
 import (
 	"github.com/tzone85/nexus-dispatch/internal/artifact"
 	"github.com/tzone85/nexus-dispatch/internal/codegraph"
+	"github.com/tzone85/nexus-dispatch/internal/devdb"
 	"github.com/tzone85/nexus-dispatch/internal/llm"
 	"github.com/tzone85/nexus-dispatch/internal/memory"
 	"github.com/tzone85/nexus-dispatch/internal/routing"
@@ -47,6 +48,11 @@ func WithExecDirectiveStore(d *DirectiveStore) ExecutorOption {
 // lookup.
 func WithExecProjectDir(dir string) ExecutorOption {
 	return func(e *Executor) { e.projectDir = dir }
+}
+
+// WithExecDevDBLifecycle wires a devdb Lifecycle for per-story DB provisioning.
+func WithExecDevDBLifecycle(lc *devdb.Lifecycle) ExecutorOption {
+	return func(e *Executor) { e.lifecycle = lc }
 }
 
 // Configure applies the given options. Useful when extending an existing
@@ -112,6 +118,12 @@ func WithMonPlanner(p *Planner) MonitorOption {
 // events but skips side effects with external state (PR creation, push).
 func WithMonDryRun(enabled bool) MonitorOption {
 	return func(m *Monitor) { m.dryRun = enabled }
+}
+
+// WithMonDevDBLifecycle wires a devdb Lifecycle for per-story DB release in
+// the post-execution pipeline.
+func WithMonDevDBLifecycle(lc *devdb.Lifecycle) MonitorOption {
+	return func(m *Monitor) { m.lifecycle = lc }
 }
 
 // Configure applies the given options to an already-constructed Monitor.

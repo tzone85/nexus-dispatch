@@ -16,6 +16,7 @@ import (
 	"github.com/tzone85/nexus-dispatch/internal/artifact"
 	"github.com/tzone85/nexus-dispatch/internal/codegraph"
 	"github.com/tzone85/nexus-dispatch/internal/config"
+	"github.com/tzone85/nexus-dispatch/internal/devdb"
 	nxdgit "github.com/tzone85/nexus-dispatch/internal/git"
 	"github.com/tzone85/nexus-dispatch/internal/graph"
 	"github.com/tzone85/nexus-dispatch/internal/llm"
@@ -65,6 +66,9 @@ type Monitor struct {
 	// bayesian records story outcomes for adaptive routing. When set,
 	// the monitor calls RecordOutcome after QA pass/fail/escalation.
 	bayesian *routing.BayesianRouter
+
+	// lifecycle manages per-story ephemeral DB provisioning and release.
+	lifecycle *devdb.Lifecycle
 
 	// dryRun causes the post-execution pipeline to simulate a successful
 	// agent diff instead of checking the real worktree.
@@ -180,6 +184,12 @@ func (m *Monitor) SetPlanner(p *Planner) {
 func (m *Monitor) SetDryRun(enabled bool) {
 	m.dryRun = enabled
 }
+
+// SetDevDBLifecycle wires a devdb Lifecycle for per-story DB release.
+func (m *Monitor) SetDevDBLifecycle(lc *devdb.Lifecycle) { m.lifecycle = lc }
+
+// HasDevDBLifecycle reports whether a devdb Lifecycle has been configured.
+func (m *Monitor) HasDevDBLifecycle() bool { return m.lifecycle != nil }
 
 // RunContext carries the state needed for auto-resume across waves.
 type RunContext struct {
@@ -350,6 +360,17 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 	defer pipelineCancel()
 	ctx = pipelineCtx
 
+	// DevDB release: default to failed outcome; updated to success on merge,
+	// or paused on pauseRequirement. Fires on every return path.
+	outcomeForRelease := devdb.OutcomeFailed
+	if m.lifecycle != nil && ag.DB.ID != "" {
+		defer func() {
+			if err := m.lifecycle.Release(context.Background(), ag.DB, outcomeForRelease); err != nil {
+				log.Printf("[pipeline] devdb release for %s: %v", storyID, err)
+			}
+		}()
+	}
+
 	log.Printf("[pipeline] starting post-execution for %s", storyID)
 
 	// Auto-commit any uncommitted work left by the agent.
@@ -469,6 +490,7 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 			// the entire requirement to stop the infinite loop.
 			if llm.IsFatalAPIError(err) {
 				log.Printf("[pipeline] FATAL: non-retryable API error -- pausing requirement for %s: %v", storyID, err)
+				outcomeForRelease = devdb.OutcomePaused
 				m.pauseRequirement(storyID, fmt.Sprintf("fatal API error: %v", err))
 				return
 			}
@@ -603,6 +625,7 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 			// auth failure) must pause the requirement immediately.
 			if llm.IsFatalAPIError(err) {
 				log.Printf("[pipeline] FATAL: non-retryable API error during merge for %s: %v", storyID, err)
+				outcomeForRelease = devdb.OutcomePaused
 				m.pauseRequirement(storyID, fmt.Sprintf("fatal API error during merge: %v", err))
 				return
 			}
@@ -611,6 +634,7 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 			return
 		}
 		EmitStageCompleted(m.eventStore, m.projStore, "monitor", storyID, "merge", "success", mergeStart)
+		outcomeForRelease = devdb.OutcomeSuccess
 		log.Printf("[pipeline] %s -> PR #%d (%s) merged=%v",
 			storyID, result.PRNumber, result.PRURL, result.Merged)
 
@@ -1035,6 +1059,7 @@ func (m *Monitor) dispatchNextWave(ctx context.Context, rc *RunContext, repoDir 
 			Assignment:   r.Assignment,
 			WorktreePath: r.WorktreePath,
 			RuntimeName:  r.RuntimeName,
+			DB:           r.DB,
 		})
 	}
 

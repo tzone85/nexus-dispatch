@@ -19,11 +19,13 @@ import (
 
 	"github.com/tzone85/nexus-dispatch/internal/agent"
 	"github.com/tzone85/nexus-dispatch/internal/config"
+	"github.com/tzone85/nexus-dispatch/internal/devdb"
 	"github.com/tzone85/nexus-dispatch/internal/graph"
 	"github.com/tzone85/nexus-dispatch/internal/llm"
 	"github.com/tzone85/nexus-dispatch/internal/memory"
 	"github.com/tzone85/nexus-dispatch/internal/metrics"
 	plugin "github.com/tzone85/nexus-dispatch/internal/plugin"
+	"github.com/tzone85/nexus-dispatch/internal/runtime"
 	"github.com/tzone85/nexus-dispatch/internal/state"
 )
 
@@ -1484,6 +1486,74 @@ func TestWiring_DoctorCommandRegistered(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "doctor") {
 		t.Fatal("doctor command not found in nxd --help output")
+	}
+}
+
+// --- DevDB Wiring Tests ---
+// These tests verify that the devdb Lifecycle plumbing is connected in
+// Executor, Monitor, and ActiveAgent without needing Docker.
+
+// TestWiring_Executor_SetDevDBLifecycle_Stores verifies that SetDevDBLifecycle
+// persists the lifecycle and HasDevDBLifecycle / GetDevDBLifecycle reflect it.
+func TestWiring_Executor_SetDevDBLifecycle_Stores(t *testing.T) {
+	es, ps := newTestStores(t)
+	reg, _ := runtime.NewRegistry(map[string]config.RuntimeConfig{})
+	ex := NewExecutor(reg, config.Config{}, es, ps, nil)
+
+	if ex.HasDevDBLifecycle() {
+		t.Fatal("expected no lifecycle before Set")
+	}
+	if ex.GetDevDBLifecycle() != nil {
+		t.Fatal("expected nil lifecycle before Set")
+	}
+
+	lc := &devdb.Lifecycle{}
+	ex.SetDevDBLifecycle(lc)
+
+	if !ex.HasDevDBLifecycle() {
+		t.Fatal("expected HasDevDBLifecycle=true after Set")
+	}
+	if ex.GetDevDBLifecycle() != lc {
+		t.Fatal("GetDevDBLifecycle returned wrong pointer")
+	}
+}
+
+// TestWiring_Monitor_SetDevDBLifecycle_Stores verifies that SetDevDBLifecycle
+// persists the lifecycle and HasDevDBLifecycle reflects it.
+func TestWiring_Monitor_SetDevDBLifecycle_Stores(t *testing.T) {
+	es, ps := newTestStores(t)
+	mon := NewMonitor(nil, nil, nil, nil, nil, config.Config{}, es, ps)
+
+	if mon.HasDevDBLifecycle() {
+		t.Fatal("expected no lifecycle before Set")
+	}
+
+	lc := &devdb.Lifecycle{}
+	mon.SetDevDBLifecycle(lc)
+
+	if !mon.HasDevDBLifecycle() {
+		t.Fatal("expected HasDevDBLifecycle=true after Set")
+	}
+}
+
+// TestWiring_ActiveAgent_DBField verifies that ActiveAgent carries a DB field
+// of type devdb.DB (compile-time check + zero-value access).
+func TestWiring_ActiveAgent_DBField(t *testing.T) {
+	var a ActiveAgent
+	// Zero-value access must not panic.
+	_ = a.DB
+	if a.DB.ID != "" {
+		t.Fatal("expected zero-value DB.ID to be empty")
+	}
+}
+
+// TestWiring_SpawnResult_DBField verifies that SpawnResult carries a DB field
+// of type devdb.DB.
+func TestWiring_SpawnResult_DBField(t *testing.T) {
+	var r SpawnResult
+	_ = r.DB
+	if r.DB.ID != "" {
+		t.Fatal("expected zero-value SpawnResult.DB.ID to be empty")
 	}
 }
 
