@@ -49,6 +49,7 @@ func init() {
 	rootCmd.AddCommand(newEstimateCmd())
 	rootCmd.AddCommand(newReportCmd())
 	rootCmd.AddCommand(newLogsCmd())
+	rootCmd.AddCommand(newReqLogsCmd())
 	rootCmd.AddCommand(newDiffCmd())
 	rootCmd.AddCommand(newLearnCmd())
 	rootCmd.AddCommand(newSpecCmd())

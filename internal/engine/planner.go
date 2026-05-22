@@ -197,6 +197,16 @@ architecture and conventions when planning stories.`, profileContext)
 		req.ToolChoice = "required"
 	}
 
+	// Emit planning-started heartbeat so the operator sees progress while the
+	// Tech Lead LLM call runs (typically several minutes on local Ollama models).
+	planningStarted := state.NewEvent(state.EventReqPlanningStarted, "tech-lead", "", map[string]any{
+		"req_id": reqID,
+		"model":  p.config.Models.TechLead.Model,
+	})
+	// Best-effort — failure here must not abort planning.
+	_ = p.eventStore.Append(planningStarted)
+	_ = p.projStore.Project(planningStarted)
+
 	// Call Tech Lead
 	resp, err := p.llmClient.Complete(ctx, req)
 	if err != nil {

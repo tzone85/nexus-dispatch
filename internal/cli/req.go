@@ -8,8 +8,10 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/oklog/ulid/v2"
@@ -47,8 +49,33 @@ The requirement text can be provided as:
 	cmd.Flags().Bool("godmode", false, "skip permission prompts on LLM calls (fully autonomous)")
 	cmd.Flags().Bool("review", false, "Pause after planning for manual review")
 	cmd.Flags().Bool("dry-run", false, "Simulate LLM responses for pipeline testing (no API calls)")
+	cmd.Flags().Bool("background", false, "self-daemonize after planning: fork a detached child process and exit; tail logs with 'nxd req-logs <req-id>'")
 	cmd.SilenceUsage = true
 	return cmd
+}
+
+// forkReqDaemon forks a detached child process that runs `nxd resume <reqID>`.
+// The child is placed in its own process group (Setsid) so that macOS
+// app-nap and parent-shell teardown cannot kill it.
+//
+// stdout+stderr of the child are redirected to the caller-supplied log file.
+// This is a pure construction function — it does NOT exec. Tests can call it
+// without side effects by inspecting the returned Cmd.
+func forkReqDaemon(self, reqID string, extraArgs []string) *exec.Cmd {
+	argv := append([]string{"resume", reqID}, extraArgs...)
+	cmd := exec.Command(self, argv...)
+
+	// Detach from the current process group so parent-shell teardown cannot
+	// kill the child (macOS app-nap prevention).
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.Dir = "." // inherit cwd
+	return cmd
+}
+
+// reqLogPath returns the path of the daemon log file for the given state
+// directory and requirement ID.
+func reqLogPath(stateDir, reqID string) string {
+	return filepath.Join(stateDir, "logs", "req-"+reqID+".log")
 }
 
 func runReq(cmd *cobra.Command, args []string) error {
@@ -240,7 +267,70 @@ func runReq(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
+	// --background: self-daemonize by forking a detached child that runs
+	// `nxd resume <reqID>`. The parent prints the PID and log path, then exits 0.
+	// This prevents macOS app-nap and parent-shell teardown from killing the run.
+	background, _ := cmd.Flags().GetBool("background")
+	if background {
+		stateDir := expandHome(s.Config.Workspace.StateDir)
+		logDir := filepath.Join(stateDir, "logs")
+		if err := os.MkdirAll(logDir, 0o755); err != nil {
+			return fmt.Errorf("create log dir: %w", err)
+		}
+		lp := reqLogPath(stateDir, reqID)
+
+		self, err := os.Executable()
+		if err != nil {
+			return fmt.Errorf("resolve self path: %w", err)
+		}
+
+		// Carry forward --godmode, --dry-run, and --config to the child.
+		var childExtra []string
+		if godmode {
+			childExtra = append(childExtra, "--godmode")
+		}
+		if dryRun {
+			childExtra = append(childExtra, "--dry-run")
+		}
+		cfgPath, _ := cmd.Flags().GetString("config")
+		if cfgPath != "" && cfgPath != "nxd.yaml" {
+			childExtra = append(childExtra, "--config", cfgPath)
+		}
+
+		child := forkReqDaemon(self, reqID, childExtra)
+
+		// Open log file and attach to child's stdout+stderr.
+		lf, err := os.OpenFile(lp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+		if err != nil {
+			return fmt.Errorf("open log file: %w", err)
+		}
+		child.Stdout = lf
+		child.Stderr = lf
+
+		devNull, err := os.Open(os.DevNull)
+		if err != nil {
+			lf.Close()
+			return fmt.Errorf("open /dev/null: %w", err)
+		}
+		child.Stdin = devNull
+
+		if err := child.Start(); err != nil {
+			lf.Close()
+			devNull.Close()
+			return fmt.Errorf("fork daemon: %w", err)
+		}
+		// Close our copies of the file handles; child has its own fd via Start().
+		lf.Close()
+		devNull.Close()
+
+		fmt.Fprintf(out, "Requirement %s dispatched (daemon pid %d).\n", reqID, child.Process.Pid)
+		fmt.Fprintf(out, "Tail logs: nxd req-logs %s\n", reqID)
+		fmt.Fprintf(out, "Log file:  %s\n", lp)
+		return nil
+	}
+
 	fmt.Fprintf(out, "Run 'nxd status --req %s' to track progress.\n", reqID)
+	fmt.Fprintf(out, "Run 'nxd resume %s' to dispatch agents.\n", reqID)
 
 	return nil
 }
