@@ -70,6 +70,10 @@ type Monitor struct {
 	// lifecycle manages per-story ephemeral DB provisioning and release.
 	lifecycle *devdb.Lifecycle
 
+	// techLeadFixer dispatches a focused fix story when the post-merge
+	// integration build fails on main.
+	techLeadFixer *TechLeadFixer
+
 	// dryRun causes the post-execution pipeline to simulate a successful
 	// agent diff instead of checking the real worktree.
 	dryRun bool
@@ -379,6 +383,11 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 	// the work before checking the diff.
 	autoCommit(ag.WorktreePath, storyID)
 
+	// Strip compiled binaries from the branch. Agents occasionally commit
+	// compiled binaries (e.g. ./server, ./app) which bloat PRs and can
+	// trigger conflict-resolver "prompt too long" errors on Ollama models.
+	stripBinariesFromBranch(ag.WorktreePath, storyID)
+
 	// VXD Phase 1.1: scrub LLM reasoning preamble from committed source
 	// files. Agents (especially small models) sometimes prepend "Looking at
 	// the code, I'll add..." as the first lines of a file. We strip that
@@ -645,6 +654,23 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 			}
 			if err := nxdgit.DeleteRemoteBranch(repoDir, branch); err != nil {
 				log.Printf("[pipeline] remote branch cleanup for %s: %v", storyID, err)
+			}
+
+			// Post-merge integration build: validate that main still compiles
+			// after squash-merging this story's branch. This catches cross-story
+			// incompatibilities that per-story QA (run in the worktree) cannot
+			// detect — e.g. story A exposes an interface, story B calls a method
+			// that doesn't exist yet on that interface.
+			if m.techLeadFixer != nil {
+				if buildErr := runIntegrationBuild(repoDir); buildErr != nil {
+					log.Printf("[pipeline] POST-MERGE BUILD FAILED for %s on main: %v", storyID, buildErr)
+					integFail := state.NewEvent(state.EventStoryIntegrationFailed, "monitor", storyID, map[string]any{
+						"error": buildErr.Error(),
+					})
+					m.eventStore.Append(integFail)
+					m.projStore.Project(integFail)
+					m.techLeadFixer.DispatchIntegrationFix(ctx, storyID, repoDir, buildErr.Error())
+				}
 			}
 		}
 	}
@@ -1444,6 +1470,73 @@ func simulateDryRunChanges(worktreePath, storyID string) {
 	commitCmd.Dir = worktreePath
 	commitCmd.Run()
 	log.Printf("[dry-run] simulated changes committed for %s", storyID)
+}
+
+// stripBinariesFromBranch removes compiled binary files committed by agents.
+// It uses `git diff --numstat HEAD~1 HEAD` to detect binaries (lines with
+// "-\t-\t<path>" prefix) and removes them from the branch via git rm, then
+// appends them to .gitignore and amends the last commit.
+//
+// This prevents binary blobs from appearing in PRs, bloating the repository,
+// and triggering conflict-resolver "prompt too long" errors on Ollama models.
+func stripBinariesFromBranch(worktreePath, storyID string) {
+	numstatCmd := exec.Command("git", "diff", "--numstat", "HEAD~1", "HEAD")
+	numstatCmd.Dir = worktreePath
+	out, err := numstatCmd.CombinedOutput()
+	if err != nil {
+		// Single-commit history or other git error — skip silently.
+		return
+	}
+
+	var binaries []string
+	for _, line := range strings.Split(string(out), "\n") {
+		// Binary files appear as "-\t-\t<path>" in --numstat output.
+		if !strings.HasPrefix(line, "-\t-\t") {
+			continue
+		}
+		parts := strings.SplitN(line, "\t", 3)
+		if len(parts) == 3 {
+			binaries = append(binaries, strings.TrimSpace(parts[2]))
+		}
+	}
+	if len(binaries) == 0 {
+		return
+	}
+
+	// Remove binaries from the index.
+	for _, b := range binaries {
+		rmCmd := exec.Command("git", "rm", "-f", "--cached", b)
+		rmCmd.Dir = worktreePath
+		if rmOut, rmErr := rmCmd.CombinedOutput(); rmErr != nil {
+			// Try unconditional rm in case the file is not cached.
+			rmCmd2 := exec.Command("git", "rm", "-f", b)
+			rmCmd2.Dir = worktreePath
+			if out2, err2 := rmCmd2.CombinedOutput(); err2 != nil {
+				log.Printf("[pipeline] git rm %s for %s: %v (%s)", b, storyID, err2, strings.TrimSpace(string(out2)))
+				continue
+			}
+		} else {
+			_ = rmOut
+		}
+	}
+
+	// Append to .gitignore so they don't come back.
+	giPath := filepath.Join(worktreePath, ".gitignore")
+	giData, _ := os.ReadFile(giPath)
+	appendix := "\n# auto-detected binaries (stripped by nxd)\n" + strings.Join(binaries, "\n") + "\n"
+	_ = os.WriteFile(giPath, append(giData, []byte(appendix)...), 0o644)
+
+	stageCmd := exec.Command("git", "add", ".gitignore")
+	stageCmd.Dir = worktreePath
+	stageCmd.CombinedOutput()
+
+	amendCmd := exec.Command("git", "commit", "--amend", "--no-edit")
+	amendCmd.Dir = worktreePath
+	if amendOut, amendErr := amendCmd.CombinedOutput(); amendErr != nil {
+		log.Printf("[pipeline] amend after binary strip for %s: %v (%s)", storyID, amendErr, strings.TrimSpace(string(amendOut)))
+	} else {
+		log.Printf("[pipeline] stripped %d binary file(s) from branch for %s: %v", len(binaries), storyID, binaries)
+	}
 }
 
 // autoCommit stages and commits any uncommitted changes in the worktree.

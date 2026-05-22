@@ -268,6 +268,20 @@ func (s *SQLiteStore) Project(evt Event) error {
 	case EventStoryDBDeleted:
 		return s.projectStoryDBDeleted(evt, payload)
 
+	case EventStoryConflictBinary, EventStoryConflictBinaryRemoved, EventStoryConflictEscalated:
+		// Conflict resolution events are informational; they are read from the
+		// event log for diagnostics but require no projection change.
+		return nil
+
+	case EventStoryIntegrationFailed:
+		// Integration build failures are persisted in the event log for diagnostics.
+		// No projection change needed — the story status is already "merged".
+		return nil
+
+	case EventReqPlanningStarted:
+		// Planning heartbeat — informational only, no projection change.
+		return nil
+
 	default:
 		// Unhandled event types are silently ignored to allow forward
 		// compatibility as new event types are added.

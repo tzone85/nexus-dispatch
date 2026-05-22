@@ -105,6 +105,19 @@ const (
 	// single story the StoryID field is set; pipeline-wide stages (plan,
 	// dispatch) emit with StoryID empty.
 	EventStageCompleted EventType = "STAGE_COMPLETED"
+
+	// Conflict-resolution events emitted by the ConflictResolver.
+	EventStoryConflictBinary        EventType = "STORY_CONFLICT_BINARY"         // binary file handled without LLM
+	EventStoryConflictBinaryRemoved EventType = "STORY_CONFLICT_BINARY_REMOVED" // oversized/compiled binary removed from branch
+	EventStoryConflictEscalated     EventType = "STORY_CONFLICT_ESCALATED"      // conflict escalated to Tech Lead
+
+	// EventStoryIntegrationFailed is emitted when the post-merge integration
+	// build fails on main. Payload carries "error" and "fix_hint" (LLM suggestion).
+	EventStoryIntegrationFailed EventType = "STORY_INTEGRATION_FAILED"
+
+	// EventReqPlanningStarted is a heartbeat emitted before the Tech Lead
+	// LLM call so operators can see progress while planning runs.
+	EventReqPlanningStarted EventType = "REQ_PLANNING_STARTED"
 )
 
 // Event represents a single domain event in the append-only event store.

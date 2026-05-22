@@ -114,6 +114,13 @@ func WithMonPlanner(p *Planner) MonitorOption {
 	return func(m *Monitor) { m.planner = p }
 }
 
+// WithMonTechLeadFixer wires the post-merge integration build fixer. When set,
+// the monitor runs a build on main after each story merge and dispatches a
+// fix story via the TechLeadFixer if the build fails.
+func WithMonTechLeadFixer(f *TechLeadFixer) MonitorOption {
+	return func(m *Monitor) { m.techLeadFixer = f }
+}
+
 // WithMonDryRun toggles dry-run mode. In dry-run the monitor emits the same
 // events but skips side effects with external state (PR creation, push).
 func WithMonDryRun(enabled bool) MonitorOption {
