@@ -78,6 +78,23 @@ CREATE TABLE IF NOT EXISTS agent_scores (
     duration_s INTEGER NOT NULL DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS story_databases (
+    story_id          TEXT NOT NULL,
+    db_id             TEXT NOT NULL,
+    db_name           TEXT NOT NULL,
+    provider          TEXT NOT NULL DEFAULT '',
+    status            TEXT NOT NULL,
+    template          TEXT NOT NULL DEFAULT '',
+    conn_string_hash  TEXT NOT NULL DEFAULT '',
+    error             TEXT NOT NULL DEFAULT '',
+    created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    deleted_at        TIMESTAMP,
+    duration_seconds  REAL DEFAULT 0,
+    bytes_used        INTEGER DEFAULT 0,
+    PRIMARY KEY (story_id, db_id)
+);
+CREATE INDEX IF NOT EXISTS idx_story_databases_status ON story_databases(status);
 `
 
 // SQLiteStore implements ProjectionStore using SQLite.
@@ -243,6 +260,13 @@ func (s *SQLiteStore) Project(evt Event) error {
 
 	case EventStoryReset:
 		return s.updateStoryStatus(evt.StoryID, "draft")
+
+	case EventStoryDBCreated:
+		return s.projectStoryDBCreated(evt, payload)
+	case EventStoryDBFailed:
+		return s.projectStoryDBFailed(evt, payload)
+	case EventStoryDBDeleted:
+		return s.projectStoryDBDeleted(evt, payload)
 
 	default:
 		// Unhandled event types are silently ignored to allow forward
@@ -755,6 +779,21 @@ func payloadInt(m map[string]any, key string) int {
 	}
 }
 
+func payloadFloat(m map[string]any, key string) float64 {
+	v, ok := m[key]
+	if !ok {
+		return 0
+	}
+	switch n := v.(type) {
+	case float64:
+		return n
+	case int:
+		return float64(n)
+	default:
+		return 0
+	}
+}
+
 func payloadMap(m map[string]any, key string) map[string]any {
 	v, ok := m[key]
 	if !ok {
@@ -765,4 +804,52 @@ func payloadMap(m map[string]any, key string) map[string]any {
 		return map[string]any{}
 	}
 	return sub
+}
+
+func (s *SQLiteStore) projectStoryDBCreated(evt Event, payload map[string]any) error {
+	_, err := s.db.Exec(
+		`INSERT OR REPLACE INTO story_databases
+		 (story_id, db_id, db_name, provider, status, template, conn_string_hash, created_at)
+		 VALUES (?, ?, ?, ?, 'created', ?, ?, ?)`,
+		evt.StoryID,
+		payloadStr(payload, "db_id"),
+		payloadStr(payload, "db_name"),
+		payloadStr(payload, "provider"),
+		payloadStr(payload, "template"),
+		payloadStr(payload, "conn_string_hash"),
+		evt.Timestamp,
+	)
+	return err
+}
+
+func (s *SQLiteStore) projectStoryDBFailed(evt Event, payload map[string]any) error {
+	_, err := s.db.Exec(
+		`INSERT OR REPLACE INTO story_databases
+		 (story_id, db_id, db_name, provider, status, error, created_at)
+		 VALUES (?, ?, ?, ?, 'failed', ?, ?)`,
+		evt.StoryID,
+		payloadStr(payload, "db_id"),
+		payloadStr(payload, "db_name"),
+		payloadStr(payload, "provider"),
+		payloadStr(payload, "error"),
+		evt.Timestamp,
+	)
+	return err
+}
+
+func (s *SQLiteStore) projectStoryDBDeleted(evt Event, payload map[string]any) error {
+	status := payloadStr(payload, "status")
+	if status == "" {
+		status = "deleted"
+	}
+	dur := payloadFloat(payload, "duration_seconds")
+	bytes := payloadInt(payload, "bytes_used")
+	_, err := s.db.Exec(
+		`UPDATE story_databases
+		 SET status = ?, deleted_at = ?, duration_seconds = ?, bytes_used = ?
+		 WHERE story_id = ? AND db_id = ?`,
+		status, evt.Timestamp, dur, bytes,
+		evt.StoryID, payloadStr(payload, "db_id"),
+	)
+	return err
 }

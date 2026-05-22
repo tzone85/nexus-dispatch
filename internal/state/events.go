@@ -47,6 +47,9 @@ const (
 	EventStorySplit           EventType = "STORY_SPLIT"
 	EventStoryReset           EventType = "STORY_RESET"
 	EventRecoveryCompleted    EventType = "RECOVERY_COMPLETED"
+	EventStoryDBCreated       EventType = "STORY_DB_CREATED"
+	EventStoryDBFailed        EventType = "STORY_DB_FAILED"
+	EventStoryDBDeleted       EventType = "STORY_DB_DELETED"
 
 	// Estimate events.
 	EventReqEstimated         EventType = "REQ_ESTIMATED"

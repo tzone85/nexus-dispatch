@@ -48,6 +48,7 @@ type Config struct {
 	Runtimes      map[string]RuntimeConfig `yaml:"runtimes"`
 	Plugins       PluginConfig             `yaml:"plugins"`
 	Methodology   MethodologyConfig        `yaml:"methodology"`
+	DevDB         DevDBConfig              `yaml:"devdb,omitempty"`
 }
 
 // MethodologyConfig controls the default design / testing approach NXD
@@ -69,6 +70,32 @@ type MethodologyConfig struct {
 	// directive. Set to false to enforce DDD/TDD on every requirement
 	// regardless of what the requirement text says. Default: true.
 	AllowOverride bool `yaml:"allow_override"`
+}
+
+// DevDBConfig configures per-story ephemeral databases.
+// Provider == "" or "null" disables the feature; agents do not get DBs.
+// NXD is offline-first and does not support the "ghost" cloud provider.
+type DevDBConfig struct {
+	Provider  string             `yaml:"provider"`  // "docker" | "null"
+	Template  string             `yaml:"template"`  // source DB name for forks
+	OnFailure DevDBFailurePolicy `yaml:"on_failure"`
+	Docker    DevDBDockerConfig  `yaml:"docker"`
+}
+
+// DevDBFailurePolicy controls behaviour when a story finishes with an error.
+type DevDBFailurePolicy struct {
+	KeepDB      bool `yaml:"keep_db"`
+	RetainHours int  `yaml:"retain_hours"` // default 24
+}
+
+// DevDBDockerConfig configures the Docker (local) provider.
+type DevDBDockerConfig struct {
+	Image          string `yaml:"image"`           // default postgres:16
+	ContainerName  string `yaml:"container_name"`  // default nxd-devdb-pg16
+	TemplateVolume string `yaml:"template_volume"` // default ~/.nxd/devdb-data
+	Network        string `yaml:"network"`         // default nxd-devdb
+	HostPortRange  string `yaml:"host_port_range"` // default 5500-5599
+	Host           string `yaml:"host"`            // default "localhost"; override for Colima/VM setups (e.g. "192.168.64.3")
 }
 
 // PlanningConfig controls how the planner decomposes requirements into stories.
@@ -456,5 +483,25 @@ func (c Config) Validate() error {
 		}
 	}
 
+	if err := validateDevDB(c.DevDB); err != nil {
+		return err
+	}
+
 	return nil
+}
+
+func validateDevDB(c DevDBConfig) error {
+	switch c.Provider {
+	case "", "null":
+		return nil
+	case "ghost":
+		return fmt.Errorf("devdb.provider 'ghost' is not supported by NXD (offline-first); use docker or null")
+	case "docker":
+		if c.Template == "" {
+			return fmt.Errorf("devdb.template required for docker provider")
+		}
+		return nil
+	default:
+		return fmt.Errorf("devdb.provider must be docker|null, got %q", c.Provider)
+	}
 }

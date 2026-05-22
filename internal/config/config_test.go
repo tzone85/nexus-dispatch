@@ -548,6 +548,66 @@ func TestValidation_NativeRuntime_EmptyCommandAllowlist(t *testing.T) {
 	}
 }
 
+// --- DevDB config validation ---
+
+func TestValidate_DevDB_NullByDefault(t *testing.T) {
+	cfg := config.DefaultConfig()
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("default config (devdb null) should validate, got %v", err)
+	}
+}
+
+func TestValidate_DevDB_GhostRejected(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.DevDB = config.DevDBConfig{Provider: "ghost"}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("provider=ghost should fail validation (NXD does not support ghost)")
+	}
+	if !contains(err.Error(), "ghost") {
+		t.Errorf("error message should mention 'ghost', got: %v", err)
+	}
+	if !contains(err.Error(), "offline-first") {
+		t.Errorf("error message should mention 'offline-first', got: %v", err)
+	}
+}
+
+func TestValidate_DevDB_DockerRequiresTemplate(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.DevDB = config.DevDBConfig{Provider: "docker"}
+	if err := cfg.Validate(); err == nil {
+		t.Error("provider=docker without template should fail validation")
+	}
+}
+
+func TestValidate_DevDB_UnknownProvider(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.DevDB = config.DevDBConfig{Provider: "potato", Template: "x"}
+	if err := cfg.Validate(); err == nil {
+		t.Error("unknown provider should fail validation")
+	}
+}
+
+func TestValidate_DevDB_DockerWithTemplate(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.DevDB = config.DevDBConfig{Provider: "docker", Template: "tpl"}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("docker + template should validate, got %v", err)
+	}
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
+		func() bool {
+			for i := 0; i <= len(s)-len(substr); i++ {
+				if s[i:i+len(substr)] == substr {
+					return true
+				}
+			}
+			return false
+		}())
+}
+
 // --- LoadFromFile: invalid YAML content ---
 
 func TestLoadFromFile_InvalidYAML(t *testing.T) {
