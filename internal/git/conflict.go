@@ -2,6 +2,7 @@ package git
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -112,4 +113,48 @@ func abortRebase(worktreePath string) error {
 	cmd.Dir = worktreePath
 	cmd.CombinedOutput()
 	return nil
+}
+
+// IsBinaryConflict returns true if the given file in the worktree is binary,
+// as determined by `git diff --numstat HEAD -- <file>`. Binary files are
+// reported as "-\t-\t<path>" by numstat.
+//
+// On any error (e.g. the file is newly added and not in HEAD) the function
+// returns true as a fail-safe so that callers skip LLM resolution — attempting
+// to feed raw binary content to an LLM causes "prompt too long" errors.
+func IsBinaryConflict(worktreePath string, file string) (bool, error) {
+	cmd := exec.Command("git", "diff", "--numstat", "HEAD", "--", file)
+	cmd.Dir = worktreePath
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		// Fail safe: treat as binary so no LLM call is made.
+		return true, nil
+	}
+	line := strings.TrimSpace(string(out))
+	if line == "" {
+		// numstat returned nothing (file may be newly staged unmerged).
+		// Fall back to content sniffing.
+		return SniffBinary(fmt.Sprintf("%s/%s", worktreePath, file))
+	}
+	return strings.HasPrefix(line, "-\t-\t"), nil
+}
+
+// SniffBinary returns true if the first 8 KB of the file contains a null byte,
+// which is a reliable indicator that the file is binary. It is used as a
+// fallback when `git diff --numstat` returns empty output (e.g. a newly-added
+// unmerged file not yet recorded in HEAD).
+func SniffBinary(path string) (bool, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+	buf := make([]byte, 8192)
+	n, _ := f.Read(buf)
+	for i := 0; i < n; i++ {
+		if buf[i] == 0 {
+			return true, nil
+		}
+	}
+	return false, nil
 }
