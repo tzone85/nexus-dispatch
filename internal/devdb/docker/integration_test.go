@@ -4,6 +4,8 @@ package docker_test
 
 import (
 	"context"
+	"fmt"
+	"net"
 	"os"
 	"testing"
 	"time"
@@ -20,18 +22,33 @@ func newIntegrationProvider(t *testing.T) *docker.Provider {
 	if _, err := os.Stat("/var/run/docker.sock"); err != nil {
 		t.Skipf("docker socket not available: %v", err)
 	}
+
+	host := os.Getenv("NXD_TEST_DEVDB_HOST")
+	if host == "" {
+		host = "localhost"
+	}
+
 	dir := t.TempDir()
 	p := docker.NewProvider(docker.Config{
 		ContainerName:  "nxd-devdb-test-pg16",
 		HostPortRange:  "5599-5599",
 		TemplateVolume: dir,
 		Image:          "postgres:16",
+		Host:           host,
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	if err := p.EnsureContainer(ctx); err != nil {
 		t.Skipf("EnsureContainer failed (skipping integration): %v", err)
 	}
+
+	// Verify host→container reachability via TCP probe
+	conn, dialErr := net.DialTimeout("tcp", fmt.Sprintf("%s:5599", host), 2*time.Second)
+	if dialErr != nil {
+		t.Skipf("devdb host %s:5599 unreachable from test environment (Colima/VM?): %v. Set NXD_TEST_DEVDB_HOST=<vm-ip> to fix.", host, dialErr)
+	}
+	conn.Close()
+
 	return p
 }
 
