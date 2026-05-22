@@ -184,14 +184,14 @@ func TestValidation_ValidMergeModes(t *testing.T) {
 func TestDefaultConfig_IncludesModels(t *testing.T) {
 	cfg := config.DefaultConfig()
 
-	if cfg.Models.TechLead.Provider != "google+ollama" {
-		t.Fatalf("expected tech_lead provider 'google+ollama', got %s", cfg.Models.TechLead.Provider)
+	if cfg.Models.TechLead.Provider != "ollama" {
+		t.Fatalf("expected tech_lead provider 'ollama', got %s", cfg.Models.TechLead.Provider)
 	}
-	if cfg.Models.Junior.Provider != "google+ollama" {
-		t.Fatalf("expected junior provider 'google+ollama', got %s", cfg.Models.Junior.Provider)
+	if cfg.Models.Junior.Provider != "ollama" {
+		t.Fatalf("expected junior provider 'ollama', got %s", cfg.Models.Junior.Provider)
 	}
-	if cfg.Models.TechLead.Model != "gemma4:26b" {
-		t.Fatalf("expected tech_lead model 'gemma4:26b', got %s", cfg.Models.TechLead.Model)
+	if cfg.Models.TechLead.Model != "gemma4:e4b" {
+		t.Fatalf("expected tech_lead model 'gemma4:e4b', got %s", cfg.Models.TechLead.Model)
 	}
 	if cfg.Models.TechLead.MaxTokens != 16000 {
 		t.Fatalf("expected tech_lead max_tokens 16000, got %d", cfg.Models.TechLead.MaxTokens)
@@ -246,8 +246,8 @@ func TestDefaultYAML_RoundTrip(t *testing.T) {
 	if cfg.Workspace.Backend != "sqlite" {
 		t.Fatalf("expected backend 'sqlite', got %s", cfg.Workspace.Backend)
 	}
-	if cfg.Models.TechLead.Provider != "google+ollama" {
-		t.Fatalf("expected tech_lead provider 'google+ollama', got %s", cfg.Models.TechLead.Provider)
+	if cfg.Models.TechLead.Provider != "ollama" {
+		t.Fatalf("expected tech_lead provider 'ollama', got %s", cfg.Models.TechLead.Provider)
 	}
 	if len(cfg.Runtimes) != 4 {
 		t.Fatalf("expected 4 runtimes, got %d", len(cfg.Runtimes))
