@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"os"
@@ -73,6 +74,9 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 
 	// 11. Disk space
 	checks = append(checks, checkDiskSpace(cfg))
+
+	// 12. DevDB provider (only when configured)
+	checks = append(checks, checkDevDB(cfg))
 
 	// Print results
 	okCount, warnCount, failCount := 0, 0, 0
@@ -258,6 +262,26 @@ func resolveStateDir(cfg config.Config) string {
 		return ""
 	}
 	return filepath.Join(home, ".nxd")
+}
+
+// checkDevDB reports the configured devdb provider's reachability.
+// Returns "ok" with a "not configured" message when devdb is disabled
+// (provider unset or "null") — the absence is intentional, not a failure.
+func checkDevDB(cfg config.Config) checkResult {
+	provider := cfg.DevDB.Provider
+	if provider == "" || provider == "null" {
+		return checkResult{"DevDB", "ok", "not configured (devdb.provider is null or unset)"}
+	}
+	p, err := newDevDBProvider(cfg)
+	if err != nil {
+		return checkResult{"DevDB", "fail", fmt.Sprintf("provider %q not supported: %v", provider, err)}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := p.Ping(ctx); err != nil {
+		return checkResult{"DevDB", "fail", fmt.Sprintf("%s provider unreachable: %v", provider, err)}
+	}
+	return checkResult{"DevDB", "ok", fmt.Sprintf("%s provider reachable", provider)}
 }
 
 // fileExistsAt reports whether a file exists at the given path.

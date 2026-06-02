@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `nxd req --background`: self-daemonize after planning (Setsid detach) so requirement runs survive parent shell teardown and macOS app-nap
+- `nxd req-logs <req-id>`: tail the daemon log captured under `~/.nxd/logs/req-<req-id>.log`
+- `nxd db` subtree (list, connect, sql, schema, delete, gc, ping, template list/create) for inspecting devdb-provisioned ephemeral databases
+- Tech-Lead conflict resolver: textual three-way merges now go through the Tech-Lead LLM with binary-conflict short-circuit via `git numstat` + null-byte sniff
+- Post-merge integration build runs after every merge to catch compile-level regressions; release binaries are stripped of debug symbols
+- DevDB criteria types: `migration_succeeds`, `sql_query_returns`, `schema_changed` (gated by `.nxd-db/connect.env` provisioned by the lifecycle hook)
+- Web dashboard: per-story **DB** column + aggregate **Databases** panel (created/failed/deleted counts) sourced from the `story_databases` projection
+- `state.ListStoryDatabases(StoryDBFilter)`: projection-store read API for the per-story devdb status
 - Bayesian adaptive routing (Beta distribution per role/complexity)
 - Criteria-gated completion — agents self-correct before declaring done
 - Criteria rejection budget — escalate instead of infinite thrashing

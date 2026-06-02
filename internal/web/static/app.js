@@ -91,7 +91,7 @@ function renderState(data) {
   renderAgents(data.agents || [], data.agent_traces || []);
   renderPipeline(data.pipeline || {});
   renderDAG(data.dag, data.stories || []);
-  renderStories(data.stories || []);
+  renderStories(data.stories || [], data.story_dbs || {});
   renderEvents(data.events || []);
   renderEscalations(data.escalations || []);
   renderMetrics(data.metrics);
@@ -100,6 +100,25 @@ function renderState(data) {
   renderInvestigations(data.investigations);
   renderRecoveryLog(data.recovery_log);
   renderSuggestions(data.suggestions);
+  renderDBSummary(data.db_summary);
+}
+
+// Render the aggregate Databases panel; hidden when no rows exist.
+function renderDBSummary(sum) {
+  const section = document.getElementById("databases");
+  if (!section) return;
+  if (!sum) {
+    section.style.display = "none";
+    return;
+  }
+  section.style.display = "";
+  const set = (id, text) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = text;
+  };
+  set("db-stat-created", "created: " + (sum.created || 0));
+  set("db-stat-failed", "failed: " + (sum.failed || 0));
+  set("db-stat-deleted", "deleted: " + (sum.deleted || 0));
 }
 
 // seenSuggestionIds tracks which improver suggestions we've already
@@ -396,7 +415,7 @@ function renderPipeline(p) {
   document.getElementById("progress-text").textContent = pct + "% complete";
 }
 
-function renderStories(stories) {
+function renderStories(stories, storyDBs) {
   const sorted = [...stories].sort((a, b) => {
     const va = a[sortField] != null ? a[sortField] : "";
     const vb = b[sortField] != null ? b[sortField] : "";
@@ -409,9 +428,10 @@ function renderStories(stories) {
   const tbody = document.querySelector("#stories-table tbody");
   if (!sorted.length) {
     tbody.innerHTML =
-      '<tr><td colspan="6" class="muted">No stories \u2014 run \'nxd plan\' to create a requirement</td></tr>';
+      '<tr><td colspan="7" class="muted">No stories \u2014 run \'nxd plan\' to create a requirement</td></tr>';
     return;
   }
+  const dbs = storyDBs || {};
   // All values routed through esc().
   tbody.innerHTML = sorted
     .map((s) => {
@@ -422,6 +442,20 @@ function renderStories(stories) {
           : s.status || "",
       );
       const storyId = esc(s.id);
+      const db = dbs[s.id];
+      let dbCell = '<span class="muted">\u2014</span>';
+      if (db && db.status) {
+        const dbClass = "db-status-" + esc(db.status);
+        const errTitle = db.error ? ' title="' + esc(db.error) + '"' : "";
+        dbCell =
+          '<span class="' +
+          dbClass +
+          '"' +
+          errTitle +
+          ">" +
+          esc(db.status) +
+          "</span>";
+      }
       return (
         "<tr>" +
         "<td>" +
@@ -440,6 +474,9 @@ function renderStories(stories) {
         "</td>" +
         "<td>" +
         esc(s.title) +
+        "</td>" +
+        "<td>" +
+        dbCell +
         "</td>" +
         "<td>" +
         '<button class="btn-action" title="Retry"' +
@@ -963,7 +1000,8 @@ document.querySelectorAll("#stories-table th[data-sort]").forEach((th) => {
       sortField = field;
       sortDir = 1;
     }
-    if (currentState) renderStories(currentState.stories || []);
+    if (currentState)
+      renderStories(currentState.stories || [], currentState.story_dbs || {});
   });
 });
 

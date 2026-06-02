@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+
+	"github.com/tzone85/nexus-dispatch/internal/config"
 )
 
 func TestDoctorCmd_Registers(t *testing.T) {
@@ -106,6 +108,49 @@ func TestDoctorCmd_IndividualCheckFunctions(t *testing.T) {
 				t.Error("Message must not be empty")
 			}
 		})
+	}
+}
+
+func TestCheckDevDB_NullProviderIsOK(t *testing.T) {
+	cfg := config.Config{}
+	cfg.DevDB.Provider = "null"
+	r := checkDevDB(cfg)
+	if r.Status != "ok" {
+		t.Errorf("Status = %q, want ok for null provider", r.Status)
+	}
+	if !strings.Contains(r.Message, "not configured") {
+		t.Errorf("Message should mention not-configured: %q", r.Message)
+	}
+}
+
+func TestCheckDevDB_EmptyProviderIsOK(t *testing.T) {
+	cfg := config.Config{}
+	cfg.DevDB.Provider = ""
+	r := checkDevDB(cfg)
+	if r.Status != "ok" {
+		t.Errorf("Status = %q, want ok when devdb absent", r.Status)
+	}
+}
+
+func TestCheckDevDB_UnsupportedProviderFails(t *testing.T) {
+	cfg := config.Config{}
+	cfg.DevDB.Provider = "ghost"
+	r := checkDevDB(cfg)
+	if r.Status != "fail" {
+		t.Errorf("Status = %q, want fail for unsupported provider", r.Status)
+	}
+}
+
+func TestCheckDevDB_DockerUnreachableFails(t *testing.T) {
+	cfg := config.Config{}
+	cfg.DevDB.Provider = "docker"
+	cfg.DevDB.Docker.Host = "unix:///nonexistent/docker.sock"
+	r := checkDevDB(cfg)
+	if r.Status != "fail" {
+		t.Errorf("Status = %q, want fail for unreachable docker daemon", r.Status)
+	}
+	if !strings.Contains(r.Message, "unreachable") {
+		t.Errorf("Message should mention unreachable: %q", r.Message)
 	}
 }
 

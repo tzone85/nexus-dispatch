@@ -274,7 +274,7 @@ func runReq(cmd *cobra.Command, args []string) error {
 	if background {
 		stateDir := expandHome(s.Config.Workspace.StateDir)
 		logDir := filepath.Join(stateDir, "logs")
-		if err := os.MkdirAll(logDir, 0o755); err != nil {
+		if err := os.MkdirAll(logDir, 0o700); err != nil {
 			return fmt.Errorf("create log dir: %w", err)
 		}
 		lp := reqLogPath(stateDir, reqID)
@@ -299,8 +299,12 @@ func runReq(cmd *cobra.Command, args []string) error {
 
 		child := forkReqDaemon(self, reqID, childExtra)
 
-		// Open log file and attach to child's stdout+stderr.
-		lf, err := os.OpenFile(lp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+		// Open log file and attach to child's stdout+stderr. Mode 0600 because
+		// daemon logs capture the full child stdout/stderr, which may include
+		// LLM prompts/responses, model error messages, and stack traces with
+		// stack-local credentials. Owner-only avoids exposing those on multi-
+		// user hosts.
+		lf, err := os.OpenFile(lp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 		if err != nil {
 			return fmt.Errorf("open log file: %w", err)
 		}

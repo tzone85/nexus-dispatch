@@ -545,6 +545,55 @@ func (s *SQLiteStore) ListStoryDeps(reqID string) ([]StoryDep, error) {
 	return deps, rows.Err()
 }
 
+// ListStoryDatabases returns rows from the story_databases projection
+// matching the given filter, ordered by created_at descending so dashboards
+// surface the most recent lifecycle events first.
+func (s *SQLiteStore) ListStoryDatabases(filter StoryDBFilter) ([]StoryDatabase, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	query := `SELECT story_id, db_id, db_name, provider, status, template,
+	                 error, created_at, deleted_at, duration_seconds, bytes_used
+	          FROM story_databases`
+	var conditions []string
+	var args []any
+	if filter.StoryID != "" {
+		conditions = append(conditions, "story_id = ?")
+		args = append(args, filter.StoryID)
+	}
+	if filter.Status != "" {
+		conditions = append(conditions, "status = ?")
+		args = append(args, filter.Status)
+	}
+	if len(conditions) > 0 {
+		query += " WHERE " + strings.Join(conditions, " AND ")
+	}
+	query += " ORDER BY created_at DESC"
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list story_databases: %w", err)
+	}
+	defer rows.Close()
+
+	var out []StoryDatabase
+	for rows.Next() {
+		var r StoryDatabase
+		var deletedAt sql.NullTime
+		if err := rows.Scan(
+			&r.StoryID, &r.DBID, &r.DBName, &r.Provider, &r.Status, &r.Template,
+			&r.Error, &r.CreatedAt, &deletedAt, &r.DurationSeconds, &r.BytesUsed,
+		); err != nil {
+			return nil, fmt.Errorf("scan story_database: %w", err)
+		}
+		if deletedAt.Valid {
+			r.DeletedAt = deletedAt.Time
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // --- private helpers ---
 
 func (s *SQLiteStore) decodePayload(evt Event) map[string]any {

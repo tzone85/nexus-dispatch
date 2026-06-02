@@ -435,3 +435,14 @@ button:hover {
 .badge-critical { background: #cc3333; color: white; }
 .badge-warning  { background: #aa7700; color: white; }
 .badge-info     { background: #285377; color: white; }
+
+/* DevDB per-story column + summary panel */
+.db-status-created { color: #6cb66c; }
+.db-status-failed  { color: #ff6b6b; cursor: help; }
+.db-status-deleted { color: #888; }
+.db-stat {
+  display: inline-block;
+  margin-right: 16px;
+  font-family: monospace;
+  font-size: 13px;
+}

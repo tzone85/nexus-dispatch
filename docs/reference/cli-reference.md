@@ -42,12 +42,20 @@ Submit a requirement for decomposition and execution.
 
 ```bash
 nxd req "<requirement text>"
+nxd req --file requirements.md
+cat spec.md | nxd req --file -
+nxd req --background "<requirement text>"
 ```
 
-**Arguments:**
-| Argument | Required | Description |
-|----------|----------|-------------|
-| `<requirement>` | Yes | Natural language description of what to build |
+**Arguments / flags:**
+| Flag | Description |
+|------|-------------|
+| `<requirement>` | Positional argument (mutually exclusive with `--file`) |
+| `--file, -f <path>` | Read requirement from a file (use `-` for stdin) |
+| `--godmode` | Skip permission prompts on LLM calls (fully autonomous) |
+| `--review` | Pause after planning; require `nxd approve` before execution |
+| `--dry-run` | Simulate LLM responses for pipeline smoke-testing (no API calls) |
+| `--background` | Self-daemonize after planning: fork a detached child (Setsid) running `nxd resume <reqID>`; parent exits 0 |
 
 **What it does:**
 1. Emits `REQ_SUBMITTED` event
@@ -55,11 +63,34 @@ nxd req "<requirement text>"
 3. Builds dependency graph (DAG)
 4. Validates no circular dependencies
 5. Prints the plan summary
+6. With `--background`: forks a detached child running `nxd resume <reqID>`; logs go to `~/.nxd/logs/req-<reqID>.log`. Survives parent shell teardown and macOS app-nap.
 
 **Example:**
 ```bash
 nxd req "Add a REST API for user management with CRUD endpoints and JWT auth"
+nxd req --background --godmode "Refactor auth middleware"
 ```
+
+---
+
+### nxd req-logs
+
+Print the log file captured by `nxd req --background`.
+
+```bash
+nxd req-logs <req-id>
+```
+
+**Arguments:**
+| Argument | Description |
+|----------|-------------|
+| `<req-id>` | The requirement ID printed by `nxd req --background` |
+
+**What it does:**
+1. Reads `~/.nxd/logs/req-<req-id>.log` and writes to stdout
+2. Errors with a helpful message if no log file exists (e.g., req was run without `--background`)
+
+For live following, use `tail -f` on the log file path.
 
 ---
 
@@ -257,3 +288,71 @@ Opens at `http://localhost:<port>`. Updates in real time via WebSocket.
 | Edit | Story | Edits story title or description |
 
 Destructive actions (kill, reassign, edit) show a confirmation dialog before executing. Results are shown as toast notifications. The browser reconnects automatically if the WebSocket drops.
+
+The web dashboard surfaces a per-story **DB** column populated from the `STORY_DB_CREATED` / `STORY_DB_FAILED` / `STORY_DB_DELETED` projection, plus an aggregate **Databases** panel (created/failed/deleted counts). Both are hidden when `devdb.provider` is `null` or unset.
+
+---
+
+### nxd logs
+
+Tail a story's agent trace JSONL (per-story event log written by the executor).
+
+```bash
+nxd logs <story-id> [--follow] [--lines N] [--raw]
+```
+
+**Flags:**
+| Flag | Description |
+|------|-------------|
+| `--follow, -f` | Stream new lines as they arrive |
+| `--lines N` | Limit to the last N lines |
+| `--raw` | Print raw JSONL without pretty-formatting |
+
+---
+
+### nxd diff
+
+Print a worktree diff against the base branch for a story.
+
+```bash
+nxd diff <story-id> [--stat] [--cached]
+```
+
+**Flags:**
+| Flag | Description |
+|------|-------------|
+| `--stat` | Show a diffstat summary instead of full diff |
+| `--cached` | Show only staged changes |
+
+---
+
+### nxd db
+
+Inspect and manage devdb-provisioned ephemeral databases. The active provider is determined by the project's `devdb.provider` config (`docker` or `null`).
+
+```bash
+nxd db list                            # all DBs the provider knows about
+nxd db connect <db-name>               # print psql command + DSN
+nxd db sql <db-name> <query>           # one-shot SQL query
+nxd db schema <db-name>                # agent-friendly schema dump
+nxd db delete <db-name> --confirm      # destructive: drop a DB
+nxd db gc                              # orphan recovery scan
+nxd db ping                            # provider reachability check
+nxd db template list                   # list template DBs (docker only)
+nxd db template create <name> --from <dump.sql>
+```
+
+When `devdb.provider == null` the subcommands return a helpful "devdb is not configured" error so non-devdb projects fail safely. `nxd db delete` always requires `--confirm` because the operation is irreversible.
+
+---
+
+### Tech-Lead conflict resolver + post-merge integration build
+
+When two stories merge against the same files, NXD runs an automated three-way conflict resolution pipeline:
+
+1. **Binary detection** — uses `git diff --numstat` and a null-byte sniff to short-circuit binary conflicts before running text-merge.
+2. **Tech-Lead LLM resolution** — for textual conflicts, the Tech-Lead model receives the two diffs plus the base file and produces a unified resolution.
+3. **Post-merge integration build** — after the merge commit lands, the configured `go build ./...` / equivalent runs against the integrated tree to surface compile-level regressions introduced by the resolution.
+4. **Binary strip** — release binaries are stripped of debug symbols as part of the post-merge step.
+
+No new CLI surface. Configuration lives under `merge:` in `nxd.yaml`.

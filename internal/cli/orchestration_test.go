@@ -21,9 +21,6 @@ const plannerJSON = `[
 	{"id": "s-002", "title": "Add core logic", "description": "Implement business rules", "acceptance_criteria": "Logic works", "complexity": 3, "depends_on": ["s-001"], "owned_files": ["src/core.go"], "wave_hint": "parallel"}
 ]`
 
-// classifyJSON is a valid requirement classification response.
-const classifyJSON = `{"type": "feature", "confidence": 0.95, "reasoning": "New feature request"}`
-
 // withMockLLM sets up a ReplayClient that returns the given responses and
 // restores the original buildLLMClientFunc on cleanup.
 func withMockLLM(t *testing.T, responses ...llm.CompletionResponse) {

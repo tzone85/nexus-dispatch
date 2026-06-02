@@ -248,6 +248,24 @@ In local mode: `{ "pr_number": 0, "pr_url": "local://merged", "merged_sha": "abc
 }
 ```
 
+## DevDB Lifecycle Events
+
+### STORY_DB_CREATED
+**When:** `devdb.Lifecycle` successfully provisions a per-story ephemeral DB and writes `.nxd-db/connect.env` into the worktree.
+**Payload:** `{ "db_id": "...", "db_name": "...", "provider": "docker", "template": "...", "conn_string_hash": "sha256:..." }`
+
+`conn_string_hash` is a SHA-256 hash of the connection string used by metrics — the raw DSN is **never** put on the event bus.
+
+### STORY_DB_FAILED
+**When:** Provisioning fails (provider unreachable, template missing, ports exhausted, etc.)
+**Payload:** `{ "db_id": "...", "db_name": "...", "provider": "docker", "error": "..." }`
+
+### STORY_DB_DELETED
+**When:** Lifecycle hook tears down a per-story DB after merge/abandon. Carries duration/size metrics for cost analysis.
+**Payload:** `{ "db_id": "...", "status": "deleted", "duration_seconds": <float>, "bytes_used": <int> }`
+
+The `status` field may be `kept` instead of `deleted` if `devdb.on_failure.keep_db == true` and the story was abandoned within the retain window.
+
 ## Cleanup Events
 
 ### WORKTREE_PRUNED

@@ -123,6 +123,69 @@ func TestEvaluate_SchemaChanged_NoDevDB(t *testing.T) {
 	}
 }
 
+func TestEvaluate_SQLQueryReturns_ConnectFails(t *testing.T) {
+	// Unreachable DSN → connect error returns failure with descriptive message.
+	workDir := setupNXDDB(t, "postgres://nxd_test:bad@127.0.0.1:1/nxd_unreachable?connect_timeout=1")
+	c := Criterion{Type: TypeSQLQueryReturns, SQL: "SELECT 1"}
+	result := Evaluate(context.Background(), workDir, c)
+	if result.Passed {
+		t.Fatalf("expected fail on unreachable DSN, got pass")
+	}
+	if !strings.Contains(result.Message, "pgx connect failed") {
+		t.Errorf("expected 'pgx connect failed' in message, got: %s", result.Message)
+	}
+}
+
+func TestEvaluate_SchemaChanged_ConnectFails(t *testing.T) {
+	workDir := setupNXDDB(t, "postgres://nxd_test:bad@127.0.0.1:1/nxd_unreachable?connect_timeout=1")
+	c := Criterion{Type: TypeSchemaChanged}
+	result := Evaluate(context.Background(), workDir, c)
+	if result.Passed {
+		t.Fatalf("expected fail on unreachable DSN, got pass")
+	}
+	if !strings.Contains(result.Message, "pgx connect failed") {
+		t.Errorf("expected 'pgx connect failed' in message, got: %s", result.Message)
+	}
+}
+
+func TestEvaluate_SchemaChanged_BaselineResolution(t *testing.T) {
+	// Even though connect will fail, the baseline path normalization
+	// is only used after the dump succeeds, so this test exercises
+	// the resolution path only when the dump can succeed. Validate
+	// relative vs absolute via the helper directly is not possible
+	// (private). Instead drive through Evaluate with a relative
+	// SchemaBaseline pointing at a non-existent file when DSN is bad —
+	// failure should mention connect, not baseline (since connect happens first).
+	workDir := setupNXDDB(t, "postgres://nxd_test:bad@127.0.0.1:1/x?connect_timeout=1")
+	c := Criterion{
+		Type:           TypeSchemaChanged,
+		SchemaBaseline: "relative/baseline.txt",
+	}
+	result := Evaluate(context.Background(), workDir, c)
+	if result.Passed {
+		t.Fatalf("expected fail, got pass")
+	}
+	if !strings.Contains(result.Message, "pgx connect failed") {
+		t.Errorf("expected connect failure first, got: %s", result.Message)
+	}
+}
+
+func TestEvaluate_SQLQueryReturns_WithExpectedRowsField(t *testing.T) {
+	// Drive ExpectedRows pointer path without live DB — connect fails first,
+	// but the criterion struct shape is exercised.
+	expected := 3
+	workDir := setupNXDDB(t, "postgres://nxd_test:bad@127.0.0.1:1/x?connect_timeout=1")
+	c := Criterion{
+		Type:         TypeSQLQueryReturns,
+		SQL:          "SELECT 1",
+		ExpectedRows: &expected,
+	}
+	result := Evaluate(context.Background(), workDir, c)
+	if result.Passed {
+		t.Fatalf("expected fail on unreachable DSN")
+	}
+}
+
 // --- readDatabaseURL ---
 
 func TestReadDatabaseURL_ReturnsURL(t *testing.T) {

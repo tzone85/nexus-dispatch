@@ -57,3 +57,25 @@ type StoryFilter struct {
 	Status string
 	ReqID  string
 }
+
+// StoryDatabase represents one row in the story_databases projection — the
+// per-story devdb lifecycle status surfaced to dashboards and CLIs.
+type StoryDatabase struct {
+	StoryID         string
+	DBID            string
+	DBName          string
+	Provider        string
+	Status          string // created | failed | deleted
+	Template        string
+	Error           string
+	CreatedAt       time.Time
+	DeletedAt       time.Time
+	DurationSeconds float64
+	BytesUsed       int64
+}
+
+// StoryDBFilter specifies criteria for filtering story_databases rows.
+type StoryDBFilter struct {
+	StoryID string
+	Status  string
+}

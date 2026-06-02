@@ -69,26 +69,6 @@ func seedStory(t *testing.T, s *Server, reqID string) string {
 	return id
 }
 
-// seedAgent emits and projects an AGENT_SPAWNED event and returns the agent ID.
-func seedAgent(t *testing.T, s *Server, sessionName string) string {
-	t.Helper()
-	id := "agent-test-001"
-	evt := state.NewEvent(state.EventAgentSpawned, id, "", map[string]any{
-		"id":           id,
-		"type":         "dev",
-		"model":        "claude",
-		"runtime":      "tmux",
-		"session_name": sessionName,
-	})
-	if err := s.eventStore.Append(evt); err != nil {
-		t.Fatalf("seed agent append: %v", err)
-	}
-	if err := s.projStore.Project(evt); err != nil {
-		t.Fatalf("seed agent project: %v", err)
-	}
-	return id
-}
-
 // mustMarshal marshals v to JSON or fails the test.
 func mustMarshal(t *testing.T, v any) json.RawMessage {
 	t.Helper()
@@ -292,7 +272,7 @@ func TestHandleEscalate_CapAtMax(t *testing.T) {
 	storyID := seedStory(t, s, reqID)
 
 	// Escalate four times — should cap at 3.
-	for i := 0; i < 4; i++ {
+	for range 4 {
 		s.HandleCommand("escalate_story", mustMarshal(t, map[string]any{"story_id": storyID}))
 	}
 

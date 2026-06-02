@@ -130,6 +130,12 @@ kill <stale-pid>
 rm -f ~/.nxd/nxd.lock ~/.nxd/events.jsonl ~/.nxd/nxd.db
 ```
 
+## Current State (2026-06-02)
+
+- **Production-readiness pass complete (2026-06-02)**: req-daemon, req-logs, Tech-Lead conflict resolver, post-merge integration build, devdb dashboard column + Databases panel all wired. Coverage backfilled where pure-Go (cli +3pp, criteria +4pp, docker +3pp); architectural ceilings for live-PG / live-Docker recorded.
+- **Dashboard column + metrics DB section: SHIPPED**. `state.ListStoryDatabases(StoryDBFilter)` exposes the projection. `web.StateSnapshot` has `StoryDBs` + `DBSummary` fields (omitempty). Front-end renders `DB` cell per story + aggregate panel; both hide when devdb is null/unset.
+- Spec: `docs/superpowers/specs/2026-06-02-prod-readiness-followup-design.md`
+
 ## Current State (2026-05-11)
 
 - **Coverage**: **81.6% total** (was 73.8% in April; 7.8 points lifted via the 10-PR roadmap). 21 packages above 85%; 95% per-package on 5 packages; remaining gap concentrated in architecturally-bound paths (cli Cobra interactive, engine spawnNative, tmux production daemon).

@@ -26,6 +26,27 @@ type StateSnapshot struct {
 	AgentTraces     []AgentTrace          `json:"agent_traces"`
 	Suggestions     []improver.Suggestion `json:"suggestions"`
 	DAG             *graph.DAGExport      `json:"dag,omitempty"`
+	StoryDBs        map[string]StoryDB    `json:"story_dbs,omitempty"`
+	DBSummary       *DBSummary            `json:"db_summary,omitempty"`
+}
+
+// StoryDB is the dashboard-friendly per-story devdb status.
+type StoryDB struct {
+	StoryID         string  `json:"story_id"`
+	DBName          string  `json:"db_name"`
+	Provider        string  `json:"provider"`
+	Status          string  `json:"status"`
+	Template        string  `json:"template,omitempty"`
+	Error           string  `json:"error,omitempty"`
+	DurationSeconds float64 `json:"duration_seconds,omitempty"`
+	BytesUsed       int64   `json:"bytes_used,omitempty"`
+}
+
+// DBSummary holds aggregate counts for the dashboard's "Databases" panel.
+type DBSummary struct {
+	Created int `json:"created"`
+	Failed  int `json:"failed"`
+	Deleted int `json:"deleted"`
 }
 
 type PipelineCounts struct {
@@ -243,6 +264,42 @@ func (s *Server) BuildSnapshot() (StateSnapshot, error) {
 
 	// Include DAG export if available.
 	snap.DAG = s.dagExport
+
+	// DevDB lifecycle: build a per-story map keyed by story_id of the latest
+	// row, plus an aggregate summary for the dashboard panel.
+	dbRows, _ := s.projStore.ListStoryDatabases(state.StoryDBFilter{})
+	if len(dbRows) > 0 {
+		seen := make(map[string]bool, len(dbRows))
+		dbMap := make(map[string]StoryDB, len(dbRows))
+		summary := DBSummary{}
+		for _, r := range dbRows {
+			switch r.Status {
+			case "created":
+				summary.Created++
+			case "failed":
+				summary.Failed++
+			case "deleted":
+				summary.Deleted++
+			}
+			// Rows come ORDER BY created_at DESC, so the first hit is freshest.
+			if seen[r.StoryID] {
+				continue
+			}
+			seen[r.StoryID] = true
+			dbMap[r.StoryID] = StoryDB{
+				StoryID:         r.StoryID,
+				DBName:          r.DBName,
+				Provider:        r.Provider,
+				Status:          r.Status,
+				Template:        r.Template,
+				Error:           r.Error,
+				DurationSeconds: r.DurationSeconds,
+				BytesUsed:       r.BytesUsed,
+			}
+		}
+		snap.StoryDBs = dbMap
+		snap.DBSummary = &summary
+	}
 
 	return snap, nil
 }
