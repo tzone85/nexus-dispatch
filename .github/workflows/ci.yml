@@ -43,11 +43,37 @@ jobs:
           fi
 
       - name: Per-package coverage floors
-        # Hot packages (state, criteria, llm, etc.) sit well above their floor
+        # Hot packages (state, criteria, llm, etc.) sit above their floor
         # today. Floors catch silent regressions when new feature code lands
         # without matching tests. Architectural ceilings (live infra needed)
         # are documented in CLAUDE.md and excluded from this gate. Floors are
         # set ~5pp below current coverage to leave room for honest noise.
+        env:
+          # Space-separated <pkg>:<floor> pairs. Edit in lockstep with
+          # CLAUDE.md "Per-Package Coverage" when ratcheting floors up.
+          FLOORS: >-
+            internal/agent:85
+            internal/artifact:85
+            internal/config:85
+            internal/criteria:65
+            internal/devdb:70
+            internal/devdb/docker:40
+            internal/devdb/null:95
+            internal/git:80
+            internal/graph:90
+            internal/improver:85
+            internal/llm:85
+            internal/memory:90
+            internal/metrics:85
+            internal/nlog:90
+            internal/plugin:85
+            internal/routing:80
+            internal/runtime:80
+            internal/sanitize:95
+            internal/scratchboard:80
+            internal/state:80
+            internal/update:85
+            internal/web:78
         run: |
           set -e
           # Capture per-package coverage from a fresh `go test -cover` run.
@@ -55,9 +81,9 @@ jobs:
           go test -cover -timeout 240s ./... > /tmp/cover.out 2>&1 || true
 
           FAIL=0
-          # Pairs: <pkg>:<floor>
-          while IFS=: read -r pkg floor; do
-            [ -z "$pkg" ] && continue
+          for pair in $FLOORS; do
+            pkg="${pair%:*}"
+            floor="${pair##*:}"
             # Match the package path exactly (followed by whitespace), so
             # `internal/devdb` doesn't also match `internal/devdb/docker`.
             line=$(grep -E "github.com/tzone85/nexus-dispatch/${pkg}[[:space:]]" /tmp/cover.out | head -n 1 || true)
@@ -77,30 +103,7 @@ jobs:
             else
               echo "OK ${pkg}: ${pct}% (floor ${floor}%)"
             fi
-          done <<'FLOORS'
-internal/agent:85
-internal/artifact:85
-internal/config:85
-internal/criteria:65
-internal/devdb:70
-internal/devdb/docker:40
-internal/devdb/null:95
-internal/git:80
-internal/graph:90
-internal/improver:85
-internal/llm:85
-internal/memory:90
-internal/metrics:85
-internal/nlog:90
-internal/plugin:85
-internal/routing:80
-internal/runtime:80
-internal/sanitize:95
-internal/scratchboard:80
-internal/state:80
-internal/update:85
-internal/web:78
-FLOORS
+          done
           exit $FAIL
 
       - name: Upload coverage
