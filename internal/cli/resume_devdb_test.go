@@ -145,11 +145,13 @@ func TestRunDevDBOrphanRecovery_EmptyProviderSilent(t *testing.T) {
 
 func TestRunDevDBOrphanRecovery_UnreachableProviderMessages(t *testing.T) {
 	// Provider configured but daemon unreachable — should print a "skipping" or
-	// "skipped" message rather than panic.
+	// "skipped" message rather than panic. DOCKER_HOST overrides the daemon
+	// dial target; Docker.Host is the Postgres DSN host and unrelated here.
+	t.Setenv("DOCKER_HOST", "unix:///nonexistent-nxd-test.sock")
+
 	cfg := config.Config{}
 	cfg.DevDB.Provider = "docker"
 	cfg.DevDB.Docker.Image = "postgres:16"
-	cfg.DevDB.Docker.Host = "unix:///nonexistent/docker.sock"
 
 	var buf bytes.Buffer
 	runDevDBOrphanRecovery(&buf, cfg, []state.Story{

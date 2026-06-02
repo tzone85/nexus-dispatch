@@ -142,9 +142,14 @@ func TestCheckDevDB_UnsupportedProviderFails(t *testing.T) {
 }
 
 func TestCheckDevDB_DockerUnreachableFails(t *testing.T) {
+	// Point the docker client at a guaranteed-bogus socket via DOCKER_HOST,
+	// which NewClient honours. The Docker.Host config field is the *Postgres*
+	// DSN host, not the docker daemon URL — they share a name but not a
+	// purpose. t.Setenv restores the env on test exit.
+	t.Setenv("DOCKER_HOST", "unix:///nonexistent-nxd-test.sock")
+
 	cfg := config.Config{}
 	cfg.DevDB.Provider = "docker"
-	cfg.DevDB.Docker.Host = "unix:///nonexistent/docker.sock"
 	r := checkDevDB(cfg)
 	if r.Status != "fail" {
 		t.Errorf("Status = %q, want fail for unreachable docker daemon", r.Status)
