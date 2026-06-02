@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os/exec"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/tzone85/nexus-dispatch/internal/graph"
@@ -35,9 +36,15 @@ type Server struct {
 	mempalace    *memory.MemPalace
 	dagExport    *graph.DAGExport
 	authToken    string    // C1: required as ?token=<hex> on / and /ws
-	bindAddr     string    // C1: actual host:port for tightening Origin checks
 	startedAt    time.Time // for /healthz uptime
 	stateDir     string    // for loading improvements.json + future per-state files
+
+	// bindAddrMu guards bindAddr, written by Start() once the listener is up
+	// and read concurrently by BindAddr() (e.g., test harnesses asserting
+	// the actual port). Without the mutex the -race detector flags it as a
+	// data race even though the field only flips once.
+	bindAddrMu sync.RWMutex
+	bindAddr   string // C1: actual host:port for tightening Origin checks
 }
 
 func NewServer(es state.EventStore, ps *state.SQLiteStore, port int, filter state.ReqFilter, stateDir string, mp *memory.MemPalace) *Server {
@@ -76,8 +83,13 @@ func NewServer(es state.EventStore, ps *state.SQLiteStore, port int, filter stat
 func (s *Server) AuthToken() string { return s.authToken }
 
 // BindAddr returns the actual host:port the server listens on, for use
-// when tightening WebSocket Origin checks.
-func (s *Server) BindAddr() string { return s.bindAddr }
+// when tightening WebSocket Origin checks. Safe to call concurrently with
+// Start(); returns the zero string until Start() has acquired the listener.
+func (s *Server) BindAddr() string {
+	s.bindAddrMu.RLock()
+	defer s.bindAddrMu.RUnlock()
+	return s.bindAddr
+}
 
 // checkAuth verifies the request carries the expected ?token=<hex>. Uses
 // constant-time comparison to avoid token-length / equality timing leaks.
@@ -144,7 +156,9 @@ func (s *Server) Start(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("port %d is already in use. Try: nxd dashboard --web --port %d", s.port, s.port+1)
 	}
+	s.bindAddrMu.Lock()
 	s.bindAddr = addr
+	s.bindAddrMu.Unlock()
 
 	s.httpServer = &http.Server{
 		Handler:           mux,
