@@ -4,7 +4,7 @@
 
 ## Source
 
-VXD on main as of 2026-05-22, commits a8cbef1..9a46d47. Master spec: `vortex-dispatch/docs/superpowers/specs/2026-05-21-ephemeral-dbs-master-design.md`. NXD master spec already in place: `nexus-dispatch/docs/superpowers/specs/2026-05-21-ephemeral-dbs-master-design.md`.
+VXD on main as of 2026-05-22, commits a8cbef1..9a46d47. Master specs lived in each repo's docs/superpowers/specs/2026-05-21-ephemeral-dbs-master-design.md (since removed; see CHANGELOG for the shipped outcome).
 
 ## Differences from VXD
 

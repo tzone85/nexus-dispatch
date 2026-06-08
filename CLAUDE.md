@@ -134,7 +134,6 @@ rm -f ~/.nxd/nxd.lock ~/.nxd/events.jsonl ~/.nxd/nxd.db
 
 - **Production-readiness pass complete (2026-06-02)**: req-daemon, req-logs, Tech-Lead conflict resolver, post-merge integration build, devdb dashboard column + Databases panel all wired. Coverage backfilled where pure-Go (cli +3pp, criteria +4pp, docker +3pp); architectural ceilings for live-PG / live-Docker recorded.
 - **Dashboard column + metrics DB section: SHIPPED**. `state.ListStoryDatabases(StoryDBFilter)` exposes the projection. `web.StateSnapshot` has `StoryDBs` + `DBSummary` fields (omitempty). Front-end renders `DB` cell per story + aggregate panel; both hide when devdb is null/unset.
-- Spec: `docs/superpowers/specs/2026-06-02-prod-readiness-followup-design.md`
 
 ## Current State (2026-05-11)
 
@@ -149,8 +148,7 @@ rm -f ~/.nxd/nxd.lock ~/.nxd/events.jsonl ~/.nxd/nxd.db
 - **Security**: 7/8 vulnerabilities resolved (command injection, path traversal, input validation); SG-7 (secrets manager) deferred to Phase 2
 - **Anti-hallucination**: criteria-gated completion + rejection budget (max 2 retries) + escalation; reviewer text fallback scans for rejection keywords; same-model review warning
 - **Live-tested**: full end-to-end pipeline validated on `tzone85/project-x` with gemma4 — requirement → PR #25 merged in 3 minutes
-- **Ephemeral DBs (shipped 2026-05-22)**: full SP1+SP3+SP4+SP5+SP6-A/B/E ports from VXD. Docker-only (no Ghost). `.nxd-db/` worktree injection, `STORY_DB_CREATED/FAILED/DELETED` events, `nxd db` CLI, Lifecycle wired into Executor + Monitor + resume orphan recovery. Pending: dashboard column, metrics DB section. Spec: `docs/superpowers/specs/2026-05-21-ephemeral-dbs-master-design.md`.
-
+- **Ephemeral DBs (shipped 2026-05-22)**: full SP1+SP3+SP4+SP5+SP6-A/B/E ports from VXD. Docker-only (no Ghost). `.nxd-db/` worktree injection, `STORY_DB_CREATED/FAILED/DELETED` events, `nxd db` CLI, Lifecycle wired into Executor + Monitor + resume orphan recovery. Pending: dashboard column, metrics DB section.
 ### Per-Package Coverage (2026-05-11)
 
 Above 95%: sanitize (100%), memory (99%), graph (96%), nlog (96%)
