@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/oklog/ulid/v2"
@@ -66,8 +65,9 @@ func forkReqDaemon(self, reqID string, extraArgs []string) *exec.Cmd {
 	cmd := exec.Command(self, argv...)
 
 	// Detach from the current process group so parent-shell teardown cannot
-	// kill the child (macOS app-nap prevention).
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	// kill the child. Implementation is platform-specific: Setsid on Unix,
+	// CREATE_NEW_PROCESS_GROUP on Windows. See req_unix.go / req_windows.go.
+	applyDaemonDetach(cmd)
 	cmd.Dir = "." // inherit cwd
 	return cmd
 }

@@ -33,6 +33,55 @@ nxd dashboard                         # watch it work
 
 The first run takes a few minutes while Ollama warms the models. After `nxd req` returns, agents continue in the background — use `nxd dashboard` (TUI) or `nxd dashboard --web` (browser) to follow along.
 
+## Platform Support
+
+| Platform | Build | Read-only commands | Full agent pipeline |
+|----------|-------|--------------------|---------------------|
+| macOS (Apple Silicon, Intel) | native | yes | yes |
+| Linux (x86_64, arm64) | native | yes | yes |
+| Windows 10/11 (native, no WSL) | `GOOS=windows go build` | yes | **no — requires tmux** |
+| Windows + WSL2 (Ubuntu/Debian) | inside WSL | yes | yes |
+
+NXD's agent execution pipeline depends on tmux for session isolation, recovery,
+and live inspection, and tmux has no native Windows port. On native Windows the
+binary still builds and runs — `nxd status`, `nxd dashboard`, `nxd doctor`,
+`nxd config`, `nxd events`, and the report/metrics commands all work — but
+`nxd req` / `nxd resume` will fail the tmux check with a clear pointer to
+WSL2. The recommended Windows install path is WSL2 with Ubuntu, where the
+Linux instructions in Quick start apply unchanged.
+
+### Windows install (read-only CLI on native Windows)
+
+```powershell
+go install github.com/tzone85/nexus-dispatch/cmd/nxd@latest
+# Resulting binary lives at %USERPROFILE%\go\bin\nxd.exe — ensure that
+# directory is on PATH (it is by default if you installed Go via the MSI).
+nxd init
+nxd doctor    # Will warn on the tmux check; everything else should pass.
+```
+
+State on Windows lives under `%USERPROFILE%\.nxd\` by default. The devdb
+provider's Docker fallback dials `tcp://localhost:2375` (enable "Expose daemon
+on tcp://localhost:2375 without TLS" in Docker Desktop) — or set `DOCKER_HOST`
+explicitly. To pick a different host shell for the native runtime's
+`run_command` tool and user metric/migration commands, set `NXD_SHELL=pwsh`
+(or any shell available on PATH); the default is `cmd.exe`.
+
+### Windows install (full pipeline via WSL2)
+
+```powershell
+# In an elevated PowerShell, one time:
+wsl --install -d Ubuntu
+```
+
+```bash
+# Inside the Ubuntu WSL shell:
+sudo apt update && sudo apt install -y tmux git build-essential
+# Install Go 1.26+ (apt's package may lag — see https://go.dev/dl).
+go install github.com/tzone85/nexus-dispatch/cmd/nxd@latest
+nxd init && nxd doctor
+```
+
 ## Core commands
 
 | Command | What it does |

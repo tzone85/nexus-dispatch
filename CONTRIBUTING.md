@@ -4,6 +4,8 @@ Thanks for your interest in contributing to NXD! This guide will help you get st
 
 ## Development Setup
 
+### macOS / Linux
+
 ```bash
 # Clone
 git clone https://github.com/tzone85/nexus-dispatch.git
@@ -21,6 +23,31 @@ make test
 # Run linter
 make lint
 ```
+
+### Windows (native PowerShell)
+
+```powershell
+git clone https://github.com/tzone85/nexus-dispatch.git
+cd nexus-dispatch
+
+# Build to %USERPROFILE%\.local\bin\nxd.exe (matches the Unix layout when
+# WSL2 shares your home dir). Adjust the output path if you prefer
+# %GOPATH%\bin.
+go build -o "$env:USERPROFILE\.local\bin\nxd.exe" ./cmd/nxd
+go test ./...
+```
+
+The `Makefile` is bash-only — use the `go` commands above on native Windows
+shells, or run `make` inside WSL2.
+
+### Cross-compiling a Windows binary from macOS / Linux
+
+```bash
+GOOS=windows GOARCH=amd64 go build -o dist/nxd.exe ./cmd/nxd
+```
+
+The resulting `.exe` is a valid PE32+ binary; copy it onto a Windows host or
+launch it through WSL's `/mnt/c/...` mount.
 
 ### Prerequisites
 

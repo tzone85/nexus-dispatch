@@ -49,6 +49,11 @@ make setup                        # one-shot bootstrap (Go deps + MemPalace + do
 make mempalace-check              # smoke the MemPalace bridge end-to-end
 ```
 
+### Cross-platform / Windows
+- `GOOS=windows GOARCH=amd64 go build -o dist/nxd.exe ./cmd/nxd` cross-compiles a Windows PE32+ binary.
+- Native Windows: all read-only commands work (`status`, `dashboard`, `doctor`, `config`, `events`, `metrics`, `report`, `projects`). Full agent pipeline (`req`/`resume`) needs tmux → run inside WSL2.
+- Platform-specific code lives in `_unix.go` / `_windows.go` build-tagged pairs: `internal/cli/req_*.go` (daemon detach), `internal/engine/lockfile_*.go` (advisory lock + process liveness), `internal/devdb/docker/host_*.go` (docker default host). Shell command exec goes through `internal/shellexec` (`sh -c` on Unix, `cmd.exe /C` on Windows, override with `NXD_SHELL`).
+
 ## Core Infrastructure: MemPalace
 
 MemPalace is the local-first semantic memory layer NXD relies on for
