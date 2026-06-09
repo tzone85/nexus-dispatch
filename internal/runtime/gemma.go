@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -14,6 +13,7 @@ import (
 	"github.com/tzone85/nexus-dispatch/internal/criteria"
 	"github.com/tzone85/nexus-dispatch/internal/llm"
 	"github.com/tzone85/nexus-dispatch/internal/scratchboard"
+	"github.com/tzone85/nexus-dispatch/internal/shellexec"
 )
 
 // GemmaRuntimeConfig holds configuration for the native Gemma coding runtime.
@@ -878,7 +878,7 @@ func (g *GemmaRuntime) execRunCommand(call llm.ToolCall, workDir string) llm.Too
 		return result
 	}
 
-	cmd := exec.Command("sh", "-c", args.Command)
+	cmd := shellexec.Command(args.Command)
 	cmd.Dir = workDir
 
 	output, err := cmd.CombinedOutput()

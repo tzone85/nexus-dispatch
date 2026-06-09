@@ -34,7 +34,9 @@ type Client struct {
 // Dial selection (in priority order):
 //  1. cfg.BaseURL (explicit override; used by tests).
 //  2. DOCKER_HOST env: unix://... dials the unix socket; tcp:// or http(s):// is used directly.
-//  3. Fallback: /var/run/docker.sock.
+//  3. OS-specific fallback (see defaultDockerHost): /var/run/docker.sock on Unix,
+//     tcp://localhost:2375 on Windows (requires Docker Desktop's "Expose daemon on
+//     tcp://localhost:2375 without TLS" option, or a user-set DOCKER_HOST).
 func NewClient(cfg ClientConfig) *Client {
 	if cfg.Timeout == 0 {
 		cfg.Timeout = 30 * time.Second
@@ -43,6 +45,9 @@ func NewClient(cfg ClientConfig) *Client {
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
 		host := os.Getenv("DOCKER_HOST")
+		if host == "" {
+			host = defaultDockerHost()
+		}
 		switch {
 		case strings.HasPrefix(host, "unix://"):
 			sock := strings.TrimPrefix(host, "unix://")
@@ -56,11 +61,7 @@ func NewClient(cfg ClientConfig) *Client {
 		case strings.HasPrefix(host, "http://"), strings.HasPrefix(host, "https://"):
 			baseURL = host
 		default:
-			transport.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
-				d := net.Dialer{}
-				return d.DialContext(ctx, "unix", "/var/run/docker.sock")
-			}
-			baseURL = "http://docker"
+			baseURL = host
 		}
 	}
 	return &Client{

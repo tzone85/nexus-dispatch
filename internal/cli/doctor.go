@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -134,7 +135,13 @@ func checkTmux() checkResult {
 	cmd := exec.Command("tmux", "-V")
 	out, err := cmd.Output()
 	if err != nil {
-		return checkResult{"tmux", "warn", "tmux not found. Required for agent execution. Install: brew install tmux"}
+		msg := "tmux not found. Required for agent execution. Install: brew install tmux"
+		if runtime.GOOS == "windows" {
+			msg = "tmux is not available on native Windows. The agent execution pipeline requires tmux; " +
+				"run NXD inside WSL2 (Ubuntu) where you can `sudo apt install tmux`. Read-only commands " +
+				"(status, dashboard, metrics, report, projects, config) still work on native Windows."
+		}
+		return checkResult{"tmux", "warn", msg}
 	}
 	return checkResult{"tmux", "ok", strings.TrimSpace(string(out))}
 }

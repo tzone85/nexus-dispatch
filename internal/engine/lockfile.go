@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -90,7 +89,7 @@ func (pl *PipelineLock) Release() error {
 
 	var errs []string
 
-	if err := syscall.Flock(int(pl.file.Fd()), syscall.LOCK_UN); err != nil {
+	if err := unlockFile(pl.file); err != nil {
 		errs = append(errs, fmt.Sprintf("unlock: %v", err))
 	}
 	if err := pl.file.Close(); err != nil {
@@ -110,10 +109,12 @@ func (pl *PipelineLock) Release() error {
 
 // --------------- internal helpers ---------------
 
-// tryFlock attempts a non-blocking exclusive flock.
-func tryFlock(f *os.File) error {
-	return syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
-}
+// tryFlock attempts a non-blocking exclusive lock. Implementation lives in
+// lockfile_unix.go / lockfile_windows.go.
+//
+// unlockFile releases the lock taken by tryFlock — also platform-split.
+//
+// isProcessAlive returns whether a PID maps to a live process — also platform-split.
 
 // finaliseLock writes the current process info into the already-flocked
 // file and returns the PipelineLock.
@@ -155,13 +156,4 @@ func readLockInfo(path string) (lockInfo, error) {
 	return info, nil
 }
 
-// isProcessAlive reports whether a process with the given PID exists.
-// It sends signal 0 which performs error checking without delivering
-// a signal.
-func isProcessAlive(pid int) bool {
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	return proc.Signal(syscall.Signal(0)) == nil
-}
+// isProcessAlive is implemented per-OS (see lockfile_unix.go / lockfile_windows.go).
