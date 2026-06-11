@@ -135,11 +135,12 @@ func (c *Controller) tick(ctx context.Context) {
 			story.ID, stuckDuration.Round(time.Second), stuckThreshold)
 
 		// Emit stuck detection event for observability.
-		c.eventStore.Append(state.NewEvent(state.EventControllerStuckDetected, "controller", story.ID, map[string]any{
-			"stuck_duration_s": int(stuckDuration.Seconds()),
-			"threshold_s":      c.config.MaxStuckDurationS,
-			"escalation_tier":  story.EscalationTier,
-		}))
+		emitEventOrLog(c.eventStore, c.projStore,
+			state.NewEvent(state.EventControllerStuckDetected, "controller", story.ID, map[string]any{
+				"stuck_duration_s": int(stuckDuration.Seconds()),
+				"threshold_s":      c.config.MaxStuckDurationS,
+				"escalation_tier":  story.EscalationTier,
+			}))
 
 		action := c.decideAction(story)
 		if action == nil {
@@ -155,10 +156,11 @@ func (c *Controller) tick(ctx context.Context) {
 	}
 
 	// Emit analysis event.
-	c.eventStore.Append(state.NewEvent(state.EventControllerAnalysis, "controller", "", map[string]any{
-		"stories_checked": len(stories),
-		"actions_taken":   actionsThisTick,
-	}))
+	emitEventOrLog(c.eventStore, c.projStore,
+		state.NewEvent(state.EventControllerAnalysis, "controller", "", map[string]any{
+			"stories_checked": len(stories),
+			"actions_taken":   actionsThisTick,
+		}))
 }
 
 func (c *Controller) lastProgressTime(storyID string) time.Time {
@@ -222,10 +224,11 @@ func (c *Controller) executeAction(ctx context.Context, action ControlAction) {
 		c.reprioritizeStory(action.StoryID, action.Reason)
 	}
 
-	c.eventStore.Append(state.NewEvent(state.EventControllerAction, "controller", action.StoryID, map[string]any{
-		"kind":   string(action.Kind),
-		"reason": action.Reason,
-	}))
+	emitEventOrLog(c.eventStore, c.projStore,
+		state.NewEvent(state.EventControllerAction, "controller", action.StoryID, map[string]any{
+			"kind":   string(action.Kind),
+			"reason": action.Reason,
+		}))
 }
 
 func (c *Controller) cancelStory(storyID string) {
@@ -241,18 +244,18 @@ func (c *Controller) cancelStory(storyID string) {
 		log.Printf("[controller] cancelled native runtime for %s", storyID)
 	}
 
-	c.eventStore.Append(state.NewEvent(state.EventAgentTerminated, "controller", storyID, map[string]any{
-		"reason": "controller cancelled stuck agent",
-	}))
+	emitEventOrLog(c.eventStore, c.projStore,
+		state.NewEvent(state.EventAgentTerminated, "controller", storyID, map[string]any{
+			"reason": "controller cancelled stuck agent",
+		}))
 }
 
 func (c *Controller) resetStoryToDraft(storyID, reason string) {
-	evt := state.NewEvent(state.EventStoryRecovery, "controller", storyID, map[string]any{
-		"new_status": "draft",
-		"reason":     reason,
-	})
-	c.eventStore.Append(evt)
-	c.projStore.Project(evt)
+	emitEventOrLog(c.eventStore, c.projStore,
+		state.NewEvent(state.EventStoryRecovery, "controller", storyID, map[string]any{
+			"new_status": "draft",
+			"reason":     reason,
+		}))
 }
 
 // reprioritizeStory cancels the current agent, bumps the story's escalation
@@ -268,14 +271,13 @@ func (c *Controller) reprioritizeStory(storyID, reason string) {
 	}
 
 	nextTier := story.EscalationTier + 1
-	escEvt := state.NewEvent(state.EventStoryEscalated, "controller", storyID, map[string]any{
-		"from_tier": story.EscalationTier,
-		"to_tier":   nextTier,
-		"reason":    reason,
-		"source":    "controller",
-	})
-	c.eventStore.Append(escEvt)
-	c.projStore.Project(escEvt)
+	emitEventOrLog(c.eventStore, c.projStore,
+		state.NewEvent(state.EventStoryEscalated, "controller", storyID, map[string]any{
+			"from_tier": story.EscalationTier,
+			"to_tier":   nextTier,
+			"reason":    reason,
+			"source":    "controller",
+		}))
 
 	// Reset to draft for re-dispatch.
 	c.resetStoryToDraft(storyID, reason)

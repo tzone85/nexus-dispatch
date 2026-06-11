@@ -671,11 +671,10 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 			if m.techLeadFixer != nil {
 				if buildErr := runIntegrationBuild(repoDir); buildErr != nil {
 					log.Printf("[pipeline] POST-MERGE BUILD FAILED for %s on main: %v", storyID, buildErr)
-					integFail := state.NewEvent(state.EventStoryIntegrationFailed, "monitor", storyID, map[string]any{
-						"error": buildErr.Error(),
-					})
-					m.eventStore.Append(integFail)
-					m.projStore.Project(integFail)
+					emitEventOrLog(m.eventStore, m.projStore,
+						state.NewEvent(state.EventStoryIntegrationFailed, "monitor", storyID, map[string]any{
+							"error": buildErr.Error(),
+						}))
 					m.techLeadFixer.DispatchIntegrationFix(ctx, storyID, repoDir, buildErr.Error())
 				}
 			}
@@ -918,23 +917,21 @@ func (m *Monitor) resetStoryToDraft(storyID, fromAgent, reason string) {
 			return
 		}
 		log.Printf("[pipeline] escalating %s from tier %d to tier %d: %s", storyID, currentTier, nextTier, reason)
-		escEvt := state.NewEvent(state.EventStoryEscalated, fromAgent, storyID, map[string]any{
-			"from_tier": currentTier,
-			"to_tier":   nextTier,
-			"reason":    reason,
-		})
-		m.eventStore.Append(escEvt)
-		m.projStore.Project(escEvt)
+		emitEventOrLog(m.eventStore, m.projStore,
+			state.NewEvent(state.EventStoryEscalated, fromAgent, storyID, map[string]any{
+				"from_tier": currentTier,
+				"to_tier":   nextTier,
+				"reason":    reason,
+			}))
 
 		// Record Bayesian outcome: escalation is a failure for the current role.
 		m.recordBayesianEscalation(storyID, currentTier)
 
 		// Also reset to draft so the dispatcher picks it up at the new tier.
-		resetEvt := state.NewEvent(state.EventStoryReviewFailed, fromAgent, storyID, map[string]any{
-			"reason": fmt.Sprintf("escalated to tier %d: %s", nextTier, reason),
-		})
-		m.eventStore.Append(resetEvt)
-		m.projStore.Project(resetEvt)
+		emitEventOrLog(m.eventStore, m.projStore,
+			state.NewEvent(state.EventStoryReviewFailed, fromAgent, storyID, map[string]any{
+				"reason": fmt.Sprintf("escalated to tier %d: %s", nextTier, reason),
+			}))
 		return
 	}
 
@@ -945,11 +942,10 @@ func (m *Monitor) resetStoryToDraft(storyID, fromAgent, reason string) {
 	log.Printf("[pipeline] reset %s to draft (attempt %d/%d at tier %d): %s",
 		storyID, retryCount+1, maxRetries, currentTier, reason)
 
-	evt := state.NewEvent(state.EventStoryReviewFailed, fromAgent, storyID, map[string]any{
-		"reason": reason,
-	})
-	m.eventStore.Append(evt)
-	m.projStore.Project(evt)
+	emitEventOrLog(m.eventStore, m.projStore,
+		state.NewEvent(state.EventStoryReviewFailed, fromAgent, storyID, map[string]any{
+			"reason": reason,
+		}))
 }
 
 // dispatchNextWave determines which stories are now ready (dependencies met)
@@ -983,9 +979,8 @@ func (m *Monitor) dispatchNextWave(ctx context.Context, rc *RunContext, repoDir 
 	if allDone {
 		log.Printf("[auto-resume] all %d stories complete for requirement %s", len(stories), rc.ReqID)
 		// Mark requirement complete.
-		compEvt := state.NewEvent(state.EventReqCompleted, "monitor", "", map[string]any{"id": rc.ReqID})
-		m.eventStore.Append(compEvt)
-		m.projStore.Project(compEvt)
+		emitEventOrLog(m.eventStore, m.projStore,
+			state.NewEvent(state.EventReqCompleted, "monitor", "", map[string]any{"id": rc.ReqID}))
 		return nil
 	}
 
@@ -1058,13 +1053,13 @@ func (m *Monitor) dispatchNextWave(ctx context.Context, rc *RunContext, repoDir 
 		if pendingCount > 0 {
 			log.Printf("[STALL] requirement %s has %d unfinished stories but none are dispatchable — all escalation tiers exhausted or dependencies unmet", rc.ReqID, pendingCount)
 			log.Printf("[STALL] run 'nxd status --req %s' to inspect, then 'nxd resume %s --godmode' to retry", rc.ReqID, rc.ReqID)
-			stallEvt := state.NewEvent("PIPELINE_STALLED", "monitor", "", map[string]any{
-				"req_id":        rc.ReqID,
-				"pending_count": pendingCount,
-				"total_stories": len(stories),
-				"reason":        "no dispatchable stories — escalation tiers exhausted",
-			})
-			m.eventStore.Append(stallEvt)
+			emitEventOrLog(m.eventStore, m.projStore,
+				state.NewEvent("PIPELINE_STALLED", "monitor", "", map[string]any{
+					"req_id":        rc.ReqID,
+					"pending_count": pendingCount,
+					"total_stories": len(stories),
+					"reason":        "no dispatchable stories — escalation tiers exhausted",
+				}))
 		} else {
 			log.Printf("[auto-resume] no stories ready for next wave (dependencies not met)")
 		}
@@ -1160,19 +1155,17 @@ func (m *Monitor) executeRetryAction(storyID string, action ManagerAction, workt
 		resetTier = action.RetryConfig.ResetTier
 	}
 
-	evt := state.NewEvent(state.EventStoryEscalated, "manager", storyID, map[string]any{
-		"from_tier": 2,
-		"to_tier":   resetTier,
-		"reason":    "manager retry: " + action.Diagnosis,
-	})
-	m.eventStore.Append(evt)
-	m.projStore.Project(evt)
+	emitEventOrLog(m.eventStore, m.projStore,
+		state.NewEvent(state.EventStoryEscalated, "manager", storyID, map[string]any{
+			"from_tier": 2,
+			"to_tier":   resetTier,
+			"reason":    "manager retry: " + action.Diagnosis,
+		}))
 
-	resetEvt := state.NewEvent(state.EventStoryReviewFailed, "manager", storyID, map[string]any{
-		"reason": "manager retry with fixes",
-	})
-	m.eventStore.Append(resetEvt)
-	m.projStore.Project(resetEvt)
+	emitEventOrLog(m.eventStore, m.projStore,
+		state.NewEvent(state.EventStoryReviewFailed, "manager", storyID, map[string]any{
+			"reason": "manager retry with fixes",
+		}))
 }
 
 // executeRewriteAction emits a STORY_REWRITTEN event to update the story
@@ -1198,12 +1191,11 @@ func (m *Monitor) executeRewriteAction(storyID string, action ManagerAction) {
 		changes["complexity"] = action.RewriteConfig.Complexity
 	}
 
-	evt := state.NewEvent(state.EventStoryRewritten, "manager", storyID, map[string]any{
-		"changes": changes,
-		"reason":  action.Diagnosis,
-	})
-	m.eventStore.Append(evt)
-	m.projStore.Project(evt)
+	emitEventOrLog(m.eventStore, m.projStore,
+		state.NewEvent(state.EventStoryRewritten, "manager", storyID, map[string]any{
+			"changes": changes,
+			"reason":  action.Diagnosis,
+		}))
 }
 
 // executeSplitAction validates and applies a split, creating child stories
@@ -1299,13 +1291,12 @@ func (m *Monitor) executeSplitAction(ctx context.Context, storyID string, action
 // specified tier.
 func (m *Monitor) escalateToTier(storyID string, tier int, reason string) {
 	currentTier, _ := m.escalation.CurrentTier(storyID)
-	evt := state.NewEvent(state.EventStoryEscalated, "monitor", storyID, map[string]any{
-		"from_tier": currentTier,
-		"to_tier":   tier,
-		"reason":    reason,
-	})
-	m.eventStore.Append(evt)
-	m.projStore.Project(evt)
+	emitEventOrLog(m.eventStore, m.projStore,
+		state.NewEvent(state.EventStoryEscalated, "monitor", storyID, map[string]any{
+			"from_tier": currentTier,
+			"to_tier":   tier,
+			"reason":    reason,
+		}))
 }
 
 // handleTechLeadEscalation handles tier-3 stories by calling the Planner's
@@ -1394,30 +1385,28 @@ func (m *Monitor) handleTechLeadEscalation(ctx context.Context, story PlannedSto
 
 	// Create child stories in the event store (with split_depth).
 	for _, child := range children {
-		childEvt := state.NewEvent(state.EventStoryCreated, "tech_lead", child.ID, map[string]any{
-			"id":                  child.ID,
-			"req_id":              rc.ReqID,
-			"title":               child.Title,
-			"description":         child.Description,
-			"acceptance_criteria": child.AcceptanceCriteria,
-			"complexity":          child.Complexity,
-			"owned_files":         child.OwnedFiles,
-			"split_depth":         storyData.SplitDepth + 1,
-		})
-		m.eventStore.Append(childEvt)
-		m.projStore.Project(childEvt)
+		emitEventOrLog(m.eventStore, m.projStore,
+			state.NewEvent(state.EventStoryCreated, "tech_lead", child.ID, map[string]any{
+				"id":                  child.ID,
+				"req_id":              rc.ReqID,
+				"title":               child.Title,
+				"description":         child.Description,
+				"acceptance_criteria": child.AcceptanceCriteria,
+				"complexity":          child.Complexity,
+				"owned_files":         child.OwnedFiles,
+				"split_depth":         storyData.SplitDepth + 1,
+			}))
 	}
 
 	childIDs := make([]string, len(children))
 	for i, c := range children {
 		childIDs[i] = c.ID
 	}
-	splitEvt := state.NewEvent(state.EventStorySplit, "tech_lead", storyID, map[string]any{
-		"child_story_ids": childIDs,
-		"reason":          "tech lead re-plan",
-	})
-	m.eventStore.Append(splitEvt)
-	m.projStore.Project(splitEvt)
+	emitEventOrLog(m.eventStore, m.projStore,
+		state.NewEvent(state.EventStorySplit, "tech_lead", storyID, map[string]any{
+			"child_story_ids": childIDs,
+			"reason":          "tech lead re-plan",
+		}))
 
 	// Build sequential dependency edges for re-planned stories.
 	var depEdges [][]string
