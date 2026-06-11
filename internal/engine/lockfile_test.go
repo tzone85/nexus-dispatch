@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -49,6 +50,16 @@ func TestAcquireLock_BlocksConcurrent(t *testing.T) {
 	_, err = AcquireLock(dir)
 	if err == nil {
 		t.Fatal("expected error from second AcquireLock, got nil")
+	}
+	// Error must point users at the lock-file location and at the recovery
+	// command, so new contributors don't have to grep CLAUDE.md to learn
+	// that ~/.nxd/nxd.lock is what's blocking them.
+	msg := err.Error()
+	if !strings.Contains(msg, "nxd.lock") {
+		t.Errorf("error should mention the lock file: %q", msg)
+	}
+	if !strings.Contains(msg, "rm ") {
+		t.Errorf("error should suggest a recovery command: %q", msg)
 	}
 }
 

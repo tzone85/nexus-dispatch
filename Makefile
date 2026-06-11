@@ -79,7 +79,7 @@ mempalace-check:
 # cloning. Installs Go deps, MemPalace, and runs doctor to verify
 # everything is reachable.
 setup: tidy install-mempalace
-	@$(MAKE) doctor || true
+	@$(MAKE) doctor
 
 # `make notice` regenerates the NOTICE file from go.mod's transitive
 # dependencies. Requires go-licenses
