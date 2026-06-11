@@ -93,6 +93,14 @@ func runReq(cmd *cobra.Command, args []string) error {
 
 	out := cmd.OutOrStdout()
 
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("determine working directory: %w", err)
+	}
+	if err := PreflightForRun(cwd, s.Config); err != nil {
+		return err
+	}
+
 	// Load plugins.
 	pluginDir := expandHome("~/.nxd/plugins")
 	pm, pluginErr := plugin.LoadPlugins(s.Config.Plugins, pluginDir)
@@ -146,11 +154,7 @@ func runReq(cmd *cobra.Command, args []string) error {
 	recorder := metrics.NewRecorder(filepath.Join(stateDir, "metrics.jsonl"))
 	client = metrics.NewMetricsClient(client, recorder, reqID, "pipeline", "")
 
-	// Determine repo path (current directory)
-	repoPath, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("determine working directory: %w", err)
-	}
+	repoPath := cwd
 
 	// ZeeSpec adoption: if a .spec/ folder exists in the target repo,
 	// prepend its assembled content to the requirement so the planner sees
