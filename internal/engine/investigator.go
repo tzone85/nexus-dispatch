@@ -5,12 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"github.com/tzone85/nexus-dispatch/internal/agent"
 	"github.com/tzone85/nexus-dispatch/internal/llm"
+	"github.com/tzone85/nexus-dispatch/internal/shellexec"
 )
 
 const (
@@ -266,7 +266,12 @@ func (inv *Investigator) handleRunCommand(ctx context.Context, repoPath string, 
 		return fmt.Sprintf("error: command not in allowlist: %s", params.Command)
 	}
 
-	cmd := exec.CommandContext(ctx, "sh", "-c", params.Command)
+	// Investigator commands come from the operator-configured allowlist
+	// (see isCommandAllowed above). Route through shellexec so Windows
+	// pipelines (cmd.exe) and NXD_SHELL overrides work the same as the
+	// gemma runtime's run_command tool — direct `sh -c` would silently
+	// fail on native Windows.
+	cmd := shellexec.CommandContext(ctx, params.Command)
 	cmd.Dir = repoPath
 
 	output, err := cmd.CombinedOutput()
