@@ -462,7 +462,7 @@ func (g *GemmaRuntime) Execute(ctx context.Context, workDir, model, systemPrompt
 				Detail:    describeToolCall(tc.Name, file, command),
 			})
 
-			result := g.executeTool(tc, workDir)
+			result := g.executeTool(ctx, tc, workDir)
 
 			// Fine progress: tool call result.
 			g.emitProgress(ProgressEvent{
@@ -553,8 +553,10 @@ func describeToolResult(tool, file, command string, isError bool) string {
 }
 
 // executeTool dispatches a tool call to the appropriate handler and returns
-// the result.
-func (g *GemmaRuntime) executeTool(call llm.ToolCall, workDir string) llm.ToolCallResult {
+// the result. ctx is propagated to handlers that may run long: run_command
+// uses it for per-command cancellation + timeout. File ops are fast and
+// ignore it.
+func (g *GemmaRuntime) executeTool(ctx context.Context, call llm.ToolCall, workDir string) llm.ToolCallResult {
 	result := llm.ToolCallResult{CallID: call.ID}
 
 	switch call.Name {
@@ -565,7 +567,7 @@ func (g *GemmaRuntime) executeTool(call llm.ToolCall, workDir string) llm.ToolCa
 	case "edit_file":
 		return g.execEditFile(call, workDir)
 	case "run_command":
-		return g.execRunCommand(call, workDir)
+		return g.execRunCommand(ctx, call, workDir)
 	case "task_complete":
 		// Handled in the Execute loop, but return gracefully if called directly.
 		result.Content = "task complete"
@@ -855,8 +857,18 @@ func looksLikeFile(path string) bool {
 	return false
 }
 
-// execRunCommand runs a shell command if it matches the allowlist.
-func (g *GemmaRuntime) execRunCommand(call llm.ToolCall, workDir string) llm.ToolCallResult {
+// runCommandTimeout caps how long a single run_command invocation may run.
+// A small model that produces `go test ./... -run TestSlow` against a
+// runaway test would otherwise stall the entire iteration loop's parent
+// context (5 min) on that single command. 2 minutes is a comfortable
+// upper bound for `go build ./...` / `go test ./...` on a modest repo.
+const runCommandTimeout = 2 * time.Minute
+
+// execRunCommand runs a shell command if it matches the allowlist. The
+// supplied ctx is wrapped in a per-command timeout so SIGKILL fires on
+// hung commands (or when the parent agent context is cancelled by
+// shutdown / controller).
+func (g *GemmaRuntime) execRunCommand(ctx context.Context, call llm.ToolCall, workDir string) llm.ToolCallResult {
 	result := llm.ToolCallResult{CallID: call.ID}
 
 	var args struct {
@@ -901,12 +913,24 @@ func (g *GemmaRuntime) execRunCommand(call llm.ToolCall, workDir string) llm.Too
 		return result
 	}
 
-	cmd := shellexec.Command(args.Command)
+	// Derive a per-command context so a hung child process can't pin the
+	// outer iteration's 5-minute budget. shellexec.CommandContext wires
+	// SIGKILL through Go's os/exec when the context cancels.
+	cmdCtx, cancel := context.WithTimeout(ctx, runCommandTimeout)
+	defer cancel()
+	cmd := shellexec.CommandContext(cmdCtx, args.Command)
 	cmd.Dir = workDir
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		result.IsError = true
+		// Translate context-deadline failures into actionable text so the
+		// model can adjust (e.g. avoid the slow test it just wrote).
+		if cmdCtx.Err() == context.DeadlineExceeded {
+			result.Content = fmt.Sprintf("command timed out after %s — split into smaller commands or fix the slow path. output: %s",
+				runCommandTimeout, string(output))
+			return result
+		}
 		result.Content = fmt.Sprintf("command error: %v\noutput: %s", err, string(output))
 		return result
 	}

@@ -53,7 +53,7 @@ func TestGemmaRuntime_ReadFile(t *testing.T) {
 
 	rt := NewGemmaRuntime(nil, GemmaRuntimeConfig{MaxIterations: 20})
 	call := llm.ToolCall{Name: "read_file", Arguments: json.RawMessage(`{"path": "hello.go"}`)}
-	result := rt.executeTool(call, tmpDir)
+	result := rt.executeTool(context.Background(), call, tmpDir)
 	if result.IsError {
 		t.Fatalf("read_file failed: %s", result.Content)
 	}
@@ -66,7 +66,7 @@ func TestGemmaRuntime_WriteFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	rt := NewGemmaRuntime(nil, GemmaRuntimeConfig{MaxIterations: 20})
 	call := llm.ToolCall{Name: "write_file", Arguments: json.RawMessage(`{"path": "new.go", "content": "package main\n"}`)}
-	result := rt.executeTool(call, tmpDir)
+	result := rt.executeTool(context.Background(), call, tmpDir)
 	if result.IsError {
 		t.Fatalf("write_file failed: %s", result.Content)
 	}
@@ -85,7 +85,7 @@ func TestGemmaRuntime_EditFile(t *testing.T) {
 		Name:      "edit_file",
 		Arguments: json.RawMessage(`{"path": "main.go", "old_text": "func hello() {}", "new_text": "func hello() string { return \"hi\" }"}`),
 	}
-	result := rt.executeTool(call, tmpDir)
+	result := rt.executeTool(context.Background(), call, tmpDir)
 	if result.IsError {
 		t.Fatalf("edit_file failed: %s", result.Content)
 	}
@@ -99,7 +99,7 @@ func TestGemmaRuntime_PathTraversalBlocked(t *testing.T) {
 	tmpDir := t.TempDir()
 	rt := NewGemmaRuntime(nil, GemmaRuntimeConfig{MaxIterations: 20})
 	call := llm.ToolCall{Name: "read_file", Arguments: json.RawMessage(`{"path": "../../../etc/passwd"}`)}
-	result := rt.executeTool(call, tmpDir)
+	result := rt.executeTool(context.Background(), call, tmpDir)
 	if !result.IsError {
 		t.Error("expected path traversal to be blocked")
 	}
@@ -209,13 +209,13 @@ func TestGemmaRuntime_CommandAllowlist(t *testing.T) {
 	})
 
 	allowed := llm.ToolCall{Name: "run_command", Arguments: json.RawMessage(`{"command": "echo hello"}`)}
-	result := rt.executeTool(allowed, tmpDir)
+	result := rt.executeTool(context.Background(), allowed, tmpDir)
 	if result.IsError {
 		t.Errorf("allowed command failed: %s", result.Content)
 	}
 
 	blocked := llm.ToolCall{Name: "run_command", Arguments: json.RawMessage(`{"command": "rm -rf /"}`)}
-	result = rt.executeTool(blocked, tmpDir)
+	result = rt.executeTool(context.Background(), blocked, tmpDir)
 	if !result.IsError {
 		t.Error("expected blocked command to be rejected")
 	}
@@ -521,7 +521,7 @@ func TestExecEditFile_Traversal(t *testing.T) {
 
 func TestExecRunCommand_InvalidJSON(t *testing.T) {
 	rt := newTestRuntime(t)
-	result := rt.execRunCommand(llm.ToolCall{ID: "c1", Arguments: json.RawMessage(`not valid json`)}, t.TempDir())
+	result := rt.execRunCommand(context.Background(), llm.ToolCall{ID: "c1", Arguments: json.RawMessage(`not valid json`)}, t.TempDir())
 	if !result.IsError {
 		t.Error("expected error for invalid JSON args")
 	}
