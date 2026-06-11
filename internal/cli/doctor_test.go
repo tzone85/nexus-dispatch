@@ -2,11 +2,14 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/tzone85/nexus-dispatch/internal/config"
 )
+
+var errListFailed = errors.New("ollama list failed")
 
 func TestDoctorCmd_Registers(t *testing.T) {
 	cmd := newDoctorCmd()
@@ -156,6 +159,69 @@ func TestCheckDevDB_DockerUnreachableFails(t *testing.T) {
 	}
 	if !strings.Contains(r.Message, "unreachable") {
 		t.Errorf("Message should mention unreachable: %q", r.Message)
+	}
+}
+
+func TestParseGemmaModelStatus(t *testing.T) {
+	tests := []struct {
+		name        string
+		output      string
+		wantStatus  string
+		wantMsgSubs []string
+	}{
+		{
+			name:        "e4b present (canonical)",
+			output:      "NAME              SIZE\ngemma4:e4b        4.5GB\nllama3:8b         5GB\n",
+			wantStatus:  "ok",
+			wantMsgSubs: []string{"gemma4:e4b"},
+		},
+		{
+			name:        "26b present (alternative)",
+			output:      "gemma4:26b        16GB\n",
+			wantStatus:  "ok",
+			wantMsgSubs: []string{"gemma4:26b"},
+		},
+		{
+			name:        "both present prefers e4b",
+			output:      "gemma4:e4b\ngemma4:26b\n",
+			wantStatus:  "ok",
+			wantMsgSubs: []string{"gemma4:e4b"},
+		},
+		{
+			name:        "generic gemma4 variant",
+			output:      "gemma4:custom\n",
+			wantStatus:  "ok",
+			wantMsgSubs: []string{"variant"},
+		},
+		{
+			name:        "no gemma model",
+			output:      "llama3:8b\nphi3:mini\n",
+			wantStatus:  "warn",
+			wantMsgSubs: []string{"gemma4:e4b", "ollama pull gemma4:e4b"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := parseGemmaModelStatus(tc.output, nil)
+			if result.Status != tc.wantStatus {
+				t.Fatalf("Status = %q, want %q (msg: %q)", result.Status, tc.wantStatus, result.Message)
+			}
+			for _, sub := range tc.wantMsgSubs {
+				if !strings.Contains(result.Message, sub) {
+					t.Errorf("Message = %q, want substring %q", result.Message, sub)
+				}
+			}
+		})
+	}
+}
+
+func TestParseGemmaModelStatus_ListError(t *testing.T) {
+	result := parseGemmaModelStatus("", errListFailed)
+	if result.Status != "warn" {
+		t.Fatalf("Status = %q, want warn", result.Status)
+	}
+	if !strings.Contains(result.Message, "Could not list") {
+		t.Errorf("Message = %q, want 'Could not list...'", result.Message)
 	}
 }
 

@@ -159,17 +159,28 @@ func checkOllamaRunning() checkResult {
 func checkGemmaModel() checkResult {
 	cmd := exec.Command("ollama", "list")
 	out, err := cmd.Output()
-	if err != nil {
-		return checkResult{"Gemma 4 model", "warn", "Could not list Ollama models"}
+	return parseGemmaModelStatus(string(out), err)
+}
+
+// parseGemmaModelStatus interprets `ollama list` output. Canonical model is
+// gemma4:e4b (matches config.DefaultYAML and the README quick start). The 26B
+// MoE variant is accepted but no longer preferred — older copies of the doctor
+// suggested it, which mismatched the rest of the project.
+func parseGemmaModelStatus(output string, listErr error) checkResult {
+	const name = "Gemma 4 model"
+	if listErr != nil {
+		return checkResult{name, "warn", "Could not list Ollama models"}
 	}
-	output := string(out)
-	if strings.Contains(output, "gemma4:26b") {
-		return checkResult{"Gemma 4 model", "ok", "gemma4:26b is pulled"}
+	switch {
+	case strings.Contains(output, "gemma4:e4b"):
+		return checkResult{name, "ok", "gemma4:e4b is pulled"}
+	case strings.Contains(output, "gemma4:26b"):
+		return checkResult{name, "ok", "gemma4:26b is pulled"}
+	case strings.Contains(output, "gemma4"):
+		return checkResult{name, "ok", "gemma4 variant found"}
+	default:
+		return checkResult{name, "warn", "gemma4:e4b not found. Run: ollama pull gemma4:e4b"}
 	}
-	if strings.Contains(output, "gemma4") {
-		return checkResult{"Gemma 4 model", "ok", "gemma4 variant found"}
-	}
-	return checkResult{"Gemma 4 model", "warn", "gemma4:26b not found. Run: ollama pull gemma4:26b"}
 }
 
 func checkConfig(cfgPath string) (checkResult, config.Config) {

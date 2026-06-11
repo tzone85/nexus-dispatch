@@ -82,7 +82,7 @@ func runInit(cmd *cobra.Command, _ []string) error {
 	ollamaResult := checkOllamaRunning()
 	if ollamaResult.Status != "ok" {
 		fmt.Fprintf(out, "\nWarning: Ollama not detected. Install it at https://ollama.com for local LLM inference.\n")
-		fmt.Fprintf(out, "  After installing, run: ollama pull deepseek-coder-v2:latest\n")
+		fmt.Fprintf(out, "  After installing, run: ollama pull gemma4:e4b\n")
 	} else {
 		fmt.Fprintf(out, "\nOllama detected and running.\n")
 	}
