@@ -622,7 +622,8 @@ func safePath(relPath, workDir string) (string, error) {
 // It extracts the binary name from the command (first whitespace-delimited token)
 // and validates that the full command starts with an allowlisted prefix followed
 // by either a space, end-of-string, or the exact match. Shell metacharacters
-// (;, |, &, $, `, \n) are rejected outright to prevent command chaining.
+// (;, |, &, $, `, \n, \r, \t, NUL, <, >) are rejected outright to prevent
+// command chaining, redirection, expansion, and substitution.
 func isCommandAllowed(command string, allowlist []string) bool {
 	command = strings.TrimSpace(command)
 	if command == "" {
@@ -630,12 +631,14 @@ func isCommandAllowed(command string, allowlist []string) bool {
 	}
 
 	// H9: reject any shell metacharacter that could chain commands, redirect
-	// I/O, or escape the allowlist. Belt-and-suspenders alongside the prefix
-	// match below.
-	for _, ch := range []string{";", "&&", "||", "|", "$(", "$", "`", ">", "<", "\n", "\r", "\t&"} {
-		if strings.Contains(command, ch) {
-			return false
-		}
+	// I/O, or escape the allowlist. ContainsAny over a canonical set is
+	// faster than per-pattern substring scans AND closes the gaps the prior
+	// list left open — bare tab (was only "\t&"), NUL byte (would otherwise
+	// pass the metachar check and then fail the prefix match, but better
+	// rejected loudly), and `\` (escapes).
+	const forbidden = ";&|$`<>\n\r\t\x00\\"
+	if strings.ContainsAny(command, forbidden) {
+		return false
 	}
 
 	for _, pattern := range allowlist {

@@ -315,6 +315,33 @@ func TestIsCommandAllowed_EmptyCommand(t *testing.T) {
 	}
 }
 
+// TestIsCommandAllowed_RejectsExtendedMetachars covers the post-SEC-M3
+// expansion of the forbidden set. Bare tab, NUL byte, redirection, and
+// backslash were missing from the old ad-hoc substring loop. The new
+// ContainsAny check rejects every dangerous control / metacharacter.
+func TestIsCommandAllowed_RejectsExtendedMetachars(t *testing.T) {
+	cases := []struct {
+		name string
+		cmd  string
+	}{
+		{"bare tab", "echo\thello"},
+		{"NUL byte", "echo\x00rm -rf /"},
+		{"redirect out", "echo hi > /etc/passwd"},
+		{"redirect in", "echo < /etc/passwd"},
+		{"newline", "echo ok\nrm -rf /"},
+		{"carriage return", "echo ok\rrm -rf /"},
+		{"backslash", "echo \\$HOME"},
+		{"bare dollar (env expansion)", "echo $HOME"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if isCommandAllowed(tc.cmd, []string{"echo"}) {
+				t.Errorf("must reject %q", tc.cmd)
+			}
+		})
+	}
+}
+
 func TestIsCommandAllowed_MultiWordPattern(t *testing.T) {
 	allowlist := []string{"go test", "go build"}
 	if !isCommandAllowed("go test ./...", allowlist) {
