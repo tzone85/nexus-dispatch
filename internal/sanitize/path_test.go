@@ -60,3 +60,30 @@ func TestValidIdentifier(t *testing.T) {
 		}
 	}
 }
+
+// TestValidTmuxTarget guards the stricter contract used by handleKill before
+// passing a session name to `tmux kill-session -t`. Unlike ValidIdentifier,
+// `.` and `:` are rejected — both are tmux target separators (`session.0`
+// targets pane 0, `session:1` targets window 1) and would let a corrupted
+// projection name kill the wrong tmux entity.
+func TestValidTmuxTarget(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want bool
+	}{
+		{"nxd-req-junior-1", true},
+		{"a_b", true},
+		{"abc123", true},
+		{"", false},
+		{"a/b", false},
+		{"a b", false},
+		{"a;b", false},
+		{"session.0", false}, // tmux pane separator
+		{"session:1", false}, // tmux window separator
+		{"../etc", false},
+	} {
+		if got := ValidTmuxTarget(tc.in); got != tc.want {
+			t.Errorf("ValidTmuxTarget(%q) = %v, want %v", tc.in, got, tc.want)
+		}
+	}
+}

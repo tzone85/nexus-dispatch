@@ -81,6 +81,31 @@ func TestHandleKill_MalformedPayload(t *testing.T) {
 	}
 }
 
+// TestHandleKill_RejectsUnsafeStoredSessionName guards the
+// defense-in-depth check on the projection-read sessionName: even though
+// the spawn-time path validates names before insertion, a tampered or
+// migrated projection could carry a value like "nxd-session.0" — tmux
+// `.0` syntax then targets pane 0 of that session, killing the wrong
+// thing. handleKill now re-validates via sanitize.ValidTmuxTarget and
+// refuses the kill on failure.
+func TestHandleKill_RejectsUnsafeStoredSessionName(t *testing.T) {
+	s := newTestServer(t)
+	// Insert an agent whose SessionName contains a tmux pane separator —
+	// passes ValidIdentifier (which permits '.') but must fail the
+	// stricter ValidTmuxTarget.
+	if err := s.projStore.InsertAgent("agent-bad-session", "dev", "claude", "tmux", "nxd-session.0"); err != nil {
+		t.Fatalf("InsertAgent: %v", err)
+	}
+
+	resp := s.handleKill(mustMarshal(t, agentPayload{AgentID: "agent-bad-session"}))
+	if resp.Success {
+		t.Fatal("expected Success=false when session name has tmux pane separator")
+	}
+	if !strings.Contains(resp.Message, "failed validation") {
+		t.Errorf("expected 'failed validation' in message, got %q", resp.Message)
+	}
+}
+
 // TestHandleKill_AgentInListButNoSession covers the path where an
 // agent exists in the projection but its SessionName field is empty.
 // The handler refuses to issue a tmux kill in that case.

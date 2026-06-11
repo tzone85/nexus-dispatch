@@ -30,7 +30,7 @@ func SafeJoin(root, rel string) (string, error) {
 	return joined, nil
 }
 
-// ValidIdentifier returns true if s contains only [a-zA-Z0-9_-]. Useful for
+// ValidIdentifier returns true if s contains only [a-zA-Z0-9_.-]. Useful for
 // validating story IDs, agent IDs, and session names before using them in
 // filesystem paths or shell arguments.
 func ValidIdentifier(s string) bool {
@@ -43,6 +43,31 @@ func ValidIdentifier(s string) bool {
 			r >= 'A' && r <= 'Z',
 			r >= '0' && r <= '9',
 			r == '_', r == '-', r == '.':
+			continue
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// ValidTmuxTarget returns true if s is safe to pass to tmux as a session
+// target via -t. Stricter than ValidIdentifier: the `.` and `:` characters
+// have window/pane semantics in tmux target specifiers ("session.0",
+// "session:1") so we exclude both even though tmux session names CAN
+// technically contain them. A session name like "mysession.0" would
+// otherwise let an attacker (or a corrupted projection) target a specific
+// pane in a different session via the kill command.
+func ValidTmuxTarget(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z',
+			r >= 'A' && r <= 'Z',
+			r >= '0' && r <= '9',
+			r == '_', r == '-':
 			continue
 		default:
 			return false

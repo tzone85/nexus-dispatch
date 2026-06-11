@@ -262,7 +262,20 @@ func (s *Server) handleKill(payload json.RawMessage) WSResponse {
 		return WSResponse{Type: "command_result", Action: action, Success: false, Message: "agent not found or no session"}
 	}
 
-	cmd := exec.Command("tmux", "kill-session", "-t", sessionName)
+	// Defense in depth: the sessionName was written into the projection at
+	// agent spawn time. A corrupted or tampered store could carry a string
+	// like "real-session.0" — tmux's `.0` syntax targets pane 0 of that
+	// session, so we'd kill the wrong window. ValidTmuxTarget excludes
+	// `.` and `:` for exactly this case.
+	if !sanitize.ValidTmuxTarget(sessionName) {
+		log.Printf("[ws] kill_agent rejecting unsafe session name %q for agent %s", sessionName, p.AgentID)
+		return WSResponse{Type: "command_result", Action: action, Success: false, Message: "stored session name failed validation"}
+	}
+
+	// The leading `=` is tmux's exact-match prefix: even if a future
+	// sessionName accidentally contained substring matches against other
+	// sessions, the kill targets only the literal name. Belt + braces.
+	cmd := exec.Command("tmux", "kill-session", "-t", "="+sessionName)
 	if err := cmd.Run(); err != nil {
 		log.Printf("[cmd] kill-session %s: %v", sessionName, err)
 		// Don't fail — session may already be dead.
