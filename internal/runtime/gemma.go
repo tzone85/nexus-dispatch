@@ -320,7 +320,24 @@ func (g *GemmaRuntime) Execute(ctx context.Context, workDir, model, systemPrompt
 				var args struct {
 					Summary string `json:"summary"`
 				}
-				json.Unmarshal(tc.Arguments, &args)
+				// Malformed task_complete arguments — common with small quantized
+				// models. Feed the parse error back to the model as a tool result
+				// and break to the next iteration. Without this, args.Summary
+				// silently becomes "" and the surrounding pipeline records a
+				// successful run with an empty summary, which downstream
+				// reporting attributes to a no-op completion.
+				if err := json.Unmarshal(tc.Arguments, &args); err != nil {
+					messages = append(messages, llm.Message{
+						Role: llm.RoleTool,
+						Content: fmt.Sprintf(
+							"task_complete rejected — arguments are not valid JSON: %v. "+
+								"Retry task_complete with a JSON object of shape {\"summary\": \"...\"}.",
+							err),
+						ToolCallID: tc.ID,
+					})
+					log.Printf("[native-runtime] %s: task_complete malformed JSON: %v", g.StoryID, err)
+					break
+				}
 
 				// Run criteria evaluation BEFORE accepting completion.
 				// If criteria fail, feed the error back to the agent so it
@@ -394,7 +411,14 @@ func (g *GemmaRuntime) Execute(ctx context.Context, workDir, model, systemPrompt
 
 						log.Printf("[native-runtime] %s: task_complete rejected (%d/%d): %s",
 							g.StoryID, criteriaRejections, maxRetries, failSummary)
-						goto nextIteration
+						// Bail out of THIS iteration's tool-call loop. Subsequent
+						// tool calls in the same response are skipped: their
+						// effects would race against the agent's next-iteration
+						// fixes. The next LLM call sees the rejection result and
+						// can self-correct. (Previously this was `goto
+						// nextIteration` — replaced with a clean break + a no-op
+						// label below so the control flow is greppable.)
+						break
 					}
 
 					// All criteria passed — accept completion.
@@ -458,7 +482,6 @@ func (g *GemmaRuntime) Execute(ctx context.Context, workDir, model, systemPrompt
 				ToolCallID: result.CallID,
 			})
 		}
-	nextIteration:
 	}
 
 	g.emitProgress(ProgressEvent{
