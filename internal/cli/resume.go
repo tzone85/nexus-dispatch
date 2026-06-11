@@ -481,6 +481,15 @@ func runResume(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Drain in-flight native-runtime goroutines so STORY_COMPLETED events
+	// flush before the process exits. Without this, Ctrl-C during pipeline
+	// would leave a story stuck in "in_progress" forever; the next
+	// `nxd resume` would re-dispatch it and race against the original
+	// goroutine (now zombied with the old worktree).
+	if drainErr := executor.WaitForNativeShutdown(30 * time.Second); drainErr != nil {
+		log.Printf("[shutdown] native-runtime drain exceeded 30s, some goroutines may not have flushed: %v", drainErr)
+	}
+
 	// Save Bayesian priors with decay applied (outcomes from this run
 	// are fresh, older observations decay toward neutral).
 	bayesianRouter.ApplyDecay()
