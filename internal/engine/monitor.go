@@ -358,6 +358,12 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 	storyID := ag.Assignment.StoryID
 	branch := ag.Assignment.Branch
 
+	// Capture the parent context BEFORE shadowing so the devdb release defer
+	// can tell "graceful shutdown" (parent canceled) from "pipeline timed out"
+	// (our 5-minute deadline fired). Without this, a Ctrl-C during pipeline
+	// would mark the story DB as devdb.OutcomeFailed and pollute metrics.
+	parentCtx := ctx
+
 	// Wrap context with a 5-minute timeout to prevent pipeline LLM calls
 	// (review, QA, conflict resolution) from blocking indefinitely.
 	pipelineCtx, pipelineCancel := context.WithTimeout(ctx, 5*time.Minute)
@@ -369,7 +375,8 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 	outcomeForRelease := devdb.OutcomeFailed
 	if m.lifecycle != nil && ag.DB.ID != "" {
 		defer func() {
-			if err := m.lifecycle.Release(context.Background(), ag.DB, outcomeForRelease); err != nil {
+			outcome := outcomeForGracefulShutdown(parentCtx, outcomeForRelease)
+			if err := releaseDevDB(m.lifecycle, ag.DB, outcome); err != nil {
 				log.Printf("[pipeline] devdb release for %s: %v", storyID, err)
 			}
 		}()
