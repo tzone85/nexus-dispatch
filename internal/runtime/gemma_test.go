@@ -574,6 +574,48 @@ func TestExecReadScratchboard_WithEntries(t *testing.T) {
 	}
 }
 
+// ── task_complete error handling ──────────────────────────────────────
+
+// TestGemmaRuntime_TaskCompleteMalformedJSON guards against the old behaviour
+// where a malformed task_complete arguments blob silently produced an empty
+// Summary — the surrounding pipeline then recorded a "successful" no-op
+// completion. The fixed Execute path feeds the parse error back to the model
+// as a tool result and proceeds to the next iteration so the model can retry.
+func TestGemmaRuntime_TaskCompleteMalformedJSON(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Two-response replay:
+	// 1. Model emits task_complete with broken JSON args.
+	// 2. Model retries with a valid task_complete (because it sees our
+	//    rejection tool message).
+	goodArgs, _ := json.Marshal(map[string]string{"summary": "retried ok"})
+	client := llm.NewReplayClient(
+		llm.CompletionResponse{
+			ToolCalls: []llm.ToolCall{
+				{ID: "1", Name: "task_complete", Arguments: []byte("{this is not json}")},
+			},
+		},
+		llm.CompletionResponse{
+			ToolCalls: []llm.ToolCall{
+				{ID: "2", Name: "task_complete", Arguments: goodArgs},
+			},
+		},
+	)
+
+	rt := NewGemmaRuntime(client, GemmaRuntimeConfig{MaxIterations: 5})
+	result := rt.Execute(context.Background(), tmpDir, "gemma4:e4b", "", "do the thing")
+
+	if result.Error != nil {
+		t.Fatalf("Execute should retry past malformed JSON, got error: %v", result.Error)
+	}
+	if result.Summary != "retried ok" {
+		t.Errorf("Summary = %q, want %q (retry after rejection)", result.Summary, "retried ok")
+	}
+	if result.Iterations != 2 {
+		t.Errorf("Iterations = %d, want 2 (one rejection + one retry)", result.Iterations)
+	}
+}
+
 // ── AgentStatus unknown ───────────────────────────────────────────────
 
 func TestAgentStatus_String_Unknown(t *testing.T) {
