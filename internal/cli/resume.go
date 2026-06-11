@@ -93,6 +93,14 @@ func runResume(cmd *cobra.Command, args []string) error {
 
 	out := cmd.OutOrStdout()
 
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("determine working directory: %w", err)
+	}
+	if err := PreflightForRun(cwd, s.Config); err != nil {
+		return err
+	}
+
 	// Load plugins.
 	pluginDir := expandHome("~/.nxd/plugins")
 	pm, pluginErr := plugin.LoadPlugins(s.Config.Plugins, pluginDir)
