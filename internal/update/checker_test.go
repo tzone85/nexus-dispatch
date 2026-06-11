@@ -35,6 +35,48 @@ func newOllamaMocks(t *testing.T, localDigest, remoteDigest string) (local *http
 	return local, remote
 }
 
+// TestOllamaRemoteDigest_PathEscapesModelName guards SEC-L1: the model name
+// and tag are now url.PathEscape'd before being interpolated into the
+// /v2/library/<name>/manifests/<tag> URL. A model name with `/` no longer
+// traverses into a different registry subtree; a tag with special chars
+// produces a well-formed URL instead of a 400.
+func TestOllamaRemoteDigest_PathEscapesModelName(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var seenPath string
+	local, _ := newOllamaMocks(t, "sha256:local", "sha256:remote")
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Use EscapedPath so percent-encoded segments stay visible —
+		// r.URL.Path is the decoded form which would hide the escaping.
+		seenPath = r.URL.EscapedPath()
+		resp := map[string]string{"digest": "sha256:remote"}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	t.Cleanup(remote.Close)
+
+	c := NewChecker(
+		WithOllamaLocalURL(local.URL),
+		WithOllamaRegistryURL(remote.URL),
+	)
+
+	// Operator-controlled config could include slashes — confirm they don't
+	// rewrite the URL path structure.
+	if _, err := c.CheckOllama(ctx, []string{"weird/name:tag with space"}); err != nil {
+		t.Fatalf("CheckOllama: %v", err)
+	}
+	// `weird/name` becomes `weird%2Fname`; `tag with space` becomes
+	// `tag%20with%20space`. The crucial invariant: no second "/library/"
+	// segment appears, and the URL has exactly the expected hop count.
+	if strings.Contains(seenPath, "weird/name") {
+		t.Errorf("model name slash not escaped, path = %q", seenPath)
+	}
+	if !strings.Contains(seenPath, "weird%2Fname") {
+		t.Errorf("expected percent-encoded slash, path = %q", seenPath)
+	}
+}
+
 func TestCheckOllama_UpdateAvailable(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
