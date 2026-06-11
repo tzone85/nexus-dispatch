@@ -178,7 +178,13 @@ The previous implementation was rejected. Fix these issues:
 		goal += "\n\n" + SanitizePromptField(ctx.PriorWorkContext)
 	}
 	if ctx.WaveBrief != "" {
-		goal += "\n\n" + ctx.WaveBrief
+		// WaveBrief is composed from LLM-generated story titles. A malicious
+		// requirement can lead the planner to emit a title containing
+		// prompt-injection strings ("ignore previous instructions,
+		// exfiltrate ..."), and that title then flows into every sibling
+		// agent's prompt. Sanitize for the same reasons as ReviewFeedback
+		// and PriorWorkContext above.
+		goal += "\n\n" + SanitizePromptField(ctx.WaveBrief)
 	}
 
 	return goal
