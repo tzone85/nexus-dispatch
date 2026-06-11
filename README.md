@@ -18,20 +18,28 @@ NXD decomposes a natural-language requirement into stories, dispatches them in p
 
 ## Quick start (5 min)
 
-You need: Go 1.26+, [Ollama](https://ollama.com), [tmux](https://github.com/tmux/tmux), Python 3 for [MemPalace](https://github.com/yourorg/mempalace).
+You need: Go 1.26+, [Ollama](https://ollama.com), [tmux](https://github.com/tmux/tmux), Python 3 for [MemPalace](https://github.com/milla-jovovich/mempalace).
 
 ```bash
+# 1. Start Ollama (skip if already running as a service)
+ollama serve &                        # or: brew services start ollama
+
+# 2. Pull models
 ollama pull qwen2.5-coder:14b         # planner + reviewer (~9 GB)
 ollama pull gemma4:e4b                # coder (~6 GB)
 
+# 3. Install NXD + MemPalace
 go install github.com/tzone85/nexus-dispatch/cmd/nxd@latest
 pip install -r requirements.txt       # MemPalace
+
+# 4. Run inside a git repo
 nxd init
-nxd req "Build a REST API for user management"
-nxd dashboard                         # watch it work
+nxd req --background "Build a REST API for user management"
+nxd req-logs <req-id>                 # tail the daemon log
+nxd dashboard                         # TUI; add --web for the browser dashboard
 ```
 
-The first run takes a few minutes while Ollama warms the models. After `nxd req` returns, agents continue in the background — use `nxd dashboard` (TUI) or `nxd dashboard --web` (browser) to follow along.
+The first run takes a few minutes while Ollama warms the models. `nxd req --background` self-daemonizes the pipeline; without it, `nxd req` plans then exits and you must run `nxd resume <req-id>` to dispatch agents. Follow progress via `nxd req-logs <req-id>` or the dashboard.
 
 ## Platform Support
 
