@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/tzone85/nexus-dispatch/internal/agent"
@@ -48,6 +49,14 @@ type Executor struct {
 	directives    *DirectiveStore // optional: feeds operator directives into native runtime iterations
 	projectDir    string          // path to project state dir (for loading RepoProfile)
 	lifecycle     *devdb.Lifecycle
+
+	// nativeWG tracks live native-runtime goroutines so shutdown paths
+	// (Ctrl-C in resume, daemon stop) can drain them and let each one
+	// flush STORY_COMPLETED before the process exits. Without this, a
+	// killed process would leave a story stuck mid-flight; the next
+	// `nxd resume` would re-dispatch it and a second goroutine would
+	// race against the now-stale worktree.
+	nativeWG sync.WaitGroup
 }
 
 // SetProjectDir sets the project state directory for loading RepoProfile.
@@ -60,6 +69,27 @@ func (e *Executor) SetDevDBLifecycle(lc *devdb.Lifecycle) { e.lifecycle = lc }
 
 // HasDevDBLifecycle reports whether a devdb Lifecycle has been configured.
 func (e *Executor) HasDevDBLifecycle() bool { return e.lifecycle != nil }
+
+// WaitForNativeShutdown blocks until every in-flight native-runtime goroutine
+// has finished, or until timeout elapses, whichever comes first. Returns nil
+// on a clean drain and context.DeadlineExceeded if the timeout fired with
+// goroutines still running. Safe to call multiple times — sync.WaitGroup is
+// reusable. Call from the resume.go shutdown path so STORY_COMPLETED events
+// flush before the process exits; the next nxd resume then sees consistent
+// state instead of re-dispatching a story whose worktree may still be mutating.
+func (e *Executor) WaitForNativeShutdown(timeout time.Duration) error {
+	done := make(chan struct{})
+	go func() {
+		e.nativeWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-time.After(timeout):
+		return context.DeadlineExceeded
+	}
+}
 
 // GetDevDBLifecycle returns the configured devdb Lifecycle, or nil if not set.
 func (e *Executor) GetDevDBLifecycle() *devdb.Lifecycle { return e.lifecycle }
@@ -530,7 +560,12 @@ func (e *Executor) spawnNative(ctx context.Context, repoDir string, a Assignment
 	// Run native Gemma runtime in a goroutine (non-blocking, like tmux).
 	// On completion (success or failure) the goroutine emits STORY_COMPLETED
 	// so the monitor's pollOnce can trigger the post-execution pipeline.
+	// nativeWG tracks the goroutine so shutdown can drain in-flight runs
+	// before the process exits (prevents lost STORY_COMPLETED writes →
+	// double-dispatch on next resume).
+	e.nativeWG.Add(1)
 	go func() {
+		defer e.nativeWG.Done()
 		gemmaRT := runtime.NewGemmaRuntime(storyClient, runtime.GemmaRuntimeConfig{
 			MaxIterations:    nativeCfg.MaxIterations,
 			CommandAllowlist: nativeCfg.CommandAllowlist,
