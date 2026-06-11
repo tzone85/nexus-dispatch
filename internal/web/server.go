@@ -56,11 +56,14 @@ func NewServer(es state.EventStore, ps *state.SQLiteStore, port int, filter stat
 	// C1: generate a random per-session token. Required on every WebSocket
 	// upgrade and on the static-asset HTTP handlers, preventing localhost
 	// cross-process CSRF and unauthenticated dashboard access.
+	//
+	// crypto/rand failures are extremely rare on a healthy host but signal
+	// OS entropy starvation — the previous fallback to a nanosecond
+	// timestamp gave ~30 bits of entropy and was bruteforceable in
+	// milliseconds. Fail fast instead so the operator notices.
 	tokenBytes := make([]byte, 16)
 	if _, err := rand.Read(tokenBytes); err != nil {
-		// extremely unlikely on a healthy host; fall back to time-based.
-		log.Printf("[web] crypto/rand error, using insecure fallback: %v", err)
-		copy(tokenBytes, []byte(fmt.Sprintf("%d", time.Now().UnixNano())))
+		log.Fatalf("[web] crypto/rand failed (OS entropy starvation?): %v", err)
 	}
 	token := hex.EncodeToString(tokenBytes)
 
@@ -165,10 +168,12 @@ func (s *Server) Start(ctx context.Context) error {
 		ReadHeaderTimeout: 5 * time.Second, // S3-7-adjacent: prevent slowloris
 	}
 
-	// Open browser with the auth-gated URL.
+	// Open browser with the auth-gated URL. The URL contains the token —
+	// don't log the bare token separately so it doesn't end up duplicated
+	// in log aggregators with a wider read surface than the operator
+	// console.
 	url := fmt.Sprintf("http://%s/?token=%s", addr, s.authToken)
 	log.Printf("Dashboard server running at %s", url)
-	log.Printf("[web] auth token: %s (required as ?token=<token>)", s.authToken)
 	openBrowser(url)
 
 	// Start hub broadcast loop

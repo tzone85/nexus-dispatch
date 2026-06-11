@@ -1,7 +1,9 @@
 package web
 
 import (
+	"bytes"
 	"context"
+	"log"
 	"net"
 	"net/http"
 	"strings"
@@ -214,4 +216,38 @@ func itoa(i int) string {
 		b[pos] = '-'
 	}
 	return string(b[pos:])
+}
+
+// TestServer_Start_DoesNotLogBareAuthToken guards the SEC-M1 fix: the
+// auth token used to be log.Printf'd as its own line, duplicating it
+// into any log aggregator that captured stderr. The URL line still
+// contains the token (operator UX), but no bare `[web] auth token:`
+// line should appear.
+func TestServer_Start_DoesNotLogBareAuthToken(t *testing.T) {
+	var buf bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(prev) })
+
+	s := newTestServer(t)
+	s.port = freePort(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- s.Start(ctx) }()
+
+	if !waitForPort(t, s.port, 2*time.Second) {
+		t.Fatal("server did not bind within 2s")
+	}
+	cancel()
+	if err := <-errCh; err != nil && err != http.ErrServerClosed {
+		t.Fatalf("Start: %v", err)
+	}
+
+	logged := buf.String()
+	if strings.Contains(logged, "[web] auth token:") {
+		t.Fatalf("bare auth token leaked to logs:\n%s", logged)
+	}
 }
