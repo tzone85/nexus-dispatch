@@ -12,6 +12,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"os/exec"
 	"runtime"
 	"sync"
@@ -193,6 +194,15 @@ func (s *Server) Start(ctx context.Context) error {
 }
 
 func openBrowser(url string) {
+	// CI / headless / SSH sessions don't have a browser, and the URL we
+	// pass to `open` / `xdg-open` contains the auth token. Process args
+	// are world-readable via `ps` on most systems, so leaking the token
+	// to every local user is a real concern in multi-tenant environments.
+	// Opt-out: set NXD_NO_BROWSER=1 to suppress the launch entirely. The
+	// URL is still printed via log.Printf for operator discovery.
+	if os.Getenv("NXD_NO_BROWSER") != "" {
+		return
+	}
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":

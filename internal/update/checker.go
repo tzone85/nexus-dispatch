@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	urlpkg "net/url"
 	"strings"
 	"time"
 )
@@ -141,7 +142,12 @@ func (c *Checker) ollamaLocalDigest(ctx context.Context, model string) (string, 
 
 func (c *Checker) ollamaRemoteDigest(ctx context.Context, model string) (string, error) {
 	name, tag := parseOllamaModel(model)
-	url := fmt.Sprintf("%s/v2/library/%s/manifests/%s", c.ollamaRegistryURL, name, tag)
+	// PathEscape so a model name containing `/` (e.g. accidental
+	// "library/gemma4") can't traverse into a different URL subtree, and so
+	// any operator-supplied tag with special chars produces a well-formed
+	// URL instead of an obscure 404 / 400.
+	url := fmt.Sprintf("%s/v2/library/%s/manifests/%s",
+		c.ollamaRegistryURL, urlpkg.PathEscape(name), urlpkg.PathEscape(tag))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
