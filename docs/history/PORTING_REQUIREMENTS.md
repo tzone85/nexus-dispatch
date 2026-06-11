@@ -1,3 +1,7 @@
+> **ARCHIVED — historical spec.** The work described here landed across
+> 2026-04 → 2026-05 and now lives in `internal/engine/`. Kept for
+> provenance only; do not treat as live requirements.
+
 # Requirements: Port VXD Guardrails & Capabilities to NXD
 
 ## Context
