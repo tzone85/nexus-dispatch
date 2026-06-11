@@ -1,3 +1,6 @@
+> **ARCHIVED — historical spec.** Phase 1 guardrails shipped in
+> 2026-04. Code lives under `internal/engine/`. Kept for provenance.
+
 # Port VXD Guardrails to NXD (Phase 1 — Critical)
 
 ## Context
