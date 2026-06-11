@@ -1146,10 +1146,16 @@ func (m *Monitor) handleManagerEscalation(ctx context.Context, story PlannedStor
 
 	log.Printf("[manager] %s: diagnosis=%q action=%s", storyID, action.Diagnosis, action.Action)
 
-	// Persist the diagnosis for post-mortem review.
+	// Persist the diagnosis for post-mortem review. Logging-only on
+	// failure: the pipeline doesn't need the file to continue, but
+	// post-mortem investigators do — flag drops loudly so missing log
+	// files surface during incident review instead of looking intentional.
 	logPath := filepath.Join(logDir, storyID+"-manager.log")
-	os.WriteFile(logPath, []byte(fmt.Sprintf("Diagnosis: %s\nCategory: %s\nAction: %s\n",
-		action.Diagnosis, action.Category, action.Action)), 0o644)
+	logBody := fmt.Sprintf("Diagnosis: %s\nCategory: %s\nAction: %s\n",
+		action.Diagnosis, action.Category, action.Action)
+	if err := os.WriteFile(logPath, []byte(logBody), 0o644); err != nil {
+		log.Printf("[manager] persist diagnosis for %s to %s: %v", storyID, logPath, err)
+	}
 
 	if handler := LookupManagerAction(action.Action); handler != nil {
 		handler(ManagerActionContext{
@@ -1487,7 +1493,15 @@ func simulateDryRunChanges(worktreePath, storyID string) {
 	}
 	commitCmd := exec.Command("git", "commit", "-m", fmt.Sprintf("[dry-run] simulated changes for %s", storyID))
 	commitCmd.Dir = worktreePath
-	commitCmd.Run()
+	// If the commit fails (identity not configured in worktree, nothing to
+	// commit because git add succeeded vacuously, etc.) the pipeline would
+	// otherwise see an empty diff and reset the story to draft. Repeated
+	// resume cycles would turn dry-run into an infinite reset loop.
+	if commitOut, err := commitCmd.CombinedOutput(); err != nil {
+		log.Printf("[dry-run] git commit failed for %s: %v (%s)",
+			storyID, err, strings.TrimSpace(string(commitOut)))
+		return
+	}
 	log.Printf("[dry-run] simulated changes committed for %s", storyID)
 }
 
@@ -1543,11 +1557,19 @@ func stripBinariesFromBranch(worktreePath, storyID string) {
 	giPath := filepath.Join(worktreePath, ".gitignore")
 	giData, _ := os.ReadFile(giPath)
 	appendix := "\n# auto-detected binaries (stripped by nxd)\n" + strings.Join(binaries, "\n") + "\n"
-	_ = os.WriteFile(giPath, append(giData, []byte(appendix)...), 0o644)
+	if err := os.WriteFile(giPath, append(giData, []byte(appendix)...), 0o644); err != nil {
+		log.Printf("[pipeline] write .gitignore at %s for %s: %v", giPath, storyID, err)
+	}
 
 	stageCmd := exec.Command("git", "add", ".gitignore")
 	stageCmd.Dir = worktreePath
-	stageCmd.CombinedOutput()
+	if stageOut, stageErr := stageCmd.CombinedOutput(); stageErr != nil {
+		// Stage failure here is non-fatal — the binary files were already
+		// removed from the index above. The amend will simply not include
+		// the .gitignore update; binaries can recur on the next run.
+		log.Printf("[pipeline] git add .gitignore after binary strip for %s: %v (%s)",
+			storyID, stageErr, strings.TrimSpace(string(stageOut)))
+	}
 
 	amendCmd := exec.Command("git", "commit", "--amend", "--no-edit")
 	amendCmd.Dir = worktreePath
@@ -1628,7 +1650,9 @@ func ensureGitignorePatterns(worktreePath string) {
 	}
 
 	appendix := "\n# NXD agent artifacts (auto-added)\n" + strings.Join(toAdd, "\n") + "\n"
-	os.WriteFile(giPath, append(existing, []byte(appendix)...), 0o644)
+	if err := os.WriteFile(giPath, append(existing, []byte(appendix)...), 0o644); err != nil {
+		log.Printf("[pipeline] update .gitignore at %s: %v", giPath, err)
+	}
 }
 
 // gitDiff returns the git diff for committed changes in a worktree.
