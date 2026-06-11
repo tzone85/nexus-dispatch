@@ -118,6 +118,33 @@ func (h *Hub) Run(ctx context.Context) {
 	}
 }
 
+// snapshotClients returns a slice of every currently-registered WebSocket
+// connection, taken under the Hub lock. Callers then perform their network
+// writes WITHOUT holding the lock — slow or hung peers no longer block
+// addClient / removeClient or other broadcasts.
+func (h *Hub) snapshotClients() []*websocket.Conn {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	conns := make([]*websocket.Conn, 0, len(h.clients))
+	for c := range h.clients {
+		conns = append(conns, c)
+	}
+	return conns
+}
+
+// removeClients deletes the given connections from the Hub's client set.
+// Used after a broadcast detects writes that failed for one or more peers.
+func (h *Hub) removeClients(dead []*websocket.Conn) {
+	if len(dead) == 0 {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, c := range dead {
+		delete(h.clients, c)
+	}
+}
+
 // pushEvent sends a single event to all connected clients immediately.
 // seqNo is the EventBus monotonic sequence number — clients can track gaps.
 func (h *Hub) pushEvent(ctx context.Context, evt state.Event, seqNo uint64) {
@@ -129,9 +156,7 @@ func (h *Hub) pushEvent(ctx context.Context, evt state.Event, seqNo uint64) {
 		Payload:   state.DecodePayload(evt.Payload),
 	}}
 
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	for conn := range h.clients {
+	for _, conn := range h.snapshotClients() {
 		wsjson.Write(ctx, conn, msg) //nolint:errcheck
 	}
 }
@@ -141,6 +166,7 @@ func (h *Hub) broadcast(ctx context.Context) {
 	currentCount, _ := h.server.eventStore.Count(state.EventFilter{})
 	if currentCount > h.lastEventCount && h.lastEventCount > 0 {
 		newEvents, _ := h.server.eventStore.List(state.EventFilter{Limit: currentCount - h.lastEventCount})
+		conns := h.snapshotClients()
 		for _, evt := range newEvents {
 			evtMsg := WSResponse{Type: "event", Data: EventSummary{
 				Type:      string(evt.Type),
@@ -148,11 +174,9 @@ func (h *Hub) broadcast(ctx context.Context) {
 				AgentID:   evt.AgentID,
 				StoryID:   evt.StoryID,
 			}}
-			h.mu.Lock()
-			for conn := range h.clients {
+			for _, conn := range conns {
 				wsjson.Write(ctx, conn, evtMsg) //nolint:errcheck
 			}
-			h.mu.Unlock()
 		}
 	}
 	h.lastEventCount = currentCount
@@ -162,18 +186,19 @@ func (h *Hub) broadcast(ctx context.Context) {
 	if err != nil {
 		return
 	}
-
 	msg := WSResponse{Type: "state", Data: snap}
 
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	for conn := range h.clients {
+	// Write outside the lock to decouple slow-peer I/O from Hub mutations.
+	// Collect dead connections, then drop them under the lock.
+	conns := h.snapshotClients()
+	var dead []*websocket.Conn
+	for _, conn := range conns {
 		if err := wsjson.Write(ctx, conn, msg); err != nil {
 			conn.CloseNow()
-			delete(h.clients, conn)
+			dead = append(dead, conn)
 		}
 	}
+	h.removeClients(dead)
 }
 
 func (h *Hub) sendState(ctx context.Context, conn *websocket.Conn) {
