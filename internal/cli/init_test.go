@@ -50,6 +50,16 @@ func TestRunInit_CreatesConfigWithoutExampleFile(t *testing.T) {
 	if bytes.Contains([]byte(output), []byte("Warning: could not read")) {
 		t.Fatalf("unexpected warning in output: %s", output)
 	}
+	// Post-install hint must reference gemma4:e4b (canonical default), NOT deepseek.
+	// Triggered only when Ollama isn't running in the test env; check both branches.
+	if bytes.Contains([]byte(output), []byte("Warning: Ollama not detected")) {
+		if !bytes.Contains([]byte(output), []byte("ollama pull gemma4:e4b")) {
+			t.Fatalf("post-install hint should suggest gemma4:e4b, got: %s", output)
+		}
+		if bytes.Contains([]byte(output), []byte("deepseek-coder-v2")) {
+			t.Fatalf("post-install hint must not suggest deepseek-coder-v2, got: %s", output)
+		}
+	}
 }
 
 func TestRunInit_SkipsExistingConfig(t *testing.T) {
