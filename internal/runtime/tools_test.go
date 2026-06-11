@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -186,11 +187,38 @@ func TestExecEditFile_FileNotFound(t *testing.T) {
 	}
 }
 
+// ── execRunCommand: context propagation ──────────────────────────────
+
+// TestExecRunCommand_CancelledContextKillsCommand verifies that a cancelled
+// parent context aborts the child process via shellexec.CommandContext.
+// Pre-fix: execRunCommand used shellexec.Command (no context) and would
+// block on cmd.CombinedOutput() until the child completed regardless of
+// parent cancellation — a hung subprocess could pin the iteration goroutine
+// for the full 5-minute outer budget.
+func TestExecRunCommand_CancelledContextKillsCommand(t *testing.T) {
+	rt := NewGemmaRuntime(nil, GemmaRuntimeConfig{
+		MaxIterations:    5,
+		CommandAllowlist: []string{"sleep"},
+	})
+
+	// Pre-cancelled context — the child is killed before it can complete.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	result := rt.execRunCommand(ctx, makeToolCall("run_command", map[string]string{
+		"command": "sleep 10",
+	}), t.TempDir())
+
+	if !result.IsError {
+		t.Fatalf("want IsError=true on cancelled ctx, got: %+v", result)
+	}
+}
+
 // ── execRunCommand ───────────────────────────────────────────────────
 
 func TestExecRunCommand_Allowed(t *testing.T) {
 	rt := newTestRuntime(t)
-	result := rt.execRunCommand(makeToolCall("run_command", map[string]string{
+	result := rt.execRunCommand(context.Background(), makeToolCall("run_command", map[string]string{
 		"command": "echo hello from nxd",
 	}), t.TempDir())
 	if result.IsError {
@@ -203,7 +231,7 @@ func TestExecRunCommand_Allowed(t *testing.T) {
 
 func TestExecRunCommand_Blocked(t *testing.T) {
 	rt := newTestRuntime(t)
-	result := rt.execRunCommand(makeToolCall("run_command", map[string]string{
+	result := rt.execRunCommand(context.Background(), makeToolCall("run_command", map[string]string{
 		"command": "rm -rf /",
 	}), t.TempDir())
 	if !result.IsError {
@@ -217,7 +245,7 @@ func TestExecRunCommand_Blocked(t *testing.T) {
 func TestExecRunCommand_FailingCommand(t *testing.T) {
 	rt := newTestRuntime(t)
 	// "cat nonexistent" will fail with exit code 1
-	result := rt.execRunCommand(makeToolCall("run_command", map[string]string{
+	result := rt.execRunCommand(context.Background(), makeToolCall("run_command", map[string]string{
 		"command": "cat nonexistent_file_12345",
 	}), t.TempDir())
 	if !result.IsError {
@@ -414,7 +442,7 @@ func TestExecReadScratchboard_NoScratchboard(t *testing.T) {
 
 func TestExecuteTool_UnknownTool(t *testing.T) {
 	rt := newTestRuntime(t)
-	result := rt.executeTool(llm.ToolCall{Name: "nonexistent_tool"}, t.TempDir())
+	result := rt.executeTool(context.Background(), llm.ToolCall{Name: "nonexistent_tool"}, t.TempDir())
 	if !result.IsError {
 		t.Error("expected error for unknown tool")
 	}
@@ -425,7 +453,7 @@ func TestExecuteTool_UnknownTool(t *testing.T) {
 
 func TestExecuteTool_TaskComplete(t *testing.T) {
 	rt := newTestRuntime(t)
-	result := rt.executeTool(makeToolCall("task_complete", map[string]string{
+	result := rt.executeTool(context.Background(), makeToolCall("task_complete", map[string]string{
 		"summary": "All done",
 	}), t.TempDir())
 	if result.IsError {
