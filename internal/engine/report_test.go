@@ -145,6 +145,40 @@ func setupReportStores(t *testing.T) (state.EventStore, *state.SQLiteStore, func
 	return es, ps, cleanup
 }
 
+// TestReportBuilder_Build_TimelineFiltersByStoryOwnership guards the
+// post-N+1 path: buildTimeline issues one List per event type (no StoryID
+// filter) and screens via storyIDSet in memory. The regression to prevent
+// is "events from stories belonging to OTHER requirements leak into the
+// timeline." Seed a STORY_MERGED for a foreign story id, then assert it is
+// NOT in the report.
+func TestReportBuilder_Build_TimelineFiltersByStoryOwnership(t *testing.T) {
+	es, ps, cleanup := setupReportStores(t)
+	defer cleanup()
+
+	// Foreign story id — does NOT appear in stories(req-001).
+	foreignMerged := state.NewEvent(state.EventStoryMerged, "merger", "FOREIGN-STORY-Z", nil)
+	if err := es.Append(foreignMerged); err != nil {
+		t.Fatalf("append foreign event: %v", err)
+	}
+	if err := ps.Project(foreignMerged); err != nil {
+		t.Fatalf("project foreign event: %v", err)
+	}
+
+	cfg := config.DefaultConfig()
+	rb := engine.NewReportBuilder(es, ps, cfg)
+
+	report, err := rb.Build("req-001")
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	for _, entry := range report.Timeline {
+		if entry.StoryID == "FOREIGN-STORY-Z" {
+			t.Fatalf("foreign story %q leaked into timeline (in-memory filter regression)", entry.StoryID)
+		}
+	}
+}
+
 func TestReportBuilder_Build_BasicFields(t *testing.T) {
 	es, ps, cleanup := setupReportStores(t)
 	defer cleanup()

@@ -357,20 +357,24 @@ func (rb *ReportBuilder) buildTimeline(reqID string, stories []state.Story) []Ti
 		storyIDSet[s.ID] = s.Title
 	}
 
+	// Previously this loop issued one List per (event-type × story-id) pair
+	// — 5 × len(stories) sequential queries. On JSONL stores that's 5N file
+	// reads; on SQLite it's 5N transactions. Issue ONE List per event type
+	// (no StoryID filter), then filter against storyIDSet in memory: 5
+	// queries total regardless of story count.
 	for _, evtType := range storyEventTypes {
-		for storyID, storyTitle := range storyIDSet {
-			evts, _ := rb.es.List(state.EventFilter{
-				Type:    evtType,
-				StoryID: storyID,
-			})
-			for _, evt := range evts {
-				entries = append(entries, TimelineEntry{
-					Timestamp:   evt.Timestamp,
-					EventType:   string(evt.Type),
-					StoryID:     storyID,
-					Description: rb.describeStoryEvent(evt.Type, storyTitle),
-				})
+		evts, _ := rb.es.List(state.EventFilter{Type: evtType})
+		for _, evt := range evts {
+			storyTitle, owned := storyIDSet[evt.StoryID]
+			if !owned {
+				continue
 			}
+			entries = append(entries, TimelineEntry{
+				Timestamp:   evt.Timestamp,
+				EventType:   string(evt.Type),
+				StoryID:     evt.StoryID,
+				Description: rb.describeStoryEvent(evt.Type, storyTitle),
+			})
 		}
 	}
 
