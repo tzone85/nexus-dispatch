@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+_(no entries yet — open a PR to add a line under the relevant subsection.)_
+
+## [0.2.0] — 2026-06-02
+
 ### Added
 - `nxd req --background`: self-daemonize after planning (Setsid detach) so requirement runs survive parent shell teardown and macOS app-nap
 - `nxd req-logs <req-id>`: tail the daemon log captured under `~/.nxd/logs/req-<req-id>.log`

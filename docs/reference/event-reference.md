@@ -1,6 +1,6 @@
 # NXD Event Reference
 
-Every action in NXD produces an immutable event. This document describes all 31 event types, their producers, payloads, and the state transitions they trigger.
+Every action in NXD produces an immutable event. NXD currently emits **58 event types**. The first 32 (described in detail below) cover the core requirement → planning → dispatch → review → QA → merge pipeline. The remaining types — added across 2026-04 → 2026-06 for the controller, devdb lifecycle, conflict resolver, integration build, and stage timing — are summarised in the *Additional events* section at the bottom of this page. The canonical list of strings lives in `internal/state/events.go`; the test `internal/config/example_gen_test.go` guards the generated example config from drifting, and a future generator can do the same for this page.
 
 ## Event Structure
 
@@ -304,3 +304,49 @@ sqlite3 ~/.nxd/nxd.db "SELECT type, story_id, timestamp FROM events WHERE type L
 # Raw JSONL
 tail -20 ~/.nxd/events.jsonl | python3 -m json.tool
 ```
+
+## Additional events (post-2026-04 ports)
+
+The following event types ship in current NXD but pre-date this doc's
+expanded coverage. Each is a one-line summary — for the producer / payload
+shape, grep `internal/engine/` or `internal/state/events.go`.
+
+### Pipeline / staging
+- **STAGE_COMPLETED** — coarse timing marker for each pipeline stage (executor, reviewer, QA, merger) with duration and outcome
+- **STORY_REWRITTEN** — Manager rewrote the story (title / description / acceptance criteria / complexity) after diagnosis
+- **STORY_SPLIT** — Tech Lead replaced one story with N replacements; payload includes child_story_ids
+- **STORY_RESET** — story sent back to draft status by the monitor (post-failure retry path)
+- **STORY_RECOVERY** — controller reset a stuck story to draft
+- **STORY_MERGE_READY** — review + QA both passed; merger may proceed
+- **STORY_ESCALATED** — story bumped to a higher escalation tier (junior → intermediate → senior, etc.)
+- **STORY_INTEGRATION_FAILED** — post-merge integration build failed; tech-lead fixer dispatched
+
+### Requirement-level
+- **REQ_PLANNING_STARTED** — Tech Lead began decomposition (kicks off planner stage timing)
+- **REQ_CLASSIFIED** — requirement classified as feature / bugfix / refactor
+- **REQ_ESTIMATED** — heuristic estimator emitted a quote (`nxd estimate`)
+- **REQ_PAUSED** — pipeline paused (billing exhaustion, manual hold, or unrecoverable stall)
+- **REQ_RESUMED** — paused requirement resumed
+- **REQ_REJECTED** — requirement rejected (planner declined, prompt-injection detected, or budget exceeded)
+- **REQ_PENDING_REVIEW** — requirement awaiting human approval before dispatch
+
+### Investigation
+- **INVESTIGATION_COMPLETED** — investigator produced an InvestigationReport for an existing-codebase requirement
+
+### Conflict resolution
+- **STORY_CONFLICT_BINARY** — git rebase hit a binary conflict
+- **STORY_CONFLICT_BINARY_REMOVED** — binary file stripped from branch as part of conflict resolution
+- **STORY_CONFLICT_ESCALATED** — conflict resolver gave up; merge escalated to human
+
+### Controller (auto-recovery)
+- **CONTROLLER_ANALYSIS** — emitted every tick with stories_checked + actions_taken counts
+- **CONTROLLER_ACTION** — controller cancelled / restarted / reprioritised a stuck story
+- **CONTROLLER_STUCK_DETECTED** — story exceeded stuck threshold (stuck_duration_s, escalation_tier)
+- **RECOVERY_COMPLETED** — orphan worktree / lockfile / branch recovery finished
+
+### Operator directives
+- **USER_DIRECTIVE** — `nxd direct <id> "<message>"` — injected into the next native-runtime iteration
+- **DIRECTIVE_ACKED** — agent acknowledged it processed a USER_DIRECTIVE
+- **HUMAN_REVIEW_NEEDED** — pipeline parked awaiting human input (e.g. PR approval, tier-3 escalation)
+
+Note: 6 devdb events (`STORY_DB_CREATED`, `STORY_DB_FAILED`, `STORY_DB_DELETED` plus their controller/recovery siblings) are documented in [`docs/guides/configuration.md`](../guides/configuration.md). For the canonical list, see `EventType` constants in `internal/state/events.go`.
