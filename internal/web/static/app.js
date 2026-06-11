@@ -428,7 +428,7 @@ function renderStories(stories, storyDBs) {
   const tbody = document.querySelector("#stories-table tbody");
   if (!sorted.length) {
     tbody.innerHTML =
-      '<tr><td colspan="7" class="muted">No stories \u2014 run \'nxd plan\' to create a requirement</td></tr>';
+      '<tr><td colspan="7" class="muted">No stories yet \u2014 run <code>nxd req --background "&lt;requirement&gt;"</code> in a git repo to create one.</td></tr>';
     return;
   }
   const dbs = storyDBs || {};
