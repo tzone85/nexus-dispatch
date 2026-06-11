@@ -5,12 +5,13 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/tzone85/nexus-dispatch/internal/shellexec"
 )
 
 // readDatabaseURL returns the DATABASE_URL value from .nxd-db/connect.env in workDir,
@@ -43,7 +44,11 @@ func evaluateMigrationSucceeds(ctx context.Context, workDir string, c Criterion)
 		return Result{Criterion: c, Passed: false,
 			Message: "no .nxd-db/connect.env in worktree — devdb not provisioned for this story"}
 	}
-	cmd := exec.CommandContext(ctx, "sh", "-c", c.Command)
+	// shellexec.CommandContext picks the right shell per OS (sh on Unix,
+	// cmd.exe on Windows; NXD_SHELL overrides). Direct exec.Command("sh", ...)
+	// would silently fail on native Windows even for read-only criteria
+	// evaluation against an externally-provisioned DB.
+	cmd := shellexec.CommandContext(ctx, c.Command)
 	cmd.Dir = workDir
 	cmd.Env = append(os.Environ(), "DATABASE_URL="+dsn)
 	out, err := cmd.CombinedOutput()
