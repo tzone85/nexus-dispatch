@@ -1007,8 +1007,15 @@ func TestCheckForModelUpdates_DisabledByEnv(t *testing.T) {
 }
 
 func TestCheckForModelUpdates_UpdateCheckDisabledInConfig(t *testing.T) {
+	// Hard-disable the background poll. Without this, DefaultConfig's
+	// update_check=true + update_interval_hours=48 path schedules a
+	// goroutine that writes to <HOME>/.nxd/update-status.json — the
+	// goroutine may still be writing when t.TempDir's cleanup runs,
+	// producing intermittent `unlinkat ... directory not empty` flake
+	// in CI under -race.
+	t.Setenv("NXD_UPDATE_CHECK", "false")
+
 	env := setupTestEnv(t)
-	// The test config has UpdateCheck = false (default), so this returns early
 	cmd := newStatusCmd()
 	if cmd.Flags().Lookup("config") == nil {
 		cmd.Flags().String("config", "", "")
@@ -1486,9 +1493,13 @@ func TestRunGC_ReaperNoEligible(t *testing.T) {
 // ─── checkForModelUpdates with valid config but update_check disabled ─────────
 
 func TestCheckForModelUpdates_ValidConfig_NoUpdateCheck(t *testing.T) {
-	env := setupTestEnv(t)
+	// Hard-disable the background poll for the same reason as
+	// TestCheckForModelUpdates_UpdateCheckDisabledInConfig above —
+	// avoid the unlinkat race when TempDir cleanup overlaps a still-
+	// writing background goroutine.
+	t.Setenv("NXD_UPDATE_CHECK", "false")
 
-	// The test config doesn't have update_check: true, so this returns early after config load
+	env := setupTestEnv(t)
 	cmd := newStatusCmd()
 	if cmd.Flags().Lookup("config") == nil {
 		cmd.Flags().String("config", "", "")

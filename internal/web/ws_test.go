@@ -369,8 +369,17 @@ func TestServer_Start_GracefulShutdown(t *testing.T) {
 		errCh <- s.Start(ctx)
 	}()
 
-	// Give the server time to start
-	time.Sleep(200 * time.Millisecond)
+	// Poll for actual bind instead of sleeping. waitForPort needs a known
+	// port but s.port=0 means "pick any". Poll BindAddr() which is set
+	// after the listener accepts — same wait condition, no hard-coded
+	// sleep that drifts into flake on a slow CI runner.
+	deadline := time.Now().Add(2 * time.Second)
+	for s.BindAddr() == "" && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if s.BindAddr() == "" {
+		t.Fatal("server did not bind within 2s")
+	}
 
 	// Cancel context to trigger graceful shutdown
 	cancel()
