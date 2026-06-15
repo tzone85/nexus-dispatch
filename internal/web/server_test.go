@@ -271,8 +271,8 @@ func TestHandleEscalate_CapAtMax(t *testing.T) {
 	reqID := seedRequirement(t, s)
 	storyID := seedStory(t, s, reqID)
 
-	// Escalate four times — should cap at 3.
-	for range 4 {
+	// Escalate maxEscalationTier+2 times — should cap at maxEscalationTier.
+	for range maxEscalationTier + 2 {
 		s.HandleCommand("escalate_story", mustMarshal(t, map[string]any{"story_id": storyID}))
 	}
 
@@ -282,6 +282,37 @@ func TestHandleEscalate_CapAtMax(t *testing.T) {
 	}
 	if story.EscalationTier > maxEscalationTier {
 		t.Errorf("escalation_tier %d exceeds max %d", story.EscalationTier, maxEscalationTier)
+	}
+}
+
+// F11: tier 4 is the engine's pause/human-review terminal. The dashboard
+// used to cap reassign at 3, stranding operators who wanted to send a
+// stuck story straight to human review without an out-of-band CLI step.
+func TestHandleReassign_AcceptsTier4(t *testing.T) {
+	s := newTestServer(t)
+	reqID := seedRequirement(t, s)
+	storyID := seedStory(t, s, reqID)
+
+	resp := s.HandleCommand("reassign_story", mustMarshal(t, map[string]any{
+		"story_id":    storyID,
+		"target_tier": 4,
+	}))
+	if !resp.Success {
+		t.Fatalf("reassign tier 4 should succeed, got %q", resp.Message)
+	}
+}
+
+func TestHandleReassign_RejectsAboveTier4(t *testing.T) {
+	s := newTestServer(t)
+	reqID := seedRequirement(t, s)
+	storyID := seedStory(t, s, reqID)
+
+	resp := s.HandleCommand("reassign_story", mustMarshal(t, map[string]any{
+		"story_id":    storyID,
+		"target_tier": 5,
+	}))
+	if resp.Success {
+		t.Error("reassign tier 5 should be rejected")
 	}
 }
 

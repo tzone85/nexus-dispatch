@@ -38,6 +38,20 @@ func TestStore_WriteAndRead(t *testing.T) {
 	if got.Model != "gemma4:e4b" {
 		t.Errorf("model = %q, want gemma4:e4b", got.Model)
 	}
+
+	// F8: artifact files may contain private code / prompts / env-derived
+	// context. Confirm the on-disk perms keep other local users out.
+	info, statErr := os.Stat(filepath.Join(dir, "s-001", "launch_config.json"))
+	if statErr != nil {
+		t.Fatalf("stat: %v", statErr)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("launch_config.json perms = %o, want 0o600", perm)
+	}
+	dirInfo, _ := os.Stat(filepath.Join(dir, "s-001"))
+	if perm := dirInfo.Mode().Perm(); perm != 0o700 {
+		t.Errorf("story dir perms = %o, want 0o700", perm)
+	}
 }
 
 func TestStore_WriteRaw(t *testing.T) {

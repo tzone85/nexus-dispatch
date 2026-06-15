@@ -9,7 +9,22 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/tzone85/nexus-dispatch/internal/sanitize"
 )
+
+// resolveWorkDirPath joins workDir and rel, refusing any rel that is
+// absolute or escapes workDir via "..". Centralised so file_exists,
+// file_contains, and schema_changed share the same containment policy.
+//
+// Criteria are configured from nxd.yaml — operator-trusted — but the LLM
+// "split" action can also emit criteria, and merge-conflict resolution can
+// pull criteria text from upstream branches. A malicious value like
+// "../../etc/passwd" would otherwise let a file_contains check probe the
+// host filesystem.
+func resolveWorkDirPath(workDir, rel string) (string, error) {
+	return sanitize.SafeJoin(workDir, rel)
+}
 
 // Evaluate runs a single criterion check against the given working directory.
 func Evaluate(ctx context.Context, workDir string, c Criterion) Result {
@@ -71,16 +86,21 @@ func FailureSummary(results []Result) string {
 }
 
 func evalFileExists(workDir string, c Criterion) Result {
-	path := filepath.Join(workDir, c.Target)
-	_, err := os.Stat(path)
+	path, err := resolveWorkDirPath(workDir, c.Target)
 	if err != nil {
+		return Result{Criterion: c, Passed: false, Message: fmt.Sprintf("rejected target %q: %v", c.Target, err)}
+	}
+	if _, err := os.Stat(path); err != nil {
 		return Result{Criterion: c, Passed: false, Message: fmt.Sprintf("file not found: %s", c.Target)}
 	}
 	return Result{Criterion: c, Passed: true, Actual: "exists", Message: "file exists"}
 }
 
 func evalFileContains(workDir string, c Criterion) Result {
-	path := filepath.Join(workDir, c.Target)
+	path, pathErr := resolveWorkDirPath(workDir, c.Target)
+	if pathErr != nil {
+		return Result{Criterion: c, Passed: false, Message: fmt.Sprintf("rejected target %q: %v", c.Target, pathErr)}
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Result{Criterion: c, Passed: false, Message: fmt.Sprintf("cannot read file: %v", err)}

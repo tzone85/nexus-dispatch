@@ -44,7 +44,10 @@ type Store struct {
 // NewStore creates a Store rooted at baseDir (typically {stateDir}/artifacts).
 // The directory is created if it does not exist.
 func NewStore(baseDir string) (*Store, error) {
-	if err := os.MkdirAll(baseDir, 0o755); err != nil {
+	// F8: artifacts carry launch configs, prompts, raw diffs, and review/QA
+	// outputs — sometimes including snippets from a private codebase. Keep
+	// other local users out by default (0o700 dirs, 0o600 files below).
+	if err := os.MkdirAll(baseDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create artifact base dir: %w", err)
 	}
 	return &Store{baseDir: baseDir}, nil
@@ -64,7 +67,7 @@ func (s *Store) Init(storyID string) error {
 	if err != nil {
 		return err
 	}
-	return os.MkdirAll(dir, 0o755)
+	return os.MkdirAll(dir, 0o700)
 }
 
 // Write stores a typed artifact as JSON for the given story.
@@ -76,7 +79,7 @@ func (s *Store) Write(storyID string, artifactType Type, data any) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("mkdir artifact dir: %w", err)
 	}
 
@@ -86,7 +89,7 @@ func (s *Store) Write(storyID string, artifactType Type, data any) error {
 	}
 
 	path := filepath.Join(dir, string(artifactType)+".json")
-	return os.WriteFile(path, content, 0o644)
+	return os.WriteFile(path, content, 0o600)
 }
 
 // WriteRaw stores a raw text artifact (e.g. diff, log) for the given story.
@@ -98,7 +101,7 @@ func (s *Store) WriteRaw(storyID string, artifactType Type, content string) erro
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("mkdir artifact dir: %w", err)
 	}
 
@@ -107,7 +110,7 @@ func (s *Store) WriteRaw(storyID string, artifactType Type, content string) erro
 		ext = ".patch"
 	}
 	path := filepath.Join(dir, string(artifactType)+ext)
-	return os.WriteFile(path, []byte(content), 0o644)
+	return os.WriteFile(path, []byte(content), 0o600)
 }
 
 // Append adds a line to a JSONL artifact file (e.g. trace events).
@@ -119,7 +122,7 @@ func (s *Store) Append(storyID string, artifactType Type, data any) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("mkdir artifact dir: %w", err)
 	}
 
@@ -130,7 +133,7 @@ func (s *Store) Append(storyID string, artifactType Type, data any) error {
 	line = append(line, '\n')
 
 	path := filepath.Join(dir, string(artifactType)+".jsonl")
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return fmt.Errorf("open trace file: %w", err)
 	}

@@ -31,7 +31,7 @@ func NewRunnerFromConfig(rc config.RuntimeConfig) (Runner, error) {
 			KeyFile:    rc.SSH.KeyFile,
 			RemoteDir:  rc.SSH.RemoteDir,
 			ExtraFlags: rc.SSH.ExtraFlags,
-		}), nil
+		})
 	default:
 		return nil, fmt.Errorf("unknown runner type: %q (expected tmux, docker, or ssh)", rc.Runner)
 	}

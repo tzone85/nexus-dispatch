@@ -176,6 +176,12 @@ func (p *Provider) Fork(ctx context.Context, template string, opts devdb.CreateO
 	if !devdb.IsValid(opts.Name) {
 		return devdb.DB{}, fmt.Errorf("%w: %q", devdb.ErrInvalidName, opts.Name)
 	}
+	// F5 defence-in-depth: even though config validation rejects malformed
+	// template names today, Lifecycle callers could be updated to skip
+	// validation. Re-check here so this SQL builder stays safe in isolation.
+	if !devdb.IsValid(template) {
+		return devdb.DB{}, fmt.Errorf("%w: template %q", devdb.ErrInvalidName, template)
+	}
 	pg, err := p.adminConn(ctx)
 	if err != nil {
 		return devdb.DB{}, err

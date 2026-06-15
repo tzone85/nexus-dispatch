@@ -88,8 +88,17 @@ func evaluateSchemaChanged(ctx context.Context, workDir string, c Criterion) Res
 	baselinePath := c.SchemaBaseline
 	if baselinePath == "" {
 		baselinePath = filepath.Join(workDir, ".nxd-db", "baseline-schema.txt")
-	} else if !filepath.IsAbs(baselinePath) {
-		baselinePath = filepath.Join(workDir, baselinePath)
+	} else {
+		// schema_changed previously honoured absolute SchemaBaseline values
+		// and "../" traversal. That lets a malicious nxd.yaml read any host
+		// file as a QA check (the dump-vs-baseline comparison reveals diff
+		// content in the failure message). Force baseline into the worktree.
+		safe, sErr := resolveWorkDirPath(workDir, baselinePath)
+		if sErr != nil {
+			return Result{Criterion: c, Passed: false,
+				Message: fmt.Sprintf("schema_changed: rejected baseline %q: %v", baselinePath, sErr)}
+		}
+		baselinePath = safe
 	}
 	baseline, err := os.ReadFile(baselinePath)
 	if err != nil {

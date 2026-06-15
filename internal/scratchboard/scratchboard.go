@@ -33,7 +33,10 @@ type Scratchboard struct {
 // The parent directory is created if it does not exist.
 func New(path string) (*Scratchboard, error) {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	// F8: scratchboard entries are cross-agent discoveries — often
+	// including code excerpts and command output from a private repo.
+	// Default to operator-only (0o700 dirs / 0o600 files).
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create scratchboard dir: %w", err)
 	}
 	return &Scratchboard{path: path}, nil
@@ -54,7 +57,7 @@ func (s *Scratchboard) Write(entry Entry) error {
 	}
 	line = append(line, '\n')
 
-	f, err := os.OpenFile(s.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(s.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return fmt.Errorf("open scratchboard: %w", err)
 	}

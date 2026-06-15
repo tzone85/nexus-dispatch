@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -10,8 +11,83 @@ func TestSSHRunner_Implements_Runner(t *testing.T) {
 	var _ Runner = (*SSHRunner)(nil)
 }
 
+// H13: NewSSHRunner must reject remote_dir values that could be
+// interpreted as shell metacharacters when the runner later builds
+// "cd <remote_dir> && ...".
+func TestNewSSHRunner_RejectsUnsafeRemoteDir(t *testing.T) {
+	cases := []string{
+		"/tmp/nxd; touch /tmp/pwn",
+		"/tmp/nxd && rm -rf /",
+		"/tmp/$(id)",
+		"/tmp/`id`",
+		"relative/path",
+		"/tmp/with spaces",
+		"/tmp/../etc",
+	}
+	for _, dir := range cases {
+		_, err := NewSSHRunner(SSHConfig{Host: "user@host", RemoteDir: dir})
+		if err == nil {
+			t.Errorf("NewSSHRunner(remote_dir=%q) accepted unsafe input", dir)
+		}
+	}
+}
+
+func TestNewSSHRunner_AcceptsSafeRemoteDir(t *testing.T) {
+	cases := []string{
+		"/tmp/nxd-agent",
+		"/opt/nxd",
+		"/home/deploy/nxd-work",
+		"/var/lib/nxd_v2",
+	}
+	for _, dir := range cases {
+		if _, err := NewSSHRunner(SSHConfig{Host: "user@host", RemoteDir: dir}); err != nil {
+			t.Errorf("NewSSHRunner(remote_dir=%q) rejected safe input: %v", dir, err)
+		}
+	}
+}
+
+// H14: per-session staging dir must isolate setup files between
+// concurrent SSH runs. We approximate the regression by writing two
+// SetupFiles maps that share a basename and verifying the runner's
+// scp source path lives under a per-session temp dir.
+func TestSSHRunner_Run_PerSessionStageDir(t *testing.T) {
+	var scpSources []string
+	original := sshExecCommand
+	sshExecCommand = func(name string, args ...string) *exec.Cmd {
+		if name == "scp" && len(args) >= 1 {
+			// args layout: [-i key]? <local> <host>:<remote>
+			// local is the second-to-last positional arg.
+			scpSources = append(scpSources, args[len(args)-2])
+		}
+		return exec.Command("true")
+	}
+	defer func() { sshExecCommand = original }()
+
+	r, _ := NewSSHRunner(SSHConfig{Host: "user@host"})
+	pe := PreparedExecution{
+		Command:     "claude",
+		WorkDir:     t.TempDir(),
+		SessionName: "stagedir-session",
+		SetupFiles:  map[string]string{"/local/CLAUDE.md": "# agent"},
+		Env:         map[string]string{},
+	}
+	if err := r.Run(pe); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(scpSources) != 1 {
+		t.Fatalf("expected 1 scp source, got %d (%v)", len(scpSources), scpSources)
+	}
+	if !strings.Contains(scpSources[0], "nxd-ssh-stagedir-session-") {
+		t.Errorf("scp source %q should live under a per-session stage dir", scpSources[0])
+	}
+	// Stage dir must be cleaned up after Run() returns.
+	if _, err := os.Stat(scpSources[0]); err == nil {
+		t.Errorf("stage file %q should be removed after Run()", scpSources[0])
+	}
+}
+
 func TestNewSSHRunner_Defaults(t *testing.T) {
-	r := NewSSHRunner(SSHConfig{Host: "user@host"})
+	r, _ := NewSSHRunner(SSHConfig{Host: "user@host"})
 	if r.host != "user@host" {
 		t.Errorf("host = %q, want user@host", r.host)
 	}
@@ -24,7 +100,7 @@ func TestNewSSHRunner_Defaults(t *testing.T) {
 }
 
 func TestNewSSHRunner_CustomConfig(t *testing.T) {
-	r := NewSSHRunner(SSHConfig{
+	r, _ := NewSSHRunner(SSHConfig{
 		Host:      "deploy@prod.example.com",
 		KeyFile:   "/home/user/.ssh/id_ed25519",
 		RemoteDir: "/opt/nxd",
@@ -42,7 +118,7 @@ func TestNewSSHRunner_CustomConfig(t *testing.T) {
 
 func TestNewSSHRunner_ExtraFlags(t *testing.T) {
 	flags := []string{"-o", "StrictHostKeyChecking=no"}
-	r := NewSSHRunner(SSHConfig{
+	r, _ := NewSSHRunner(SSHConfig{
 		Host:       "user@host",
 		ExtraFlags: flags,
 	})
@@ -52,7 +128,7 @@ func TestNewSSHRunner_ExtraFlags(t *testing.T) {
 }
 
 func TestSSHRunner_SendInput_Unsupported(t *testing.T) {
-	r := NewSSHRunner(SSHConfig{Host: "user@host"})
+	r, _ := NewSSHRunner(SSHConfig{Host: "user@host"})
 	err := r.SendInput("test-session", "hello")
 	if err == nil {
 		t.Error("SendInput should return error for SSH runner")
@@ -63,7 +139,7 @@ func TestSSHRunner_SendInput_Unsupported(t *testing.T) {
 }
 
 func TestSSHRunner_BuildSSHCmd_WithKey(t *testing.T) {
-	r := NewSSHRunner(SSHConfig{
+	r, _ := NewSSHRunner(SSHConfig{
 		Host:    "user@host",
 		KeyFile: "/path/to/key",
 	})
@@ -85,7 +161,7 @@ func TestSSHRunner_BuildSSHCmd_WithKey(t *testing.T) {
 }
 
 func TestSSHRunner_BuildSSHCmd_WithoutKey(t *testing.T) {
-	r := NewSSHRunner(SSHConfig{Host: "user@host"})
+	r, _ := NewSSHRunner(SSHConfig{Host: "user@host"})
 
 	cmd := r.buildSSHCmd("whoami")
 	args := cmd.Args
@@ -100,7 +176,7 @@ func TestSSHRunner_BuildSSHCmd_WithoutKey(t *testing.T) {
 }
 
 func TestSSHRunner_BuildSSHCmd_WithExtraFlags(t *testing.T) {
-	r := NewSSHRunner(SSHConfig{
+	r, _ := NewSSHRunner(SSHConfig{
 		Host:       "user@host",
 		ExtraFlags: []string{"-o", "StrictHostKeyChecking=no"},
 	})
@@ -122,7 +198,7 @@ func TestSSHRunner_Run_CreatesRemoteDir(t *testing.T) {
 	}
 	defer func() { sshExecCommand = original }()
 
-	r := NewSSHRunner(SSHConfig{Host: "user@host", RemoteDir: "/opt/nxd"})
+	r, _ := NewSSHRunner(SSHConfig{Host: "user@host", RemoteDir: "/opt/nxd"})
 	pe := PreparedExecution{
 		Command:     "claude -p 'test'",
 		WorkDir:     t.TempDir(),
@@ -162,7 +238,7 @@ func TestSSHRunner_Run_EnvExports(t *testing.T) {
 	}
 	defer func() { sshExecCommand = original }()
 
-	r := NewSSHRunner(SSHConfig{Host: "user@host"})
+	r, _ := NewSSHRunner(SSHConfig{Host: "user@host"})
 	pe := PreparedExecution{
 		Command:     "claude -p 'test'",
 		WorkDir:     t.TempDir(),
@@ -192,7 +268,7 @@ func TestSSHRunner_Terminate_KillsBySession(t *testing.T) {
 	}
 	defer func() { sshExecCommand = original }()
 
-	r := NewSSHRunner(SSHConfig{Host: "user@host"})
+	r, _ := NewSSHRunner(SSHConfig{Host: "user@host"})
 	err := r.Terminate("my-session")
 	if err != nil {
 		t.Fatalf("Terminate: %v", err)
@@ -213,7 +289,7 @@ func TestSSHRunner_ReadOutput_UsesTail(t *testing.T) {
 	}
 	defer func() { sshExecCommand = original }()
 
-	r := NewSSHRunner(SSHConfig{Host: "user@host", RemoteDir: "/opt/nxd"})
+	r, _ := NewSSHRunner(SSHConfig{Host: "user@host", RemoteDir: "/opt/nxd"})
 	out, err := r.ReadOutput("my-session", 25)
 	if err != nil {
 		t.Fatalf("ReadOutput: %v", err)
@@ -241,7 +317,7 @@ func TestSSHRunner_IsAlive_Running(t *testing.T) {
 	}
 	defer func() { sshExecCommand = original }()
 
-	r := NewSSHRunner(SSHConfig{Host: "user@host"})
+	r, _ := NewSSHRunner(SSHConfig{Host: "user@host"})
 	if !r.IsAlive("running-session") {
 		t.Error("IsAlive should return true when pgrep succeeds")
 	}
@@ -254,7 +330,7 @@ func TestSSHRunner_IsAlive_NotRunning(t *testing.T) {
 	}
 	defer func() { sshExecCommand = original }()
 
-	r := NewSSHRunner(SSHConfig{Host: "user@host"})
+	r, _ := NewSSHRunner(SSHConfig{Host: "user@host"})
 	if r.IsAlive("dead-session") {
 		t.Error("IsAlive should return false when pgrep fails")
 	}
@@ -271,7 +347,7 @@ func TestSSHRunner_ScpTo_WithKey(t *testing.T) {
 	}
 	defer func() { sshExecCommand = original }()
 
-	r := NewSSHRunner(SSHConfig{
+	r, _ := NewSSHRunner(SSHConfig{
 		Host:    "user@host",
 		KeyFile: "/path/to/key",
 	})
@@ -306,7 +382,7 @@ func TestSSHRunner_ScpTo_WithoutKey(t *testing.T) {
 	}
 	defer func() { sshExecCommand = original }()
 
-	r := NewSSHRunner(SSHConfig{Host: "user@host"})
+	r, _ := NewSSHRunner(SSHConfig{Host: "user@host"})
 
 	err := r.scpTo("/tmp/local.txt", "/remote/file.txt")
 	if err != nil {
@@ -329,7 +405,7 @@ func TestSSHRunner_Run_MkdirFails(t *testing.T) {
 	}
 	defer func() { sshExecCommand = original }()
 
-	r := NewSSHRunner(SSHConfig{Host: "user@host"})
+	r, _ := NewSSHRunner(SSHConfig{Host: "user@host"})
 	pe := PreparedExecution{
 		Command:     "claude -p 'test'",
 		WorkDir:     t.TempDir(),
@@ -368,7 +444,7 @@ func TestSSHRunner_Run_WithSetupFiles(t *testing.T) {
 	// Use a real temp file as setup file source.
 	setupLocalPath := tmpDir + "/CLAUDE.md"
 
-	r := NewSSHRunner(SSHConfig{Host: "user@host"})
+	r, _ := NewSSHRunner(SSHConfig{Host: "user@host"})
 	pe := PreparedExecution{
 		Command:     "claude",
 		WorkDir:     tmpDir,
@@ -393,7 +469,7 @@ func TestSSHRunner_ReadOutput_Fails(t *testing.T) {
 	}
 	defer func() { sshExecCommand = original }()
 
-	r := NewSSHRunner(SSHConfig{Host: "user@host", RemoteDir: "/opt/nxd"})
+	r, _ := NewSSHRunner(SSHConfig{Host: "user@host", RemoteDir: "/opt/nxd"})
 	_, err := r.ReadOutput("bad-session", 10)
 	if err == nil {
 		t.Fatal("expected error when ssh tail fails")
@@ -410,7 +486,7 @@ func TestSSHRunner_ScpTo_Fails(t *testing.T) {
 	}
 	defer func() { sshExecCommand = original }()
 
-	r := NewSSHRunner(SSHConfig{Host: "user@host"})
+	r, _ := NewSSHRunner(SSHConfig{Host: "user@host"})
 	err := r.scpTo("/tmp/local.txt", "/remote/file.txt")
 	if err == nil {
 		t.Fatal("expected error when scp fails")

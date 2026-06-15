@@ -22,3 +22,14 @@ func TestOpenBrowser_RespectsNxdNoBrowser(t *testing.T) {
 	// a stderr spew from the missing `open` binary on CI.
 	openBrowser("http://127.0.0.1:0/?token=test")
 }
+
+// F6: default policy is to skip the browser launch so the dashboard
+// token does not leak through argv to other local users via `ps`.
+// Operators on a single-user machine can opt back in with
+// NXD_OPEN_BROWSER=1. Without that envvar, openBrowser must no-op even
+// when NXD_NO_BROWSER is not set.
+func TestOpenBrowser_DefaultSkipsLaunch(t *testing.T) {
+	t.Setenv("NXD_OPEN_BROWSER", "")
+	t.Setenv("NXD_NO_BROWSER", "")
+	openBrowser("http://127.0.0.1:0/?token=test")
+}

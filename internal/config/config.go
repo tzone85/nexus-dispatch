@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/tzone85/nexus-dispatch/internal/devdb"
 )
 
 // MemoryConfig controls the MemPalace context-memory subsystem.
@@ -509,6 +511,18 @@ func validateDevDB(c DevDBConfig) error {
 	case "docker":
 		if c.Template == "" {
 			return fmt.Errorf("devdb.template required for docker provider")
+		}
+		// F5: template ends up as a Postgres identifier inside
+		// `CREATE DATABASE ... WITH TEMPLATE %q` (fmt.Sprintf, not pgx
+		// identifier sanitiser). Reject anything outside the
+		// FormatDBName charset before we get there so an operator
+		// can't break SQL with `evil"; DROP DATABASE x; --`.
+		if !devdb.IsValid(c.Template) {
+			return fmt.Errorf(
+				"devdb.template %q is not a valid Postgres identifier "+
+					"(must match ^[a-z][a-z0-9-]{0,62}$)",
+				c.Template,
+			)
 		}
 		return nil
 	default:

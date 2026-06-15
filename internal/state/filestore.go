@@ -3,9 +3,19 @@ package state
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"os"
 	"sync"
 )
+
+// eventsLenientEnv lets operators opt back into the legacy "silently
+// skip corrupted JSONL lines" behaviour during emergency recovery
+// (e.g. a half-written event from a crashed run). Default is strict
+// because the projection store, retry counter, metrics aggregator, and
+// resume logic all derive their truth from events.jsonl — silent
+// corruption would let the system run on a degraded view of state
+// without anyone noticing.
+const eventsLenientEnv = "NXD_EVENTS_LENIENT"
 
 // FileStore is a file-based append-only event store using JSONL format.
 type FileStore struct {
@@ -73,12 +83,28 @@ func (fs *FileStore) readAndFilter(filter EventFilter) ([]Event, error) {
 	}
 	defer f.Close()
 
+	lenient := os.Getenv(eventsLenientEnv) != ""
+
 	var events []Event
 	scanner := bufio.NewScanner(f)
+	lineNo := 0
 	for scanner.Scan() {
-		var evt Event
-		if err := json.Unmarshal(scanner.Bytes(), &evt); err != nil {
+		lineNo++
+		raw := scanner.Bytes()
+		// Skip wholly blank lines without surfacing them as corruption —
+		// editors sometimes leave a trailing newline.
+		if len(raw) == 0 {
 			continue
+		}
+		var evt Event
+		if err := json.Unmarshal(raw, &evt); err != nil {
+			if lenient {
+				continue
+			}
+			return nil, fmt.Errorf(
+				"events.jsonl line %d is corrupt: %w (set %s=1 to skip corrupt lines)",
+				lineNo, err, eventsLenientEnv,
+			)
 		}
 		if filter.Type != "" && evt.Type != filter.Type {
 			continue
