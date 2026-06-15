@@ -346,6 +346,181 @@ When `devdb.provider == null` the subcommands return a helpful "devdb is not con
 
 ---
 
+### nxd pause
+
+Pause a requirement. Emits `REQ_PAUSED`; active agents finish their current step but no new waves dispatch until `nxd resume`.
+
+```bash
+nxd pause <req-id>
+```
+
+---
+
+### nxd archive
+
+Archive a finished requirement so it stops appearing in `status` / `dashboard`. Use `--all` on those commands to see archived requirements again.
+
+```bash
+nxd archive <req-id>
+```
+
+---
+
+### nxd models
+
+Manage and check LLM model versions.
+
+```bash
+nxd models check         # Query Ollama + Google AI Studio for newer model versions
+```
+
+---
+
+### nxd metrics
+
+Show aggregate pipeline metrics and token usage from `metrics.jsonl`.
+
+```bash
+nxd metrics [--json]
+```
+
+---
+
+### nxd watch
+
+Tail the event store as a live stream. Ctrl+C to stop.
+
+```bash
+nxd watch
+```
+
+---
+
+### nxd plan
+
+Run the planning pipeline (classify, investigate, plan) against a temporary store and print the proposed plan. Nothing is persisted.
+
+```bash
+nxd plan "<requirement>"
+nxd plan --file requirements.md
+cat spec.md | nxd plan --file -
+```
+
+---
+
+### nxd approve
+
+Approve a requirement in `pending_review` status (set by `nxd req --review`). Transitions it to `planned` so execution can proceed.
+
+```bash
+nxd approve <req-id>
+```
+
+---
+
+### nxd reject
+
+Reject a requirement in `pending_review` status. Emits `REQ_REJECTED`.
+
+```bash
+nxd reject <req-id>
+```
+
+---
+
+### nxd review
+
+Inspect a story's pending changes before merge.
+
+```bash
+nxd review <story-id>
+```
+
+---
+
+### nxd merge
+
+Manually merge a story that has reached `merge_ready`. Used when `merge.auto_merge` is off or a story needed human sign-off.
+
+```bash
+nxd merge <story-id>
+```
+
+---
+
+### nxd doctor
+
+Run preflight checks on every NXD dependency and configuration value. Use before the first run on a new machine.
+
+```bash
+nxd doctor
+```
+
+---
+
+### nxd estimate
+
+Produce a client quote and internal cost projection for a requirement. Uses the planner for accuracy or `--quick` for a heuristic estimate.
+
+```bash
+nxd estimate "<requirement>"
+nxd estimate --file requirements.md --quick
+```
+
+---
+
+### nxd report
+
+Produce a client-facing delivery report (deliverables, timeline, effort) for a completed requirement. `--internal` adds technical detail; `--html` emits styled HTML.
+
+```bash
+nxd report <req-id> [--internal] [--html]
+```
+
+---
+
+### nxd learn
+
+Run repository analysis to build a `RepoProfile` that agents consume at dispatch time. Three passes: static scan, git history, LLM-assisted deep analysis.
+
+```bash
+nxd learn [--force] [--pass <1|2|3>]
+```
+
+---
+
+### nxd spec
+
+Spec-driven development scaffolding. `nxd spec init` creates a `.spec/` folder with 8 markdown files covering the 5W1H dimensions; the planner picks them up as structured context.
+
+```bash
+nxd spec init
+```
+
+---
+
+### nxd direct
+
+Append an operator directive to the event log. The native runtime checks for unacknowledged directives at the top of every iteration and prepends them to the agent's prompt — useful for redirecting agents without pausing the run.
+
+```bash
+nxd direct <req-id-or-story-id> "<directive text>"
+```
+
+---
+
+### nxd improve
+
+Run the self-improvement module: scan metrics + state, optionally fetch curated tips from a JSON feed, and print recommendations.
+
+```bash
+nxd improve
+nxd improve --feed https://example.com/tips.json
+nxd improve --json
+```
+
+---
+
 ### Tech-Lead conflict resolver + post-merge integration build
 
 When two stories merge against the same files, NXD runs an automated three-way conflict resolution pipeline:

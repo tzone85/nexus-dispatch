@@ -11,7 +11,12 @@ import (
 	"github.com/tzone85/nexus-dispatch/internal/state"
 )
 
-const maxEscalationTier = 3
+// F11: tier 4 is the engine's "pause / human review" terminal — see
+// EscalationMachine.MaxRetriesForTier (returns 0 for tier 4+) and the
+// "Tier 4+: pause / human fallback" doc. Capping the dashboard at 3
+// stranded operators who wanted to escalate a stuck story straight to
+// human review without an out-of-band CLI step.
+const maxEscalationTier = 4
 
 // HandleCommand dispatches a WebSocket command to the appropriate handler.
 func (s *Server) HandleCommand(action string, payload json.RawMessage) WSResponse {

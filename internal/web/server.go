@@ -194,12 +194,21 @@ func (s *Server) Start(ctx context.Context) error {
 }
 
 func openBrowser(url string) {
-	// CI / headless / SSH sessions don't have a browser, and the URL we
-	// pass to `open` / `xdg-open` contains the auth token. Process args
-	// are world-readable via `ps` on most systems, so leaking the token
-	// to every local user is a real concern in multi-tenant environments.
-	// Opt-out: set NXD_NO_BROWSER=1 to suppress the launch entirely. The
-	// URL is still printed via log.Printf for operator discovery.
+	// F6: The URL embeds ?token=<hex>. `open` / `xdg-open` receive it as
+	// argv, and `ps` exposes the full argv to every other user on most
+	// systems — so auto-launching the browser leaks the dashboard token
+	// to every local process in multi-tenant or shared-dev environments.
+	//
+	// Default policy is now to NOT launch the browser. The operator sees
+	// the full token URL via log.Printf and clicks it from their terminal,
+	// which keeps the secret off the process table. Set
+	// NXD_OPEN_BROWSER=1 to opt back in to the old behaviour on a
+	// trusted single-user machine.
+	if os.Getenv("NXD_OPEN_BROWSER") != "1" {
+		return
+	}
+	// NXD_NO_BROWSER stays honoured as an explicit suppression toggle
+	// (used by some test harnesses) even when NXD_OPEN_BROWSER=1.
 	if os.Getenv("NXD_NO_BROWSER") != "" {
 		return
 	}

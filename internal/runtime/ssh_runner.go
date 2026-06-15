@@ -5,10 +5,32 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/tzone85/nexus-dispatch/internal/sanitize"
 )
+
+// validRemoteDir restricts remote_dir to absolute POSIX paths composed of
+// safe characters only. The remote_dir lands inside `cd %s && ...` in
+// Run(), so anything that could break out of the cd target (`;`, `&`, `$`,
+// backticks, spaces, etc.) must be rejected here, not after the fact.
+// Operators with exotic remote layouts can override the regex via
+// `extra_flags` plumbed through ssh — this validator covers the shape NXD
+// is willing to interpolate without quoting.
+var validRemoteDir = regexp.MustCompile(`^/[A-Za-z0-9._/-]+$`)
+
+// ValidateRemoteDir reports whether dir is a safe value for SSHRunner.remoteDir.
+// Exposed for tests + config-time pre-validation.
+func ValidateRemoteDir(dir string) bool {
+	if dir == "" || len(dir) > 256 {
+		return false
+	}
+	if strings.Contains(dir, "..") {
+		return false
+	}
+	return validRemoteDir.MatchString(dir)
+}
 
 // SSHRunner executes agent sessions on remote machines via SSH.
 type SSHRunner struct {
@@ -27,17 +49,23 @@ type SSHConfig struct {
 }
 
 // NewSSHRunner creates an SSHRunner with the given config.
-func NewSSHRunner(cfg SSHConfig) *SSHRunner {
+// Returns an error if remote_dir fails ValidateRemoteDir — operators must
+// pick a safe POSIX path so we can interpolate it into remote shell
+// commands without escaping every call site.
+func NewSSHRunner(cfg SSHConfig) (*SSHRunner, error) {
 	remoteDir := cfg.RemoteDir
 	if remoteDir == "" {
 		remoteDir = "/tmp/nxd-agent"
+	}
+	if !ValidateRemoteDir(remoteDir) {
+		return nil, fmt.Errorf("invalid remote_dir %q: must be an absolute POSIX path of [A-Za-z0-9._/-] characters", remoteDir)
 	}
 	return &SSHRunner{
 		host:       cfg.Host,
 		keyFile:    cfg.KeyFile,
 		remoteDir:  remoteDir,
 		extraFlags: cfg.ExtraFlags,
-	}
+	}, nil
 }
 
 // Run uploads setup files and starts the execution on the remote machine.
@@ -54,16 +82,26 @@ func (r *SSHRunner) Run(pe PreparedExecution) error {
 		return fmt.Errorf("create remote dir: %w", err)
 	}
 
+	// H14: per-session staging dir so parallel SSH agents do not race on
+	// the same /tmp/<basename> path. The previous code wrote
+	// os.TempDir()+filepath.Base(localPath); two agents shipping the same
+	// CLAUDE.md would clobber each other before scp, leaking one session's
+	// prompt/env into the other.
+	stageDir, err := os.MkdirTemp("", "nxd-ssh-"+pe.SessionName+"-")
+	if err != nil {
+		return fmt.Errorf("create stage dir: %w", err)
+	}
+	defer os.RemoveAll(stageDir)
+
 	// Upload setup files via scp.
 	for localPath, content := range pe.SetupFiles {
 		// H11: write setup files mode 0o600 — they may carry env-var values
 		// (API keys, tokens). Mode 0o644 leaves them world-readable on
 		// shared dev hosts for the duration of the SCP.
-		tmpFile := filepath.Join(os.TempDir(), filepath.Base(localPath))
+		tmpFile := filepath.Join(stageDir, filepath.Base(localPath))
 		if err := os.WriteFile(tmpFile, []byte(content), 0o600); err != nil {
 			return fmt.Errorf("write temp file: %w", err)
 		}
-		defer os.Remove(tmpFile)
 
 		remotePath := filepath.Join(remoteWorkDir, filepath.Base(localPath))
 		if err := r.scpTo(tmpFile, remotePath); err != nil {

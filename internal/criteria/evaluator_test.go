@@ -54,6 +54,41 @@ func TestFileContains_Fail(t *testing.T) {
 	}
 }
 
+// F4: malicious Target values must not let file_exists/file_contains
+// read outside the worktree. Pre-fix, "../" segments and absolute paths
+// resolved against the host filesystem and silently surfaced contents
+// in the QA result (Actual / Message). Post-fix the resolver short-
+// circuits with a "rejected target" message.
+func TestFileExists_RejectsTraversal(t *testing.T) {
+	cases := []string{"../etc/passwd", "/etc/passwd", "../../something"}
+	for _, target := range cases {
+		r := Evaluate(context.Background(), t.TempDir(),
+			Criterion{Type: TypeFileExists, Target: target})
+		if r.Passed {
+			t.Errorf("file_exists target=%q should be rejected", target)
+		}
+		if !contains(r.Message, "rejected target") {
+			t.Errorf("file_exists target=%q message %q should mention rejection",
+				target, r.Message)
+		}
+	}
+}
+
+func TestFileContains_RejectsTraversal(t *testing.T) {
+	cases := []string{"../etc/passwd", "/etc/passwd", "../../../../etc/hosts"}
+	for _, target := range cases {
+		r := Evaluate(context.Background(), t.TempDir(),
+			Criterion{Type: TypeFileContains, Target: target, Expected: "root"})
+		if r.Passed {
+			t.Errorf("file_contains target=%q should be rejected", target)
+		}
+		if !contains(r.Message, "rejected target") {
+			t.Errorf("file_contains target=%q message %q should mention rejection",
+				target, r.Message)
+		}
+	}
+}
+
 func TestCommandSucceeds_Pass(t *testing.T) {
 	// `go vet` is allowlisted and runs cleanly on an empty go.mod tempdir
 	// when there is nothing to vet (exits 0). We seed a minimal package.

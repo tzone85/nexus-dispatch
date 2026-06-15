@@ -1,11 +1,73 @@
 package state_test
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/tzone85/nexus-dispatch/internal/state"
 )
+
+// F7: a half-written event line in events.jsonl previously short-
+// circuited as `continue`, silently dropping the corrupt record. Because
+// the projection store, retry counter, metrics aggregator, and resume
+// logic all re-derive truth from this file, that silent skip let the
+// rest of NXD run on a degraded view of state. Default behaviour is now
+// to surface the corruption with a line number.
+func TestFileStore_List_SurfacesCorruptLine(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "events.jsonl")
+	store, err := state.NewFileStore(path)
+	if err != nil {
+		t.Fatalf("new file store: %v", err)
+	}
+	store.Append(state.NewEvent(state.EventReqSubmitted, "system", "", nil))
+	store.Close()
+
+	// Append a half-written line that json.Unmarshal will reject.
+	f, _ := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	f.WriteString("{not json\n")
+	f.Close()
+
+	store2, err := state.NewFileStore(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer store2.Close()
+	_, err = store2.List(state.EventFilter{})
+	if err == nil {
+		t.Fatal("expected error on corrupt line, got nil")
+	}
+	if !strings.Contains(err.Error(), "line 2") {
+		t.Errorf("error %q should cite line 2", err)
+	}
+}
+
+// Lenient mode preserves the legacy silent-skip behaviour for emergency
+// recovery.
+func TestFileStore_List_LenientSkipsCorruption(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "events.jsonl")
+	store, _ := state.NewFileStore(path)
+	store.Append(state.NewEvent(state.EventReqSubmitted, "system", "", nil))
+	store.Close()
+
+	f, _ := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	f.WriteString("{garbage\n")
+	f.Close()
+
+	t.Setenv("NXD_EVENTS_LENIENT", "1")
+	store2, _ := state.NewFileStore(path)
+	defer store2.Close()
+	events, err := store2.List(state.EventFilter{})
+	if err != nil {
+		t.Fatalf("lenient mode should not error: %v", err)
+	}
+	if len(events) != 1 {
+		t.Errorf("expected 1 valid event, got %d", len(events))
+	}
+}
 
 func TestFileStore_AppendAndList(t *testing.T) {
 	dir := t.TempDir()

@@ -36,7 +36,10 @@ func runInit(cmd *cobra.Command, _ []string) error {
 		filepath.Join(nxdDir, "worktrees"),
 	}
 	for _, dir := range dirs {
-		if err := os.MkdirAll(dir, 0755); err != nil {
+		// F8: ~/.nxd may hold launch configs, prompts, diffs, agent logs,
+		// and (depending on plugins) credential context. 0o700 keeps other
+		// local users out without affecting the operator's own access.
+		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return fmt.Errorf("create directory %s: %w", dir, err)
 		}
 	}
@@ -50,7 +53,7 @@ func runInit(cmd *cobra.Command, _ []string) error {
 		if genErr != nil {
 			return fmt.Errorf("generate default config: %w", genErr)
 		}
-		if writeErr := os.WriteFile(localCfg, data, 0644); writeErr != nil {
+		if writeErr := os.WriteFile(localCfg, data, 0o600); writeErr != nil {
 			return fmt.Errorf("write %s: %w", localCfg, writeErr)
 		}
 		fmt.Fprintf(out, "Created %s with default configuration\n", localCfg)

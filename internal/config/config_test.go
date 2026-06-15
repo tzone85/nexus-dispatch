@@ -596,6 +596,31 @@ func TestValidate_DevDB_DockerWithTemplate(t *testing.T) {
 	}
 }
 
+// F5: malicious template names land inside `CREATE DATABASE ... WITH
+// TEMPLATE %q` (fmt.Sprintf, not pgx identifier escaping). Reject
+// anything outside the FormatDBName charset at config-load time.
+func TestValidate_DevDB_TemplateRejectsSQLInjection(t *testing.T) {
+	cases := []string{
+		`evil"; DROP DATABASE x; --`,
+		"Capitalized",
+		"has space",
+		"path/separators",
+		"a$b",
+	}
+	for _, tpl := range cases {
+		cfg := config.DefaultConfig()
+		cfg.DevDB = config.DevDBConfig{Provider: "docker", Template: tpl}
+		err := cfg.Validate()
+		if err == nil {
+			t.Errorf("template %q should be rejected", tpl)
+			continue
+		}
+		if !contains(err.Error(), "devdb.template") {
+			t.Errorf("template %q error %q should mention devdb.template", tpl, err)
+		}
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
 		func() bool {

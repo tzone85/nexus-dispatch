@@ -1,6 +1,7 @@
 package scratchboard
 
 import (
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -26,6 +27,16 @@ func TestWriteAndRead(t *testing.T) {
 	// Newest first.
 	if entries[0].Category != "gotcha" {
 		t.Errorf("entries[0].Category = %q, want gotcha", entries[0].Category)
+	}
+
+	// F8: scratchboard entries can include private code excerpts. Permission
+	// should be operator-only.
+	info, statErr := os.Stat(path)
+	if statErr != nil {
+		t.Fatalf("stat: %v", statErr)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("scratchboard perms = %o, want 0o600", perm)
 	}
 }
 
