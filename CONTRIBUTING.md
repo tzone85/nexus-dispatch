@@ -2,6 +2,13 @@
 
 Thanks for your interest in contributing to NXD! This guide will help you get started.
 
+## Before your first commit
+
+NXD is a public repo. Two foot-guns to avoid:
+
+1. **Use a personal commit identity, not a work email.** Run `git config user.email <personal-email>` and `git config user.name <name>` in your clone. Commit author lives in git forever and is searchable.
+2. **Run `bash scripts/check-leaks.sh` before pushing.** It blocks merge if private terms (client names, internal hostnames, personal `$HOME` paths) slip in. Add new forbidden terms to the script as you discover them — never relax the existing ones.
+
 ## Development Setup
 
 ### macOS / Linux

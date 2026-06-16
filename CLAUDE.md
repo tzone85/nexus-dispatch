@@ -152,7 +152,7 @@ rm -f ~/.nxd/nxd.lock ~/.nxd/events.jsonl ~/.nxd/nxd.db
 - **Bayesian routing**: adaptive role assignment based on Beta distribution priors; persisted to `bayesian_priors.json`; wired to dispatcher and monitor
 - **Security**: 7/8 vulnerabilities resolved (command injection, path traversal, input validation); SG-7 (secrets manager) deferred to Phase 2
 - **Anti-hallucination**: criteria-gated completion + rejection budget (max 2 retries) + escalation; reviewer text fallback scans for rejection keywords; same-model review warning
-- **Live-tested**: full end-to-end pipeline validated on `tzone85/project-x` with gemma4 — requirement → PR #25 merged in 3 minutes
+- **Live-tested**: full end-to-end pipeline validated on a private smoke-test project with gemma4 — requirement → PR merged in 3 minutes
 - **Ephemeral DBs (shipped 2026-05-22)**: full SP1+SP3+SP4+SP5+SP6-A/B/E ports from VXD. Docker-only (no Ghost). `.nxd-db/` worktree injection, `STORY_DB_CREATED/FAILED/DELETED` events, `nxd db` CLI, Lifecycle wired into Executor + Monitor + resume orphan recovery. Pending: dashboard column, metrics DB section.
 ### Per-Package Coverage (2026-05-11)
 

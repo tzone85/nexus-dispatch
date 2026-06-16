@@ -2,8 +2,34 @@ package codegraph
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"runtime"
 	"testing"
 )
+
+// repoRoot returns the absolute path to the repo root, walking up from
+// this test file until it finds go.mod. Keeps the live-binary tests
+// portable across contributors and CI runners (previously hardcoded a
+// single developer's checkout path).
+func repoRoot(t *testing.T) string {
+	t.Helper()
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	dir := filepath.Dir(file)
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("could not locate go.mod walking up from test file")
+		}
+		dir = parent
+	}
+}
 
 func TestRunner_Build_Unavailable(t *testing.T) {
 	r := &Runner{} // no binary
@@ -34,8 +60,8 @@ func TestRunner_Build_Available(t *testing.T) {
 	if !r.Available() {
 		t.Skip("code-review-graph not installed")
 	}
-	// Build on the VXD repo — graph.db already exists from earlier
-	err := r.Build(context.Background(), "/Users/mncedimini/Sites/misc/nexus-dispatch")
+	// Build on the current repo — graph.db is created if absent.
+	err := r.Build(context.Background(), repoRoot(t))
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)
 	}
@@ -46,7 +72,7 @@ func TestRunner_Status_Available(t *testing.T) {
 	if !r.Available() {
 		t.Skip("code-review-graph not installed")
 	}
-	info, err := r.Status(context.Background(), "/Users/mncedimini/Sites/misc/nexus-dispatch")
+	info, err := r.Status(context.Background(), repoRoot(t))
 	if err != nil {
 		t.Fatalf("Status failed: %v", err)
 	}
@@ -60,7 +86,7 @@ func TestRunner_DetectChanges_Available(t *testing.T) {
 	if !r.Available() {
 		t.Skip("code-review-graph not installed")
 	}
-	ia, err := r.DetectChanges(context.Background(), "/Users/mncedimini/Sites/misc/nexus-dispatch", "HEAD~1")
+	ia, err := r.DetectChanges(context.Background(), repoRoot(t), "HEAD~1")
 	if err != nil {
 		t.Fatalf("DetectChanges failed: %v", err)
 	}
@@ -71,8 +97,7 @@ func TestRunner_DetectChanges_Available(t *testing.T) {
 }
 
 func TestGraphDB_Open_Existing(t *testing.T) {
-	// Test opening the real VXD graph database
-	gdb, err := Open("/Users/mncedimini/Sites/misc/nexus-dispatch")
+	gdb, err := Open(repoRoot(t))
 	if err != nil {
 		t.Skip("no graph database available")
 	}

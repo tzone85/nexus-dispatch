@@ -157,6 +157,19 @@ jobs:
           name: nxd-${{ matrix.os }}
           path: nxd
 
+  leak-check:
+    name: Leak check
+    runs-on: ubuntu-latest
+    # Hard gate: blocks merge if private terms (client names, personal
+    # paths, employer domains) slip into a public commit. Update
+    # scripts/check-leaks.sh when adding new forbidden tokens.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run leak check
+        run: bash scripts/check-leaks.sh
+
   docker:
     name: Docker build
     runs-on: ubuntu-latest
