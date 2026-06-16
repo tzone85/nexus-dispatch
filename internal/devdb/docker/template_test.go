@@ -10,14 +10,14 @@ import (
 )
 
 func TestTemplate_TempName_NotEmpty(t *testing.T) {
-	got := docker.TempTemplateName("mukuru-prod-snapshot")
+	got := docker.TempTemplateName("demo-prod-snapshot")
 	if got == "" {
 		t.Error("TempTemplateName returned empty")
 	}
-	if got == "mukuru-prod-snapshot" {
+	if got == "demo-prod-snapshot" {
 		t.Errorf("TempTemplateName returned input unchanged: %q", got)
 	}
-	if !strings.HasPrefix(got, "mukuru-prod-snapshot-tmp-") {
+	if !strings.HasPrefix(got, "demo-prod-snapshot-tmp-") {
 		t.Errorf("TempTemplateName should prefix with '<name>-tmp-', got: %q", got)
 	}
 }

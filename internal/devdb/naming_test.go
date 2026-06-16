@@ -8,8 +8,8 @@ import (
 )
 
 func TestFormatDBName_Basic(t *testing.T) {
-	got := devdb.FormatDBName("nxd", "mukuru-api", "a8cbef1f-3a")
-	want := "nxd-mukuru-api-a8cbef1f-3a"
+	got := devdb.FormatDBName("nxd", "demo-api", "a8cbef1f-3a")
+	want := "nxd-demo-api-a8cbef1f-3a"
 	if got != want {
 		t.Errorf("FormatDBName = %q, want %q", got, want)
 	}
@@ -39,7 +39,7 @@ func TestFormatDBName_TruncatesProject(t *testing.T) {
 
 func TestIsValid(t *testing.T) {
 	cases := map[string]bool{
-		"nxd-mukuru-api-a8cbef1f-3a": true,
+		"nxd-demo-api-a8cbef1f-3a": true,
 		"a":                          true,
 		"a-b-c":                      true,
 		"":                           false,
