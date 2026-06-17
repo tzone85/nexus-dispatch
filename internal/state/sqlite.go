@@ -789,20 +789,36 @@ func (s *SQLiteStore) projectStoryEscalated(evt Event, payload map[string]any) e
 func (s *SQLiteStore) projectStoryRewritten(storyID string, payload map[string]any) error {
 	changes := payloadMap(payload, "changes")
 
+	// Propagate field-update errors rather than silently dropping them — a
+	// failed UPDATE here means the rewrite only partially applied, and the
+	// caller must know so it doesn't treat the story as successfully rewritten.
 	if title, ok := changes["title"].(string); ok && title != "" {
-		s.db.Exec(`UPDATE stories SET title = ? WHERE id = ?`, title, storyID)
+		if _, err := s.db.Exec(`UPDATE stories SET title = ? WHERE id = ?`, title, storyID); err != nil {
+			return fmt.Errorf("rewrite title: %w", err)
+		}
 	}
 	if desc, ok := changes["description"].(string); ok && desc != "" {
-		s.db.Exec(`UPDATE stories SET description = ? WHERE id = ?`, desc, storyID)
+		if _, err := s.db.Exec(`UPDATE stories SET description = ? WHERE id = ?`, desc, storyID); err != nil {
+			return fmt.Errorf("rewrite description: %w", err)
+		}
 	}
 	if ac, ok := changes["acceptance_criteria"].(string); ok && ac != "" {
-		s.db.Exec(`UPDATE stories SET acceptance_criteria = ? WHERE id = ?`, ac, storyID)
+		if _, err := s.db.Exec(`UPDATE stories SET acceptance_criteria = ? WHERE id = ?`, ac, storyID); err != nil {
+			return fmt.Errorf("rewrite acceptance_criteria: %w", err)
+		}
 	}
 	if complexity, ok := changes["complexity"]; ok {
-		if c, ok := complexity.(float64); ok {
-			s.db.Exec(`UPDATE stories SET complexity = ? WHERE id = ?`, int(c), storyID)
-		} else if c, ok := complexity.(int); ok {
-			s.db.Exec(`UPDATE stories SET complexity = ? WHERE id = ?`, c, storyID)
+		cval, valid := 0, false
+		switch c := complexity.(type) {
+		case float64:
+			cval, valid = int(c), true
+		case int:
+			cval, valid = c, true
+		}
+		if valid {
+			if _, err := s.db.Exec(`UPDATE stories SET complexity = ? WHERE id = ?`, cval, storyID); err != nil {
+				return fmt.Errorf("rewrite complexity: %w", err)
+			}
 		}
 	}
 

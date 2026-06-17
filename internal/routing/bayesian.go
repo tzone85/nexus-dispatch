@@ -275,11 +275,32 @@ func (r *BayesianRouter) Save(path string) error {
 		return fmt.Errorf("marshal priors: %w", err)
 	}
 
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create priors directory: %w", err)
 	}
 
-	return os.WriteFile(path, data, 0o644)
+	// Write to a temp file in the same directory, then atomically rename over
+	// the target. os.WriteFile truncates in place, so a crash mid-write would
+	// leave a partial/corrupt priors file that Load can't parse — discarding
+	// all accumulated routing history. Rename is atomic on POSIX filesystems.
+	tmp, err := os.CreateTemp(dir, ".bayesian_priors-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temp priors file: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName) // no-op after a successful rename
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return fmt.Errorf("write temp priors file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp priors file: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("rename priors file into place: %w", err)
+	}
+	return nil
 }
 
 // Load reads priors from a JSON file at the given path.

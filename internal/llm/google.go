@@ -112,7 +112,10 @@ func (c *GoogleClient) Complete(ctx context.Context, req CompletionRequest) (Com
 
 	gReq := buildGoogleRequest(req)
 
-	url := fmt.Sprintf("%s/models/%s:generateContent?key=%s", c.baseURL, model, c.apiKey)
+	// The API key goes in the X-Goog-Api-Key header, NOT the query string.
+	// A key in the URL leaks into proxy/access logs and into net/http
+	// transport error strings (which we wrap and may log).
+	url := fmt.Sprintf("%s/models/%s:generateContent", c.baseURL, model)
 
 	body, err := json.Marshal(gReq)
 	if err != nil {
@@ -124,6 +127,7 @@ func (c *GoogleClient) Complete(ctx context.Context, req CompletionRequest) (Com
 		return CompletionResponse{}, fmt.Errorf("create request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("X-Goog-Api-Key", c.apiKey)
 
 	httpResp, err := c.httpClient.Do(httpReq)
 	if err != nil {

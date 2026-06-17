@@ -418,33 +418,51 @@ func (e *Executor) runtimeForRole(role agent.Role) string {
 	return "aider"
 }
 
-// latestReviewFeedback queries the event store for the most recent
-// STORY_REVIEW_FAILED event (emitted by "monitor") for the given story
-// and extracts the "feedback" field from its payload. Returns an empty
-// string if no feedback is found.
+// latestReviewFeedback returns the most recent failure feedback for the given
+// story so a re-spawned agent can see why its prior attempt was rejected.
+//
+// Failures arrive as two event types: STORY_REVIEW_FAILED (review rejections
+// and escalations, carrying a "reason") and STORY_QA_FAILED (QA failures,
+// carrying a richer "feedback"). They are emitted by several agents
+// ("reviewer", "qa", "merger", "manager", "dashboard"), so this must NOT
+// filter by AgentID — an earlier version filtered AgentID:"monitor" on
+// REVIEW_FAILED only, which matched nothing and silently disabled the entire
+// retry-with-feedback loop. We scan both types, take the newest by timestamp,
+// and prefer "feedback" over "reason".
 func (e *Executor) latestReviewFeedback(storyID string) string {
-	events, err := e.eventStore.List(state.EventFilter{
-		Type:    state.EventStoryReviewFailed,
-		AgentID: "monitor",
-		StoryID: storyID,
-	})
-	if err != nil || len(events) == 0 {
-		return ""
+	var (
+		newest state.Event
+		found  bool
+	)
+	for _, t := range []state.EventType{state.EventStoryReviewFailed, state.EventStoryQAFailed} {
+		events, err := e.eventStore.List(state.EventFilter{
+			Type:    t,
+			StoryID: storyID,
+		})
+		if err != nil {
+			continue
+		}
+		for _, ev := range events {
+			if !found || ev.Timestamp.After(newest.Timestamp) {
+				newest = ev
+				found = true
+			}
+		}
 	}
-
-	// Take the most recent event (last in the list).
-	latest := events[len(events)-1]
-	if latest.Payload == nil {
+	if !found || newest.Payload == nil {
 		return ""
 	}
 
 	var payload map[string]any
-	if err := json.Unmarshal(latest.Payload, &payload); err != nil {
+	if err := json.Unmarshal(newest.Payload, &payload); err != nil {
 		return ""
 	}
 
-	feedback, _ := payload["feedback"].(string)
-	return feedback
+	if feedback, _ := payload["feedback"].(string); feedback != "" {
+		return feedback
+	}
+	reason, _ := payload["reason"].(string)
+	return reason
 }
 
 // execExpandHome replaces a leading ~ with the user's home directory.

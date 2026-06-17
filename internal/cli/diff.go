@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/tzone85/nexus-dispatch/internal/artifact"
+	"github.com/tzone85/nexus-dispatch/internal/sanitize"
 )
 
 func newDiffCmd() *cobra.Command {
@@ -27,6 +28,9 @@ func newDiffCmd() *cobra.Command {
 
 func runDiff(cmd *cobra.Command, args []string) error {
 	storyID := args[0]
+	if !sanitize.ValidIdentifier(storyID) {
+		return fmt.Errorf("invalid story id %q", storyID)
+	}
 	stat, _ := cmd.Flags().GetBool("stat")
 	cached, _ := cmd.Flags().GetBool("cached")
 

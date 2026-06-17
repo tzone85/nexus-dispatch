@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/tzone85/nexus-dispatch/internal/sanitize"
 )
 
 func newLogsCmd() *cobra.Command {
@@ -30,6 +32,9 @@ func newLogsCmd() *cobra.Command {
 
 func runLogs(cmd *cobra.Command, args []string) error {
 	storyID := args[0]
+	if !sanitize.ValidIdentifier(storyID) {
+		return fmt.Errorf("invalid story id %q", storyID)
+	}
 	lines, _ := cmd.Flags().GetInt("lines")
 	follow, _ := cmd.Flags().GetBool("follow")
 	raw, _ := cmd.Flags().GetBool("raw")
