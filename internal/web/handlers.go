@@ -18,6 +18,22 @@ import (
 // human review without an out-of-band CLI step.
 const maxEscalationTier = 4
 
+// emitEvent appends an event and projects it, returning the first error.
+// Dashboard handlers must not report Success when a state transition was
+// only half-written (append succeeded but projection failed, or vice versa),
+// which would diverge the SQLite projection from the event log.
+func emitEvent(es state.EventStore, ps state.ProjectionStore, evt state.Event) error {
+	if err := es.Append(evt); err != nil {
+		log.Printf("[ws] append %s: %v", evt.Type, err)
+		return err
+	}
+	if err := ps.Project(evt); err != nil {
+		log.Printf("[ws] project %s: %v", evt.Type, err)
+		return err
+	}
+	return nil
+}
+
 // HandleCommand dispatches a WebSocket command to the appropriate handler.
 func (s *Server) HandleCommand(action string, payload json.RawMessage) WSResponse {
 	switch action {
@@ -155,14 +171,16 @@ func (s *Server) handleRetry(payload json.RawMessage) WSResponse {
 		"reason":    "manual retry from dashboard",
 		"source":    "dashboard",
 	})
-	if err := s.eventStore.Append(escEvt); err != nil { log.Printf("[ws] append %s: %v", escEvt.Type, err) }
-	if err := s.projStore.Project(escEvt); err != nil { log.Printf("[ws] project %s: %v", escEvt.Type, err) }
+	if err := emitEvent(s.eventStore, s.projStore, escEvt); err != nil {
+		return WSResponse{Type: "command_result", Action: action, Success: false, Message: fmt.Sprintf("event error: %v", err)}
+	}
 
 	resetEvt := state.NewEvent(state.EventStoryReviewFailed, "dashboard", p.StoryID, map[string]any{
 		"source": "dashboard",
 	})
-	if err := s.eventStore.Append(resetEvt); err != nil { log.Printf("[ws] append %s: %v", resetEvt.Type, err) }
-	if err := s.projStore.Project(resetEvt); err != nil { log.Printf("[ws] project %s: %v", resetEvt.Type, err) }
+	if err := emitEvent(s.eventStore, s.projStore, resetEvt); err != nil {
+		return WSResponse{Type: "command_result", Action: action, Success: false, Message: fmt.Sprintf("event error: %v", err)}
+	}
 
 	return WSResponse{Type: "command_result", Action: action, Success: true, Message: "Story retried at tier 0"}
 }
@@ -192,14 +210,16 @@ func (s *Server) handleReassign(payload json.RawMessage) WSResponse {
 		"reason":    "manual reassign from dashboard",
 		"source":    "dashboard",
 	})
-	if err := s.eventStore.Append(escEvt); err != nil { log.Printf("[ws] append %s: %v", escEvt.Type, err) }
-	if err := s.projStore.Project(escEvt); err != nil { log.Printf("[ws] project %s: %v", escEvt.Type, err) }
+	if err := emitEvent(s.eventStore, s.projStore, escEvt); err != nil {
+		return WSResponse{Type: "command_result", Action: action, Success: false, Message: fmt.Sprintf("event error: %v", err)}
+	}
 
 	resetEvt := state.NewEvent(state.EventStoryReviewFailed, "dashboard", p.StoryID, map[string]any{
 		"source": "dashboard",
 	})
-	if err := s.eventStore.Append(resetEvt); err != nil { log.Printf("[ws] append %s: %v", resetEvt.Type, err) }
-	if err := s.projStore.Project(resetEvt); err != nil { log.Printf("[ws] project %s: %v", resetEvt.Type, err) }
+	if err := emitEvent(s.eventStore, s.projStore, resetEvt); err != nil {
+		return WSResponse{Type: "command_result", Action: action, Success: false, Message: fmt.Sprintf("event error: %v", err)}
+	}
 
 	return WSResponse{Type: "command_result", Action: action, Success: true, Message: fmt.Sprintf("Story reassigned to tier %d", p.TargetTier)}
 }
@@ -231,10 +251,9 @@ func (s *Server) handleEscalate(payload json.RawMessage) WSResponse {
 		"reason":    "manual escalation from dashboard",
 		"source":    "dashboard",
 	})
-	if err := s.eventStore.Append(escEvt); err != nil {
+	if err := emitEvent(s.eventStore, s.projStore, escEvt); err != nil {
 		return WSResponse{Type: "command_result", Action: action, Success: false, Message: fmt.Sprintf("event error: %v", err)}
 	}
-	if err := s.projStore.Project(escEvt); err != nil { log.Printf("[ws] project %s: %v", escEvt.Type, err) }
 
 	return WSResponse{Type: "command_result", Action: action, Success: true, Message: fmt.Sprintf("Story escalated to tier %d", nextTier)}
 }

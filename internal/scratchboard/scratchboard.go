@@ -63,8 +63,10 @@ func (s *Scratchboard) Write(entry Entry) error {
 	}
 	defer f.Close()
 
-	_, err = f.Write(line)
-	return err
+	if _, err = f.Write(line); err != nil {
+		return fmt.Errorf("write scratchboard entry: %w", err)
+	}
+	return nil
 }
 
 // Read returns the most recent entries (up to limit). If category is non-empty,

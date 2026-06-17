@@ -200,22 +200,59 @@ func TestLatestReviewFeedback_ReturnsLatestFeedback(t *testing.T) {
 	}
 }
 
-// TestLatestReviewFeedback_OtherAgentsIgnored confirms only events
-// authored by 'monitor' count. Without this filter, a STORY_REVIEW_FAILED
-// from a plugin or human-source would leak into the agent prompt.
-func TestLatestReviewFeedback_OtherAgentsIgnored(t *testing.T) {
+// TestLatestReviewFeedback_QAFailureDelivered is a regression test for the
+// dead-wiring bug: QA failures emit STORY_QA_FAILED (not STORY_REVIEW_FAILED),
+// and review failures are authored by "reviewer"/"qa" (not "monitor"). The old
+// helper filtered AgentID:"monitor" on STORY_REVIEW_FAILED only, so it matched
+// nothing and silently disabled the entire retry-with-feedback loop. The helper
+// must read both event types regardless of author.
+func TestLatestReviewFeedback_QAFailureDelivered(t *testing.T) {
 	e := minimalExecutor(t, nil, nil)
-	// Plugin-emitted, non-monitor agent.
-	evt := state.NewEvent(state.EventStoryReviewFailed, "operator", "STORY-FILTER", map[string]any{
-		"feedback": "operator-supplied feedback",
+	evt := state.NewEvent(state.EventStoryQAFailed, "monitor", "STORY-QA", map[string]any{
+		"feedback": "QA FAILURE — go test failed",
 	})
 	if err := e.eventStore.Append(evt); err != nil {
 		t.Fatalf("append: %v", err)
 	}
+	if got := e.latestReviewFeedback("STORY-QA"); got != "QA FAILURE — go test failed" {
+		t.Errorf("QA feedback should be delivered to the re-spawned agent; got %q", got)
+	}
+}
 
-	got := e.latestReviewFeedback("STORY-FILTER")
-	if got != "" {
-		t.Errorf("non-monitor feedback should be filtered; got %q", got)
+// TestLatestReviewFeedback_NewestAcrossTypesWins confirms the helper picks the
+// most recent failure across both STORY_REVIEW_FAILED and STORY_QA_FAILED.
+func TestLatestReviewFeedback_NewestAcrossTypesWins(t *testing.T) {
+	e := minimalExecutor(t, nil, nil)
+	older := state.NewEvent(state.EventStoryReviewFailed, "reviewer", "STORY-MIX", map[string]any{
+		"reason": "review rejected: needs tests",
+	})
+	if err := e.eventStore.Append(older); err != nil {
+		t.Fatalf("append older: %v", err)
+	}
+	newer := state.NewEvent(state.EventStoryQAFailed, "monitor", "STORY-MIX", map[string]any{
+		"feedback": "QA FAILURE — build broke",
+	})
+	if err := e.eventStore.Append(newer); err != nil {
+		t.Fatalf("append newer: %v", err)
+	}
+	if got := e.latestReviewFeedback("STORY-MIX"); got != "QA FAILURE — build broke" {
+		t.Errorf("expected newest failure across types; got %q", got)
+	}
+}
+
+// TestLatestReviewFeedback_ReasonFallback confirms that when an event carries
+// only a "reason" (as resetStoryToDraft emits for review rejections), that
+// reason is delivered as the feedback.
+func TestLatestReviewFeedback_ReasonFallback(t *testing.T) {
+	e := minimalExecutor(t, nil, nil)
+	evt := state.NewEvent(state.EventStoryReviewFailed, "reviewer", "STORY-REASON", map[string]any{
+		"reason": "review rejected: missing error handling",
+	})
+	if err := e.eventStore.Append(evt); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if got := e.latestReviewFeedback("STORY-REASON"); got != "review rejected: missing error handling" {
+		t.Errorf("expected reason used as feedback fallback; got %q", got)
 	}
 }
 

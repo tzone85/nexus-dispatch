@@ -39,6 +39,16 @@ func evaluateMigrationSucceeds(ctx context.Context, workDir string, c Criterion)
 		return Result{Criterion: c, Passed: false,
 			Message: "migration_succeeds requires `command` field"}
 	}
+	// The command runs through a shell (shellexec → sh -c / cmd.exe /C), so
+	// shell metacharacters would allow command chaining, redirection, or
+	// exfiltration. Criteria can originate from LLM "split" actions, not just
+	// the operator's nxd.yaml, so reject anything that could break out of a
+	// single migration-tool invocation. Migration tools (migrate, goose,
+	// alembic, prisma, psql ...) never legitimately need these characters.
+	if strings.ContainsAny(c.Command, ";&|`$<>\n") {
+		return Result{Criterion: c, Passed: false,
+			Message: fmt.Sprintf("migration command rejected: shell metacharacters not allowed in %q", c.Command)}
+	}
 	dsn := readDatabaseURL(workDir)
 	if dsn == "" {
 		return Result{Criterion: c, Passed: false,
@@ -114,12 +124,41 @@ func evaluateSchemaChanged(ctx context.Context, workDir string, c Criterion) Res
 		Message: "schema_changed: schema differs from baseline"}
 }
 
+// validateReadOnlyQuery accepts only a single SELECT or WITH statement.
+// It rejects embedded statement separators (so stacked statements like
+// "SELECT 1; DROP TABLE x" cannot run) and any non-read leading keyword.
+func validateReadOnlyQuery(sql string) error {
+	trimmed := strings.TrimSpace(sql)
+	if trimmed == "" {
+		return fmt.Errorf("empty sql")
+	}
+	// Allow a single optional trailing semicolon; reject any interior one,
+	// which would indicate stacked statements.
+	body := strings.TrimRight(trimmed, "; \t\r\n")
+	if strings.Contains(body, ";") {
+		return fmt.Errorf("multiple statements not allowed")
+	}
+	upper := strings.ToUpper(body)
+	if !strings.HasPrefix(upper, "SELECT") && !strings.HasPrefix(upper, "WITH") {
+		return fmt.Errorf("only SELECT/WITH queries allowed")
+	}
+	return nil
+}
+
 // evaluateSQLQueryReturns runs the configured SQL against the story DB.
 // Passes if the query returns at least one row, OR exactly ExpectedRows rows when set.
 func evaluateSQLQueryReturns(ctx context.Context, workDir string, c Criterion) Result {
 	if c.SQL == "" {
 		return Result{Criterion: c, Passed: false,
 			Message: "sql_query_returns requires `sql` field"}
+	}
+	// sql_query_returns is a read-only assertion: it counts rows. Restrict it
+	// to a single SELECT/WITH statement so a hostile criterion (e.g. from an
+	// LLM split action) can't run DROP/DELETE/UPDATE or stack a second
+	// statement against the story's real Postgres instance.
+	if err := validateReadOnlyQuery(c.SQL); err != nil {
+		return Result{Criterion: c, Passed: false,
+			Message: fmt.Sprintf("sql_query_returns: %v", err)}
 	}
 	dsn := readDatabaseURL(workDir)
 	if dsn == "" {

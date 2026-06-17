@@ -630,6 +630,13 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 				}
 			}
 
+			// Route through the escalation machine so a repeatedly QA-failing
+			// story escalates (senior → manager → tech_lead) and eventually
+			// pauses, instead of resetting to draft forever. resetStoryToDraft
+			// also emits a STORY_REVIEW_FAILED carrying the retry feedback as its
+			// reason, which is what latestReviewFeedback delivers to the
+			// re-spawned agent.
+			m.resetStoryToDraft(storyID, "qa", retryFeedback)
 			return
 		}
 		EmitStageCompleted(m.eventStore, m.projStore, "monitor", storyID, "qa", "success", qaStart)

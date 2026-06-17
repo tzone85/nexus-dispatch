@@ -14,10 +14,13 @@ import (
 
 func TestGoogleClient_Complete_TextResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Verify API key is in URL query param
-		key := r.URL.Query().Get("key")
-		if key != "test-key" {
-			t.Errorf("expected query param key=test-key, got %q", key)
+		// API key must be sent in the X-Goog-Api-Key header, never the URL
+		// query string (which leaks into proxy/access logs).
+		if key := r.Header.Get("X-Goog-Api-Key"); key != "test-key" {
+			t.Errorf("expected X-Goog-Api-Key header test-key, got %q", key)
+		}
+		if got := r.URL.Query().Get("key"); got != "" {
+			t.Errorf("API key must not appear in URL query string, got key=%q", got)
 		}
 
 		// Verify Content-Type header
