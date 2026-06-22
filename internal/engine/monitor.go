@@ -1640,6 +1640,7 @@ func ensureGitignorePatterns(worktreePath string) {
 		".nxd-prompts/",
 		".nxd-fix-gaps.md",
 		".serena/",
+		".nxd-db/", // ephemeral DB connect.env carries the admin password — never commit it
 	}
 
 	giPath := worktreePath + "/.gitignore"

@@ -45,6 +45,28 @@ func TestWriteEnvFiles_CreatesAllThree(t *testing.T) {
 	}
 }
 
+func TestWriteEnvFiles_WritesSelfIgnoringGitignore(t *testing.T) {
+	// connect.env contains the Postgres admin password in its DSN. The .nxd-db
+	// directory must carry a self-ignoring .gitignore so that a `git add -A`
+	// (by the agent or the pipeline's autoCommit) cannot leak it into a PR.
+	dir := t.TempDir()
+	db := devdb.DB{
+		Name:             "nxd-myproj-story-1",
+		ConnectionString: "postgres://postgres:s3cr3t-admin-pw@localhost:5432/nxd-myproj-story-1?sslmode=disable",
+	}
+	if err := devdb.WriteEnvFiles(dir, db); err != nil {
+		t.Fatalf("WriteEnvFiles: %v", err)
+	}
+	giPath := filepath.Join(dir, ".nxd-db", ".gitignore")
+	b, err := os.ReadFile(giPath)
+	if err != nil {
+		t.Fatalf("expected .nxd-db/.gitignore: %v", err)
+	}
+	if strings.TrimSpace(string(b)) != "*" {
+		t.Errorf(".nxd-db/.gitignore should ignore everything (\"*\"), got %q", string(b))
+	}
+}
+
 func TestWriteEnvFiles_EnvFileMode0600(t *testing.T) {
 	dir := t.TempDir()
 	db := devdb.DB{Name: "x", ConnectionString: "postgres://x@x/x"}

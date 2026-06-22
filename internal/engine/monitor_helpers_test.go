@@ -21,7 +21,7 @@ func TestEnsureGitignorePatterns_CreatesNew(t *testing.T) {
 		t.Fatalf("read .gitignore: %v", err)
 	}
 
-	for _, pat := range []string{"CLAUDE.md", ".nxd-prompts/", ".serena/"} {
+	for _, pat := range []string{"CLAUDE.md", ".nxd-prompts/", ".serena/", ".nxd-db/"} {
 		if !strings.Contains(string(content), pat) {
 			t.Errorf("expected .gitignore to contain %q", pat)
 		}
@@ -33,7 +33,7 @@ func TestEnsureGitignorePatterns_ExistingPatterns(t *testing.T) {
 	giPath := filepath.Join(dir, ".gitignore")
 
 	// Pre-create .gitignore with the FULL extended pattern set (Phase 1.3).
-	existing := "CLAUDE.md\nWAVE_CONTEXT.md\nREQUIREMENT.md\nnxd.yaml\n.nxd-prompts/\n.nxd-fix-gaps.md\n.serena/\n"
+	existing := "CLAUDE.md\nWAVE_CONTEXT.md\nREQUIREMENT.md\nnxd.yaml\n.nxd-prompts/\n.nxd-fix-gaps.md\n.serena/\n.nxd-db/\n"
 	os.WriteFile(giPath, []byte(existing), 0o644)
 
 	ensureGitignorePatterns(dir)

@@ -34,6 +34,15 @@ func WriteEnvFiles(worktreeDir string, db DB) error {
 		return fmt.Errorf("devdb: write connect.env: %w", err)
 	}
 
+	// connect.env carries the live DB credentials (admin password in the DSN).
+	// Drop a self-ignoring .gitignore so that no matter who runs `git add` in
+	// the worktree — the agent itself or the pipeline's autoCommit — the
+	// secrets never land in commit history or a PR diff. Written at provision
+	// time so it exists before the agent runs.
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("*\n"), 0o644); err != nil {
+		return fmt.Errorf("devdb: write .gitignore: %w", err)
+	}
+
 	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte(buildReadme(db)), 0o644); err != nil {
 		return fmt.Errorf("devdb: write README.md: %w", err)
 	}
