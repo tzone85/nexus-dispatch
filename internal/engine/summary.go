@@ -65,20 +65,20 @@ func GenerateSummary(events state.EventStore, proj state.ProjectionStore, reqID 
 		duration := latest.Sub(earliest)
 		minutes := int(math.Round(duration.Minutes()))
 		if prCount > 0 {
-			b.WriteString(fmt.Sprintf("\n%d PRs created and merged in about %d minutes (%s to %s):\n\n",
+			fmt.Fprintf(&b, "\n%d PRs created and merged in about %d minutes (%s to %s):\n\n",
 				prCount, minutes,
 				earliest.Local().Format("15:04"),
 				latest.Local().Format("15:04"),
-			))
+			)
 		} else {
-			b.WriteString(fmt.Sprintf("\n%d stories merged locally in about %d minutes (%s to %s):\n\n",
+			fmt.Fprintf(&b, "\n%d stories merged locally in about %d minutes (%s to %s):\n\n",
 				mergedCount, minutes,
 				earliest.Local().Format("15:04"),
 				latest.Local().Format("15:04"),
-			))
+			)
 		}
 	} else {
-		b.WriteString(fmt.Sprintf("\n%d stories processed:\n\n", len(stories)))
+		fmt.Fprintf(&b, "\n%d stories processed:\n\n", len(stories))
 	}
 
 	waveCol := len("Wave")
@@ -110,15 +110,15 @@ func GenerateSummary(events state.EventStore, proj state.ProjectionStore, reqID 
 		rows = append(rows, rowData{wave: waveStr, stories: storiesStr, time: timeStr})
 	}
 
-	b.WriteString(fmt.Sprintf("  %-*s  %-*s  %-*s\n", waveCol, "Wave", storiesCol, "Stories", timeCol, "Time"))
-	b.WriteString(fmt.Sprintf("  %s  %s  %s\n", strings.Repeat("─", waveCol), strings.Repeat("─", storiesCol), strings.Repeat("─", timeCol)))
+	fmt.Fprintf(&b, "  %-*s  %-*s  %-*s\n", waveCol, "Wave", storiesCol, "Stories", timeCol, "Time")
+	fmt.Fprintf(&b, "  %s  %s  %s\n", strings.Repeat("─", waveCol), strings.Repeat("─", storiesCol), strings.Repeat("─", timeCol))
 
 	for _, r := range rows {
-		b.WriteString(fmt.Sprintf("  %-*s  %-*s  %-*s\n", waveCol, r.wave, storiesCol, r.stories, timeCol, r.time))
+		fmt.Fprintf(&b, "  %-*s  %-*s  %-*s\n", waveCol, r.wave, storiesCol, r.stories, timeCol, r.time)
 	}
 
-	b.WriteString(fmt.Sprintf("\nThe merge queue is empty, all agents have terminated, and the pipeline shows %d/%d merged. The requirement is complete.\n",
-		mergedCount, len(stories)))
+	fmt.Fprintf(&b, "\nThe merge queue is empty, all agents have terminated, and the pipeline shows %d/%d merged. The requirement is complete.\n",
+		mergedCount, len(stories))
 
 	return b.String(), nil
 }
@@ -317,6 +317,6 @@ func extractPRNumberFromURL(url string) int {
 	}
 	last := parts[len(parts)-1]
 	var n int
-	fmt.Sscanf(last, "%d", &n)
+	_, _ = fmt.Sscanf(last, "%d", &n)
 	return n
 }

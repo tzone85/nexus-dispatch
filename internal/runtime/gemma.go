@@ -512,7 +512,7 @@ func extractToolTarget(tc llm.ToolCall) (file, command string) {
 		Path    string `json:"path"`
 		Command string `json:"command"`
 	}
-	json.Unmarshal(tc.Arguments, &args)
+	_ = json.Unmarshal(tc.Arguments, &args)
 	return args.Path, args.Command
 }
 
@@ -988,7 +988,7 @@ func (g *GemmaRuntime) execReadScratchboard(call llm.ToolCall) llm.ToolCallResul
 	var args struct {
 		Category string `json:"category"`
 	}
-	json.Unmarshal(call.Arguments, &args)
+	_ = json.Unmarshal(call.Arguments, &args)
 
 	entries, err := g.Scratchboard.Read(args.Category, scratchboard.MaxReadEntries)
 	if err != nil {
@@ -1004,7 +1004,7 @@ func (g *GemmaRuntime) execReadScratchboard(call llm.ToolCall) llm.ToolCallResul
 
 	var sb strings.Builder
 	for _, e := range entries {
-		sb.WriteString(fmt.Sprintf("[%s/%s] %s: %s\n", e.StoryID, e.AgentID, e.Category, e.Content))
+		fmt.Fprintf(&sb, "[%s/%s] %s: %s\n", e.StoryID, e.AgentID, e.Category, e.Content)
 	}
 	result.Content = sb.String()
 	return result

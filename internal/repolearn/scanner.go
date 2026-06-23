@@ -73,7 +73,7 @@ func countFilesByLanguage(repoPath string) map[string]int {
 	counts := make(map[string]int)
 	totalFiles := 0
 
-	filepath.Walk(repoPath, func(path string, info os.FileInfo, err error) error {
+	_ = filepath.Walk(repoPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil
 		}
@@ -444,34 +444,34 @@ func scanStructure(repoPath string, langCounts map[string]int) RepoStructure {
 // classifyDir infers the purpose of a top-level directory from its name.
 func classifyDir(name string) string {
 	lower := strings.ToLower(name)
-	switch {
-	case lower == "cmd" || lower == "bin":
+	switch lower {
+	case "cmd", "bin":
 		return "commands"
-	case lower == "internal" || lower == "pkg" || lower == "lib" || lower == "src":
+	case "internal", "pkg", "lib", "src":
 		return "source"
-	case lower == "test" || lower == "tests" || lower == "spec" || lower == "__tests__":
+	case "test", "tests", "spec", "__tests__":
 		return "test"
-	case lower == "docs" || lower == "doc" || lower == "documentation":
+	case "docs", "doc", "documentation":
 		return "docs"
-	case lower == "vendor" || lower == "third_party":
+	case "vendor", "third_party":
 		return "vendor"
-	case lower == "scripts" || lower == "tools" || lower == "hack":
+	case "scripts", "tools", "hack":
 		return "scripts"
-	case lower == "config" || lower == "configs" || lower == "conf":
+	case "config", "configs", "conf":
 		return "config"
-	case lower == "migrations" || lower == "db":
+	case "migrations", "db":
 		return "database"
-	case lower == "api" || lower == "proto" || lower == "graphql":
+	case "api", "proto", "graphql":
 		return "api"
-	case lower == "web" || lower == "static" || lower == "public" || lower == "assets":
+	case "web", "static", "public", "assets":
 		return "web"
-	case lower == "deploy" || lower == "infra" || lower == "terraform" || lower == "k8s" || lower == "helm":
+	case "deploy", "infra", "terraform", "k8s", "helm":
 		return "infrastructure"
-	case lower == "examples" || lower == "samples":
+	case "examples", "samples":
 		return "examples"
-	case lower == "build" || lower == "dist" || lower == "out":
+	case "build", "dist", "out":
 		return "build"
-	case lower == "generated" || lower == "gen":
+	case "generated", "gen":
 		return "generated"
 	default:
 		return "source"
@@ -502,9 +502,10 @@ func detectEntryPoints(repoPath string) []EntryPoint {
 	for _, candidate := range []string{"main.py", "app.py", "manage.py", "wsgi.py", "asgi.py"} {
 		if _, err := os.Stat(filepath.Join(repoPath, candidate)); err == nil {
 			kind := "main"
-			if candidate == "manage.py" {
+			switch candidate {
+			case "manage.py":
 				kind = "cmd"
-			} else if candidate == "wsgi.py" || candidate == "asgi.py" {
+			case "wsgi.py", "asgi.py":
 				kind = "handler"
 			}
 			eps = append(eps, EntryPoint{Path: candidate, Kind: kind})
@@ -554,7 +555,7 @@ func detectSignals(profile *RepoProfile, repoPath string) {
 	// Monorepo detection: multiple go.mod or package.json files
 	goModCount := 0
 	pkgJSONCount := 0
-	filepath.Walk(repoPath, func(path string, info os.FileInfo, err error) error {
+	_ = filepath.Walk(repoPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() {
 			if info != nil && info.IsDir() && shouldSkipDir(info.Name()) {
 				return filepath.SkipDir
@@ -591,7 +592,7 @@ func detectSignals(profile *RepoProfile, repoPath string) {
 	}
 	if !hasTests && profile.Test.TestFilePattern != "" {
 		// Walk for test files
-		filepath.Walk(repoPath, func(path string, info os.FileInfo, err error) error {
+		_ = filepath.Walk(repoPath, func(path string, info os.FileInfo, err error) error {
 			if err != nil || info.IsDir() {
 				if info != nil && info.IsDir() && shouldSkipDir(info.Name()) {
 					return filepath.SkipDir
@@ -623,7 +624,7 @@ func detectSignals(profile *RepoProfile, repoPath string) {
 
 	// Generated code markers
 	for _, gen := range []string{".proto", ".swagger.json", ".openapi.json", ".graphql"} {
-		filepath.Walk(repoPath, func(path string, info os.FileInfo, err error) error {
+		_ = filepath.Walk(repoPath, func(path string, info os.FileInfo, err error) error {
 			if err != nil || info.IsDir() {
 				if info != nil && info.IsDir() && shouldSkipDir(info.Name()) {
 					return filepath.SkipDir
@@ -654,19 +655,19 @@ func detectCodeGraphSignals(profile *RepoProfile, repoPath string) {
 	if err != nil {
 		return
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	var nodeCount, edgeCount, fileCount int
 	if err := db.QueryRow("SELECT COUNT(*) FROM nodes").Scan(&nodeCount); err != nil {
 		return
 	}
-	db.QueryRow("SELECT COUNT(*) FROM edges").Scan(&edgeCount)
-	db.QueryRow("SELECT COUNT(DISTINCT file_path) FROM nodes").Scan(&fileCount)
+	_ = db.QueryRow("SELECT COUNT(*) FROM edges").Scan(&edgeCount)
+	_ = db.QueryRow("SELECT COUNT(DISTINCT file_path) FROM nodes").Scan(&fileCount)
 
 	var langs []string
 	rows, err := db.Query("SELECT DISTINCT language FROM nodes WHERE language IS NOT NULL AND language != ''")
 	if err == nil {
-		defer rows.Close()
+		defer func() { _ = rows.Close() }()
 		for rows.Next() {
 			var lang string
 			if rows.Scan(&lang) == nil {
@@ -704,7 +705,7 @@ func parseMakefileTargets(repoPath string) []string {
 	if err != nil {
 		return nil
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	var targets []string
 	seen := make(map[string]bool)
@@ -1118,7 +1119,7 @@ func parseRustDependencies(repoPath string) []Dependency {
 // countFilesInDir counts files (non-recursive) in a directory.
 func countFilesInDir(dir string) int {
 	count := 0
-	filepath.Walk(dir, func(_ string, info os.FileInfo, err error) error {
+	_ = filepath.Walk(dir, func(_ string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil
 		}

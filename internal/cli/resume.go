@@ -128,13 +128,13 @@ func runResume(cmd *cobra.Command, args []string) error {
 	forceFlag, _ := cmd.Flags().GetBool("force")
 	if forceFlag {
 		// Force removes any existing lock file before acquiring.
-		os.Remove(filepath.Join(stateDir, "nxd.lock"))
+		_ = os.Remove(filepath.Join(stateDir, "nxd.lock"))
 	}
 	lock, err := engine.AcquireLock(stateDir)
 	if err != nil {
 		return err
 	}
-	defer lock.Release()
+	defer func() { _ = lock.Release() }()
 
 	// Detect repo path early for recovery (also used later for execution).
 	repoDir, err := os.Getwd()
@@ -219,15 +219,15 @@ func runResume(cmd *cobra.Command, args []string) error {
 				evt := state.NewEvent(state.EventStoryReset, "recovery", issue.StoryID, map[string]any{
 					"reason": issue.Detail,
 				})
-				s.Events.Append(evt)
-				s.Proj.Project(evt)
+				_ = s.Events.Append(evt)
+				_ = s.Proj.Project(evt)
 			}
 		}
 		recoveryEvt := state.NewEvent(state.EventRecoveryCompleted, "system", "", map[string]any{
 			"issues_found": len(recoveryIssues),
 		})
-		s.Events.Append(recoveryEvt)
-		s.Proj.Project(recoveryEvt)
+		_ = s.Events.Append(recoveryEvt)
+		_ = s.Proj.Project(recoveryEvt)
 	}
 
 	// DevDB orphan recovery: delete DB containers left by crashed pipelines.

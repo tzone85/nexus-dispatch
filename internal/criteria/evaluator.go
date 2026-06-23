@@ -79,7 +79,7 @@ func FailureSummary(results []Result) string {
 	var sb strings.Builder
 	for _, r := range results {
 		if !r.Passed {
-			sb.WriteString(fmt.Sprintf("- [%s] %s: %s\n", r.Criterion.Type, r.Criterion.Target, r.Message))
+			fmt.Fprintf(&sb, "- [%s] %s: %s\n", r.Criterion.Type, r.Criterion.Target, r.Message)
 		}
 	}
 	return sb.String()

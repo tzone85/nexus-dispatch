@@ -1209,13 +1209,6 @@ func TestIsRequirementPaused_NotPaused(t *testing.T) {
 	}
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 func boostSetupGitRepo(t *testing.T, dir string) {
 	t.Helper()
 	// Try git init with -b main (git >= 2.28)

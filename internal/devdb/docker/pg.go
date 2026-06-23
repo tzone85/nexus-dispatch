@@ -145,7 +145,7 @@ func DumpSchema(ctx context.Context, pg *PGConn) (string, error) {
 			out.WriteString("\nTABLE " + key + "\n")
 			curr = key
 		}
-		out.WriteString(fmt.Sprintf("  %s %s (nullable=%s)\n", col, dtype, nullable))
+		fmt.Fprintf(&out, "  %s %s (nullable=%s)\n", col, dtype, nullable)
 	}
 	return out.String(), rows.Err()
 }

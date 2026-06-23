@@ -45,7 +45,7 @@ func runMergeStory(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("acquire pipeline lock: %w", err)
 	}
-	defer lock.Release()
+	defer func() { _ = lock.Release() }()
 
 	repoDir, err := os.Getwd()
 	if err != nil {

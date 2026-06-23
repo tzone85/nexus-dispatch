@@ -19,7 +19,7 @@ func TestProject_AllEventTypes_NoErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSQLiteStore: %v", err)
 	}
-	defer ps.Close()
+	defer func() { _ = ps.Close() }()
 
 	// Order matters: requirements must be projected before their
 	// stories. seedReq/seedStory both project through Project()

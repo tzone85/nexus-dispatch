@@ -25,13 +25,13 @@ func TestCreateAndKillSession(t *testing.T) {
 
 	name := "nxd-test-session"
 	// Cleanup in case of a previous failed test.
-	tmux.KillSession(name)
+	_ = tmux.KillSession(name)
 
 	err := tmux.CreateSession(name, "/tmp", "")
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	defer tmux.KillSession(name)
+	defer func() { _ = tmux.KillSession(name) }()
 
 	if !tmux.SessionExists(name) {
 		t.Fatal("session should exist")
@@ -51,7 +51,7 @@ func TestListSessions(t *testing.T) {
 	skipIfNoTmux(t)
 
 	name := "nxd-test-list"
-	tmux.KillSession(name)
+	_ = tmux.KillSession(name)
 
 	err := tmux.CreateSession(name, "/tmp", "")
 	if err != nil {

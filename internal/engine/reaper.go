@@ -54,7 +54,7 @@ func (r *Reaper) Reap(storyID, repoDir, worktreePath, branch string) (ReapResult
 		}
 		result.WorktreePruned = true
 
-		r.eventStore.Append(state.NewEvent(state.EventWorktreePruned, "reaper", storyID, map[string]any{
+		_ = r.eventStore.Append(state.NewEvent(state.EventWorktreePruned, "reaper", storyID, map[string]any{
 			"worktree_path": worktreePath,
 			"mode":          "immediate",
 		}))
@@ -70,7 +70,7 @@ func (r *Reaper) Reap(storyID, repoDir, worktreePath, branch string) (ReapResult
 			}
 			result.BranchDeleted = true
 
-			r.eventStore.Append(state.NewEvent(state.EventBranchDeleted, "reaper", storyID, map[string]any{
+			_ = r.eventStore.Append(state.NewEvent(state.EventBranchDeleted, "reaper", storyID, map[string]any{
 				"branch": branch,
 			}))
 		}
@@ -97,7 +97,7 @@ func (r *Reaper) GarbageCollect(repoDir string, branches []BranchInfo) (int, err
 			}
 			deleted++
 
-			r.eventStore.Append(state.NewEvent(state.EventBranchDeleted, "reaper", b.StoryID, map[string]any{
+			_ = r.eventStore.Append(state.NewEvent(state.EventBranchDeleted, "reaper", b.StoryID, map[string]any{
 				"branch": b.Name,
 				"reason": "gc_retention_expired",
 			}))
@@ -105,7 +105,7 @@ func (r *Reaper) GarbageCollect(repoDir string, branches []BranchInfo) (int, err
 	}
 
 	if deleted > 0 {
-		r.eventStore.Append(state.NewEvent(state.EventGCCompleted, "reaper", "", map[string]any{
+		_ = r.eventStore.Append(state.NewEvent(state.EventGCCompleted, "reaper", "", map[string]any{
 			"branches_deleted": deleted,
 		}))
 	}

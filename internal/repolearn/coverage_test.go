@@ -23,7 +23,7 @@ func TestExtractCargoVersion(t *testing.T) {
 	}
 
 	// With rust-version
-	os.WriteFile(filepath.Join(dir, "Cargo.toml"), []byte(`[package]
+	_ = os.WriteFile(filepath.Join(dir, "Cargo.toml"), []byte(`[package]
 name = "myapp"
 rust-version = "1.75.0"
 `), 0o644)
@@ -32,7 +32,7 @@ rust-version = "1.75.0"
 	}
 
 	// With edition only
-	os.WriteFile(filepath.Join(dir, "Cargo.toml"), []byte(`[package]
+	_ = os.WriteFile(filepath.Join(dir, "Cargo.toml"), []byte(`[package]
 name = "myapp"
 edition = "2021"
 `), 0o644)
@@ -50,7 +50,7 @@ func TestExtractPythonVersion(t *testing.T) {
 	}
 
 	// With requires-python
-	os.WriteFile(filepath.Join(dir, "pyproject.toml"), []byte(`[project]
+	_ = os.WriteFile(filepath.Join(dir, "pyproject.toml"), []byte(`[project]
 requires-python = ">=3.10"
 `), 0o644)
 	if v := extractPythonVersion(dir); v != ">=3.10" {
@@ -67,7 +67,7 @@ func TestDetectRubyFramework(t *testing.T) {
 	}
 
 	// Rails app
-	os.WriteFile(filepath.Join(dir, "Gemfile"), []byte(`source "https://rubygems.org"
+	_ = os.WriteFile(filepath.Join(dir, "Gemfile"), []byte(`source "https://rubygems.org"
 gem "rails", "~> 7.1"
 `), 0o644)
 	if f := detectRubyFramework(dir); f != "Rails" {
@@ -75,7 +75,7 @@ gem "rails", "~> 7.1"
 	}
 
 	// Sinatra app
-	os.WriteFile(filepath.Join(dir, "Gemfile"), []byte(`source "https://rubygems.org"
+	_ = os.WriteFile(filepath.Join(dir, "Gemfile"), []byte(`source "https://rubygems.org"
 gem "sinatra"
 `), 0o644)
 	if f := detectRubyFramework(dir); f != "Sinatra" {
@@ -93,7 +93,7 @@ func TestParseRustDependencies(t *testing.T) {
 	}
 
 	// With dependencies
-	os.WriteFile(filepath.Join(dir, "Cargo.toml"), []byte(`[package]
+	_ = os.WriteFile(filepath.Join(dir, "Cargo.toml"), []byte(`[package]
 name = "myapp"
 
 [dependencies]
@@ -138,11 +138,11 @@ func TestCoverage_ScanStatic_GoProject(t *testing.T) {
 	dir := t.TempDir()
 
 	// Create a minimal Go project structure
-	os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module test\ngo 1.22\n"), 0o644)
-	os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\nfunc main() {}\n"), 0o644)
-	os.MkdirAll(filepath.Join(dir, "cmd", "app"), 0o755)
-	os.WriteFile(filepath.Join(dir, "cmd", "app", "main.go"), []byte("package main\n"), 0o644)
-	os.WriteFile(filepath.Join(dir, "Makefile"), []byte("build:\n\tgo build ./...\ntest:\n\tgo test ./...\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module test\ngo 1.22\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\nfunc main() {}\n"), 0o644)
+	_ = os.MkdirAll(filepath.Join(dir, "cmd", "app"), 0o755)
+	_ = os.WriteFile(filepath.Join(dir, "cmd", "app", "main.go"), []byte("package main\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "Makefile"), []byte("build:\n\tgo build ./...\ntest:\n\tgo test ./...\n"), 0o644)
 
 	profile, err := ScanStatic(dir)
 	if err != nil {

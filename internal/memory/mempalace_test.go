@@ -55,7 +55,7 @@ func TestNewMemPalace_FindsBridge(t *testing.T) {
 	if err := os.Chdir(tmp); err != nil {
 		t.Fatalf("chdir: %v", err)
 	}
-	t.Cleanup(func() { os.Chdir(origDir) })
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
 
 	mp := NewMemPalace()
 	// Bridge file exists, so bridgePath should be set.

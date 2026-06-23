@@ -21,7 +21,7 @@ func readDatabaseURL(workDir string) string {
 	if err != nil {
 		return ""
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
 		line := sc.Text()
@@ -87,7 +87,7 @@ func evaluateSchemaChanged(ctx context.Context, workDir string, c Criterion) Res
 		return Result{Criterion: c, Passed: false,
 			Message: fmt.Sprintf("schema_changed: pgx connect failed: %v", err)}
 	}
-	defer conn.Close(connCtx)
+	defer func() { _ = conn.Close(connCtx) }()
 
 	current, err := dumpSchemaText(connCtx, conn)
 	if err != nil {
@@ -172,7 +172,7 @@ func evaluateSQLQueryReturns(ctx context.Context, workDir string, c Criterion) R
 		return Result{Criterion: c, Passed: false,
 			Message: fmt.Sprintf("sql_query_returns: pgx connect failed: %v", err)}
 	}
-	defer conn.Close(connCtx)
+	defer func() { _ = conn.Close(connCtx) }()
 	rows, err := conn.Query(connCtx, c.SQL)
 	if err != nil {
 		return Result{Criterion: c, Passed: false,
@@ -232,7 +232,7 @@ func dumpSchemaText(ctx context.Context, conn *pgx.Conn) (string, error) {
 			b.WriteString("\nTABLE " + key + "\n")
 			curr = key
 		}
-		b.WriteString(fmt.Sprintf("  %s %s (nullable=%s)\n", col, dtype, nullable))
+		fmt.Fprintf(&b, "  %s %s (nullable=%s)\n", col, dtype, nullable)
 	}
 	return b.String(), rows.Err()
 }

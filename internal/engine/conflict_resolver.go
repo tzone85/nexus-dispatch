@@ -31,12 +31,12 @@ const maxConflictContentBytes = 24 * 1024 // 24 KB
 // techLeadContext carries the requirement/story context that the Tech Lead
 // resolver includes in its resolution prompt.
 type techLeadContext struct {
-	requirementTitle     string
-	requirementText      string
-	storyTitle           string
-	storyAcceptance      string
-	siblingStoryTitles   []string // other stories in the same requirement
-	fileHistory          []string // last 3 commit subjects that touched this file
+	requirementTitle   string
+	requirementText    string
+	storyTitle         string
+	storyAcceptance    string
+	siblingStoryTitles []string // other stories in the same requirement
+	fileHistory        []string // last 3 commit subjects that touched this file
 }
 
 // ConflictResolver uses an LLM to automatically resolve git merge conflicts
@@ -119,7 +119,7 @@ func (cr *ConflictResolver) RebaseWithResolution(ctx context.Context, storyID, w
 	for round := 0; round < cr.maxRounds; round++ {
 		files, fErr := nxdgit.ConflictedFiles(worktreePath)
 		if fErr != nil {
-			nxdgit.RebaseAbort(worktreePath)
+			_ = nxdgit.RebaseAbort(worktreePath)
 			return fmt.Errorf("list conflicted files: %w", fErr)
 		}
 
@@ -131,7 +131,7 @@ func (cr *ConflictResolver) RebaseWithResolution(ctx context.Context, storyID, w
 				return nil
 			}
 			if !nxdgit.IsConflict(contErr) {
-				nxdgit.RebaseAbort(worktreePath)
+				_ = nxdgit.RebaseAbort(worktreePath)
 				return contErr
 			}
 			continue
@@ -151,7 +151,7 @@ func (cr *ConflictResolver) RebaseWithResolution(ctx context.Context, storyID, w
 			isBin, _ := nxdgit.IsBinaryConflict(worktreePath, file)
 			if isBin {
 				if rErr := cr.handleBinaryConflict(storyID, worktreePath, absPath, file); rErr != nil {
-					nxdgit.RebaseAbort(worktreePath)
+					_ = nxdgit.RebaseAbort(worktreePath)
 					return rErr
 				}
 				continue
@@ -159,7 +159,7 @@ func (cr *ConflictResolver) RebaseWithResolution(ctx context.Context, storyID, w
 
 			content, rErr := os.ReadFile(absPath)
 			if rErr != nil {
-				nxdgit.RebaseAbort(worktreePath)
+				_ = nxdgit.RebaseAbort(worktreePath)
 				return fmt.Errorf("read conflicted file %s: %w", file, rErr)
 			}
 
@@ -178,16 +178,16 @@ func (cr *ConflictResolver) RebaseWithResolution(ctx context.Context, storyID, w
 					resolved, rErr = cr.resolveFileTechLead(ctx, file, contentStr, tlCtx)
 					if rErr != nil {
 						cr.emitEscalationEvent(storyID, file, "tech_lead_failed")
-						nxdgit.RebaseAbort(worktreePath)
+						_ = nxdgit.RebaseAbort(worktreePath)
 						if llm.IsFatalAPIError(rErr) {
 							log.Printf("[conflict-resolver] FATAL: Tech Lead error for %s: %v", storyID, rErr)
 						}
-						return fmt.Errorf("Tech Lead resolve %s: %w", file, rErr)
+						return fmt.Errorf("tech lead resolve %s: %w", file, rErr)
 					}
 					cr.emitEscalationEvent(storyID, file, "tech_lead_resolved")
 				} else if seniorErr != nil {
 					// No tech lead available and senior failed.
-					nxdgit.RebaseAbort(worktreePath)
+					_ = nxdgit.RebaseAbort(worktreePath)
 					if llm.IsFatalAPIError(seniorErr) {
 						log.Printf("[conflict-resolver] FATAL: API error during conflict resolution for %s: %v", storyID, seniorErr)
 					}
@@ -195,12 +195,12 @@ func (cr *ConflictResolver) RebaseWithResolution(ctx context.Context, storyID, w
 				}
 				// If needsTechLead but senior succeeded and no tech lead: use senior result.
 			} else if seniorErr != nil {
-				nxdgit.RebaseAbort(worktreePath)
+				_ = nxdgit.RebaseAbort(worktreePath)
 				return fmt.Errorf("LLM resolve %s: %w", file, seniorErr)
 			}
 
 			if wErr := os.WriteFile(absPath, []byte(resolved), 0o644); wErr != nil {
-				nxdgit.RebaseAbort(worktreePath)
+				_ = nxdgit.RebaseAbort(worktreePath)
 				return fmt.Errorf("write resolved %s: %w", file, wErr)
 			}
 		}
@@ -212,7 +212,7 @@ func (cr *ConflictResolver) RebaseWithResolution(ctx context.Context, storyID, w
 		remainingFiles, _ := nxdgit.ConflictedFiles(worktreePath)
 		if len(remainingFiles) > 0 {
 			if sErr := nxdgit.StageFiles(worktreePath, remainingFiles); sErr != nil {
-				nxdgit.RebaseAbort(worktreePath)
+				_ = nxdgit.RebaseAbort(worktreePath)
 				return fmt.Errorf("stage resolved files: %w", sErr)
 			}
 		}
@@ -225,7 +225,7 @@ func (cr *ConflictResolver) RebaseWithResolution(ctx context.Context, storyID, w
 		}
 
 		if !nxdgit.IsConflict(contErr) {
-			nxdgit.RebaseAbort(worktreePath)
+			_ = nxdgit.RebaseAbort(worktreePath)
 			return contErr
 		}
 
@@ -233,7 +233,7 @@ func (cr *ConflictResolver) RebaseWithResolution(ctx context.Context, storyID, w
 		log.Printf("[conflict-resolver] additional conflicts in next commit for %s, continuing", storyID)
 	}
 
-	nxdgit.RebaseAbort(worktreePath)
+	_ = nxdgit.RebaseAbort(worktreePath)
 	return fmt.Errorf("conflict resolution exhausted after %d rounds", cr.maxRounds)
 }
 
@@ -286,7 +286,7 @@ Your task:
 4. Return ONLY the resolved file content
 
 CRITICAL OUTPUT RULES:
-- Do NOT wrap your response in markdown code fences (no ` + "```" + ` blocks)
+- Do NOT wrap your response in markdown code fences (no `+"```"+` blocks)
 - Do NOT add any explanation, preamble, or commentary
 - Do NOT add "Here is the resolved file:" or similar
 - Your entire response must be the file content only, starting at line 1
@@ -364,7 +364,7 @@ consistent with the requirement above. Maintain syntax.
 
 CRITICAL OUTPUT RULES:
 - Return ONLY the resolved file content
-- Do NOT wrap your response in markdown code fences (no ` + "```" + ` blocks)
+- Do NOT wrap your response in markdown code fences (no `+"```"+` blocks)
 - Do NOT add any explanation or commentary
 - Start your response with the first line of the resolved file`,
 		tlCtx.requirementTitle,
@@ -395,7 +395,7 @@ CRITICAL OUTPUT RULES:
 	resolved := stripCodeFences(resp.Content)
 
 	if strings.Contains(resolved, "<<<<<<<") || strings.Contains(resolved, ">>>>>>>") {
-		return "", fmt.Errorf("Tech Lead output still contains conflict markers")
+		return "", fmt.Errorf("tech lead output still contains conflict markers")
 	}
 
 	return resolved, nil
@@ -493,7 +493,7 @@ func (cr *ConflictResolver) emitResolutionEvent(storyID string, files []string, 
 		"rounds": rounds,
 	})
 	if cr.eventStore != nil {
-		cr.eventStore.Append(evt)
+		_ = cr.eventStore.Append(evt)
 	}
 }
 
@@ -503,7 +503,7 @@ func (cr *ConflictResolver) emitBinaryEvent(storyID, file string, eventType stat
 		"reason": reason,
 	})
 	if cr.eventStore != nil {
-		cr.eventStore.Append(evt)
+		_ = cr.eventStore.Append(evt)
 	}
 }
 
@@ -513,6 +513,6 @@ func (cr *ConflictResolver) emitEscalationEvent(storyID, file, outcome string) {
 		"outcome": outcome,
 	})
 	if cr.eventStore != nil {
-		cr.eventStore.Append(evt)
+		_ = cr.eventStore.Append(evt)
 	}
 }

@@ -85,8 +85,8 @@ func TestFallbackClient_SkipsPrimaryAfterQuota(t *testing.T) {
 
 	client := llm.NewFallbackClient(primary, fallback, 1*time.Hour)
 
-	client.Complete(context.Background(), llm.CompletionRequest{})
-	client.Complete(context.Background(), llm.CompletionRequest{})
+	_, _ = client.Complete(context.Background(), llm.CompletionRequest{})
+	_, _ = client.Complete(context.Background(), llm.CompletionRequest{})
 
 	if primaryCalls.Load() != 1 {
 		t.Errorf("primary called %d times, want 1", primaryCalls.Load())

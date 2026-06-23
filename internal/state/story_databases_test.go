@@ -12,7 +12,7 @@ func setupSQLiteForDB(t *testing.T) *SQLiteStore {
 	if err != nil {
 		t.Fatalf("NewSQLiteStore: %v", err)
 	}
-	t.Cleanup(func() { store.Close() })
+	t.Cleanup(func() { _ = store.Close() })
 	return store
 }
 
@@ -84,10 +84,10 @@ func TestSQLiteStore_ListStoryDatabases_FilterByStoryID(t *testing.T) {
 func TestSQLiteStore_ListStoryDatabases_FilterByStatus(t *testing.T) {
 	store := setupSQLiteForDB(t)
 
-	store.Project(NewEvent(EventStoryDBCreated, "lifecycle", "S1", map[string]any{
+	_ = store.Project(NewEvent(EventStoryDBCreated, "lifecycle", "S1", map[string]any{
 		"db_id": "d1", "db_name": "n1", "provider": "docker",
 	}))
-	store.Project(NewEvent(EventStoryDBFailed, "lifecycle", "S2", map[string]any{
+	_ = store.Project(NewEvent(EventStoryDBFailed, "lifecycle", "S2", map[string]any{
 		"db_id": "d2", "db_name": "n2", "provider": "docker", "error": "timeout",
 	}))
 
@@ -111,7 +111,7 @@ func TestSQLiteStore_ListStoryDatabases_FilterByStatus(t *testing.T) {
 func TestSQLiteStore_ListStoryDatabases_AfterDeletedEvent(t *testing.T) {
 	store := setupSQLiteForDB(t)
 
-	store.Project(NewEvent(EventStoryDBCreated, "lifecycle", "S1", map[string]any{
+	_ = store.Project(NewEvent(EventStoryDBCreated, "lifecycle", "S1", map[string]any{
 		"db_id": "d1", "db_name": "n1", "provider": "docker",
 	}))
 	store.Project(NewEvent(EventStoryDBDeleted, "lifecycle", "S1", map[string]any{

@@ -55,7 +55,7 @@ func (f *TechLeadFixer) buildPrompt(triggerStoryID, buildError string, recentSto
 
 	sb.WriteString("Recently merged stories:\n")
 	for _, s := range recentStories {
-		sb.WriteString(fmt.Sprintf("  - [%s] %s\n", s.ID, s.Title))
+		fmt.Fprintf(&sb, "  - [%s] %s\n", s.ID, s.Title)
 	}
 
 	sb.WriteString("\nBuild error (combined stdout+stderr):\n```\n")

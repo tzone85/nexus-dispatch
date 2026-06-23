@@ -101,8 +101,8 @@ func TestStore_List(t *testing.T) {
 	dir := t.TempDir()
 	store, _ := NewStore(dir)
 
-	store.Write("s-004", TypeLaunchConfig, map[string]string{"a": "b"})
-	store.WriteRaw("s-004", TypeGitDiff, "diff")
+	_ = store.Write("s-004", TypeLaunchConfig, map[string]string{"a": "b"})
+	_ = store.WriteRaw("s-004", TypeGitDiff, "diff")
 
 	names, err := store.List("s-004")
 	if err != nil {
@@ -135,7 +135,7 @@ func TestStore_ConcurrentAppend(t *testing.T) {
 		wg.Add(1)
 		go func(n int) {
 			defer wg.Done()
-			store.Append("s-005", TypeTraceEvents, map[string]int{"n": n})
+			_ = store.Append("s-005", TypeTraceEvents, map[string]int{"n": n})
 		}(i)
 	}
 	wg.Wait()

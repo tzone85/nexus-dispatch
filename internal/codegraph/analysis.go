@@ -62,7 +62,7 @@ func (ia *ImpactAnalysis) FormatMarkdown() string {
 	}
 
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("## Blast Radius Analysis (risk: %.2f/1.0)\n", ia.RiskScore))
+	fmt.Fprintf(&b, "## Blast Radius Analysis (risk: %.2f/1.0)\n", ia.RiskScore)
 	b.WriteString(ia.Summary)
 	b.WriteString("\n\n")
 
@@ -73,8 +73,8 @@ func (ia *ImpactAnalysis) FormatMarkdown() string {
 			limit = 10
 		}
 		for i, n := range ia.ReviewPriorities[:limit] {
-			b.WriteString(fmt.Sprintf("%d. %s (%s:%d-%d) — risk %.2f\n",
-				i+1, n.Name, shortPath(n.FilePath), n.LineStart, n.LineEnd, n.RiskScore))
+			fmt.Fprintf(&b, "%d. %s (%s:%d-%d) — risk %.2f\n",
+				i+1, n.Name, shortPath(n.FilePath), n.LineStart, n.LineEnd, n.RiskScore)
 		}
 		b.WriteString("\n")
 	}
@@ -86,8 +86,8 @@ func (ia *ImpactAnalysis) FormatMarkdown() string {
 			limit = 10
 		}
 		for _, g := range ia.TestGaps[:limit] {
-			b.WriteString(fmt.Sprintf("- %s (%s:%d-%d) — no test coverage\n",
-				g.Name, shortPath(g.FilePath), g.LineStart, g.LineEnd))
+			fmt.Fprintf(&b, "- %s (%s:%d-%d) — no test coverage\n",
+				g.Name, shortPath(g.FilePath), g.LineStart, g.LineEnd)
 		}
 		b.WriteString("\n")
 	}

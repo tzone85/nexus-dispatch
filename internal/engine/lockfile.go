@@ -59,7 +59,7 @@ func AcquireLock(stateDir string) (*PipelineLock, error) {
 			"pipeline already running (pid %d, started %s).\n"+
 				"  Lock file: %s\n"+
 				"  If the prior run died, the lock is auto-cleared on the next attempt; "+
-				"otherwise remove it manually with `rm %s`.",
+				"otherwise remove it manually with `rm %s`",
 			info.PID,
 			info.StartedAt.Format(time.RFC3339),
 			lockPath,

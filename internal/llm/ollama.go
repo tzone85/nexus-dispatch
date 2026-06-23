@@ -154,12 +154,8 @@ func (c *OllamaClient) Complete(ctx context.Context, req CompletionRequest) (Com
 	var tools []ollamaTool
 	for _, td := range req.Tools {
 		tools = append(tools, ollamaTool{
-			Type: "function",
-			Function: ollamaFunction{
-				Name:        td.Name,
-				Description: td.Description,
-				Parameters:  td.Parameters,
-			},
+			Type:     "function",
+			Function: ollamaFunction(td),
 		})
 	}
 

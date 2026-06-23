@@ -143,7 +143,7 @@ rm -f ~/.nxd/nxd.lock ~/.nxd/events.jsonl ~/.nxd/nxd.db
 ## Current State (2026-05-11)
 
 - **Coverage**: **81.6% total** (was 73.8% in April; 7.8 points lifted via the 10-PR roadmap). 21 packages above 85%; 95% per-package on 5 packages; remaining gap concentrated in architecturally-bound paths (cli Cobra interactive, engine spawnNative, tmux production daemon).
-- **CI**: test + vet + build + MemPalace bridge + tmux-integration (build-tagged live) all pass; lint non-blocking (golangci-lint doesn't support Go 1.26 yet)
+- **CI**: test + vet + build + MemPalace bridge + tmux-integration (build-tagged live) all pass; lint now **blocking** — golangci-lint v2.12.2 (Go 1.26-compatible) via `golangci-lint-action@v8`, config in `.golangci.yml` (default linter set; errcheck not enforced in tests or for `fmt.Fprint*`/`.Close`; `e2e` build tag enabled)
 - **DryRunClient**: `--dry-run` flag on `nxd req` and `nxd resume` simulates full pipeline without API calls
 - **Controller**: disabled by default, production-ready with reprioritize/restart/cancel + 19 tests
 - **Web dashboard**: DAG SVG visualization, review gates, metrics, recovery log, investigations

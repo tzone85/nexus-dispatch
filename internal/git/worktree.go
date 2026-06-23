@@ -20,18 +20,18 @@ func CreateWorktree(repoDir, worktreePath, branch string) error {
 			return nil // valid worktree — reuse it
 		}
 		// Broken or empty worktree — remove it
-		os.RemoveAll(worktreePath)
+		_ = os.RemoveAll(worktreePath)
 	}
 
 	// Prune stale worktree references from .git/worktrees
 	prune := exec.Command("git", "worktree", "prune")
 	prune.Dir = repoDir
-	prune.Run()
+	_ = prune.Run()
 
 	// Delete the branch if it lingers from a previous failed attempt
 	delBranch := exec.Command("git", "branch", "-D", branch)
 	delBranch.Dir = repoDir
-	delBranch.Run()
+	_ = delBranch.Run()
 
 	// Create fresh worktree with new branch
 	cmd := exec.Command("git", "worktree", "add", "-b", branch, worktreePath)

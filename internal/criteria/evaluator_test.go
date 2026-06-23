@@ -9,7 +9,7 @@ import (
 
 func TestFileExists_Pass(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main"), 0644)
+	_ = os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main"), 0644)
 
 	r := Evaluate(context.Background(), dir, Criterion{Type: TypeFileExists, Target: "main.go"})
 	if !r.Passed {
@@ -26,7 +26,7 @@ func TestFileExists_Fail(t *testing.T) {
 
 func TestFileContains_Substring(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\nfunc hello() {}"), 0644)
+	_ = os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\nfunc hello() {}"), 0644)
 
 	r := Evaluate(context.Background(), dir, Criterion{Type: TypeFileContains, Target: "main.go", Expected: "func hello"})
 	if !r.Passed {
@@ -36,7 +36,7 @@ func TestFileContains_Substring(t *testing.T) {
 
 func TestFileContains_Regex(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "main.go"), []byte("func Add(a, b int) int { return a + b }"), 0644)
+	_ = os.WriteFile(filepath.Join(dir, "main.go"), []byte("func Add(a, b int) int { return a + b }"), 0644)
 
 	r := Evaluate(context.Background(), dir, Criterion{Type: TypeFileContains, Target: "main.go", Expected: `func \w+\(`})
 	if !r.Passed {
@@ -46,7 +46,7 @@ func TestFileContains_Regex(t *testing.T) {
 
 func TestFileContains_Fail(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main"), 0644)
+	_ = os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main"), 0644)
 
 	r := Evaluate(context.Background(), dir, Criterion{Type: TypeFileContains, Target: "main.go", Expected: "not here"})
 	if r.Passed {
@@ -93,8 +93,8 @@ func TestCommandSucceeds_Pass(t *testing.T) {
 	// `go vet` is allowlisted and runs cleanly on an empty go.mod tempdir
 	// when there is nothing to vet (exits 0). We seed a minimal package.
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module testpkg\n\ngo 1.21\n"), 0644)
-	os.WriteFile(filepath.Join(dir, "main.go"), []byte("package testpkg\n"), 0644)
+	_ = os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module testpkg\n\ngo 1.21\n"), 0644)
+	_ = os.WriteFile(filepath.Join(dir, "main.go"), []byte("package testpkg\n"), 0644)
 	r := Evaluate(context.Background(), dir, Criterion{Type: TypeCommandSucceeds, Target: "go vet ./..."})
 	if !r.Passed {
 		t.Errorf("expected pass, got: %s", r.Message)
@@ -103,8 +103,8 @@ func TestCommandSucceeds_Pass(t *testing.T) {
 
 func TestCommandSucceeds_GoBuildDoesNotLeaveRootBinary(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module buildpkg\n\ngo 1.21\n"), 0644)
-	os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\nfunc main() {}\n"), 0644)
+	_ = os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module buildpkg\n\ngo 1.21\n"), 0644)
+	_ = os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\nfunc main() {}\n"), 0644)
 
 	r := Evaluate(context.Background(), dir, Criterion{Type: TypeCommandSucceeds, Target: "go build ./..."})
 	if !r.Passed {
@@ -120,9 +120,9 @@ func TestCommandSucceeds_GoBuildDoesNotLeaveRootBinary(t *testing.T) {
 
 func TestTestPasses_AcceptsFullGoTestCommand(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module testpasses\n\ngo 1.21\n"), 0644)
-	os.WriteFile(filepath.Join(dir, "main.go"), []byte("package testpasses\nfunc Add(a, b int) int { return a + b }\n"), 0644)
-	os.WriteFile(filepath.Join(dir, "main_test.go"), []byte("package testpasses\nimport \"testing\"\nfunc TestAdd(t *testing.T) { if Add(1, 2) != 3 { t.Fatal(\"bad add\") } }\n"), 0644)
+	_ = os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module testpasses\n\ngo 1.21\n"), 0644)
+	_ = os.WriteFile(filepath.Join(dir, "main.go"), []byte("package testpasses\nfunc Add(a, b int) int { return a + b }\n"), 0644)
+	_ = os.WriteFile(filepath.Join(dir, "main_test.go"), []byte("package testpasses\nimport \"testing\"\nfunc TestAdd(t *testing.T) { if Add(1, 2) != 3 { t.Fatal(\"bad add\") } }\n"), 0644)
 
 	r := Evaluate(context.Background(), dir, Criterion{Type: TypeTestPasses, Target: "go test ./..."})
 	if !r.Passed {
@@ -194,7 +194,7 @@ func contains(s, sub string) bool {
 
 func TestEvaluateAll(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("hello"), 0644)
+	_ = os.WriteFile(filepath.Join(dir, "a.txt"), []byte("hello"), 0644)
 
 	results := EvaluateAll(context.Background(), dir, []Criterion{
 		{Type: TypeFileExists, Target: "a.txt"},
@@ -229,9 +229,9 @@ func TestFailureSummary(t *testing.T) {
 func TestTestPasses_RealProject(t *testing.T) {
 	// Create a minimal Go project with a passing test.
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module testproject\n\ngo 1.21\n"), 0o644)
-	os.WriteFile(filepath.Join(dir, "add.go"), []byte("package testproject\n\nfunc Add(a, b int) int { return a + b }\n"), 0o644)
-	os.WriteFile(filepath.Join(dir, "add_test.go"), []byte("package testproject\n\nimport \"testing\"\n\nfunc TestAdd(t *testing.T) {\n\tif Add(1, 2) != 3 { t.Fatal(\"wrong\") }\n}\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module testproject\n\ngo 1.21\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "add.go"), []byte("package testproject\n\nfunc Add(a, b int) int { return a + b }\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "add_test.go"), []byte("package testproject\n\nimport \"testing\"\n\nfunc TestAdd(t *testing.T) {\n\tif Add(1, 2) != 3 { t.Fatal(\"wrong\") }\n}\n"), 0o644)
 
 	r := Evaluate(context.Background(), dir, Criterion{Type: TypeTestPasses, Target: "./..."})
 	if !r.Passed {
@@ -241,9 +241,9 @@ func TestTestPasses_RealProject(t *testing.T) {
 
 func TestTestPasses_FailingProject(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module testproject\n\ngo 1.21\n"), 0o644)
-	os.WriteFile(filepath.Join(dir, "fail.go"), []byte("package testproject\n"), 0o644)
-	os.WriteFile(filepath.Join(dir, "fail_test.go"), []byte("package testproject\n\nimport \"testing\"\n\nfunc TestAlwaysFails(t *testing.T) { t.Fatal(\"intentional fail\") }\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module testproject\n\ngo 1.21\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "fail.go"), []byte("package testproject\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "fail_test.go"), []byte("package testproject\n\nimport \"testing\"\n\nfunc TestAlwaysFails(t *testing.T) { t.Fatal(\"intentional fail\") }\n"), 0o644)
 
 	r := Evaluate(context.Background(), dir, Criterion{Type: TypeTestPasses, Target: "./..."})
 	if r.Passed {
@@ -254,9 +254,9 @@ func TestTestPasses_FailingProject(t *testing.T) {
 func TestTestPasses_DefaultTarget(t *testing.T) {
 	// When Target is empty, it should default to "./...".
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module testproject\n\ngo 1.21\n"), 0o644)
-	os.WriteFile(filepath.Join(dir, "ok.go"), []byte("package testproject\n"), 0o644)
-	os.WriteFile(filepath.Join(dir, "ok_test.go"), []byte("package testproject\n\nimport \"testing\"\n\nfunc TestOK(t *testing.T) {}\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module testproject\n\ngo 1.21\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "ok.go"), []byte("package testproject\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "ok_test.go"), []byte("package testproject\n\nimport \"testing\"\n\nfunc TestOK(t *testing.T) {}\n"), 0o644)
 
 	r := Evaluate(context.Background(), dir, Criterion{Type: TypeTestPasses})
 	if !r.Passed {
@@ -266,9 +266,9 @@ func TestTestPasses_DefaultTarget(t *testing.T) {
 
 func TestCoverageAbove_Pass(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module testproject\n\ngo 1.21\n"), 0o644)
-	os.WriteFile(filepath.Join(dir, "add.go"), []byte("package testproject\n\nfunc Add(a, b int) int { return a + b }\n"), 0o644)
-	os.WriteFile(filepath.Join(dir, "add_test.go"), []byte("package testproject\n\nimport \"testing\"\n\nfunc TestAdd(t *testing.T) {\n\tif Add(1, 2) != 3 { t.Fatal(\"wrong\") }\n}\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module testproject\n\ngo 1.21\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "add.go"), []byte("package testproject\n\nfunc Add(a, b int) int { return a + b }\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "add_test.go"), []byte("package testproject\n\nimport \"testing\"\n\nfunc TestAdd(t *testing.T) {\n\tif Add(1, 2) != 3 { t.Fatal(\"wrong\") }\n}\n"), 0o644)
 
 	// This simple project should have 100% coverage.
 	r := Evaluate(context.Background(), dir, Criterion{Type: TypeCoverageAbove, Expected: "50.0"})
@@ -279,9 +279,9 @@ func TestCoverageAbove_Pass(t *testing.T) {
 
 func TestCoverageAbove_Fail(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module testproject\n\ngo 1.21\n"), 0o644)
-	os.WriteFile(filepath.Join(dir, "funcs.go"), []byte("package testproject\n\nfunc A() {}\nfunc B() {}\nfunc C() {}\n"), 0o644)
-	os.WriteFile(filepath.Join(dir, "funcs_test.go"), []byte("package testproject\n\nimport \"testing\"\n\nfunc TestA(t *testing.T) { A() }\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module testproject\n\ngo 1.21\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "funcs.go"), []byte("package testproject\n\nfunc A() {}\nfunc B() {}\nfunc C() {}\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "funcs_test.go"), []byte("package testproject\n\nimport \"testing\"\n\nfunc TestA(t *testing.T) { A() }\n"), 0o644)
 
 	// Only ~33% coverage — threshold of 99% should fail.
 	r := Evaluate(context.Background(), dir, Criterion{Type: TypeCoverageAbove, Expected: "99.0"})

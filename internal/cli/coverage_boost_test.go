@@ -93,9 +93,8 @@ func TestCheckConfig_ValidConfig(t *testing.T) {
 	if result.Status == "fail" {
 		t.Errorf("checkConfig returned fail: %s", result.Message)
 	}
-	if cfg.Workspace.Backend == "" {
-		// Config loaded but fields may vary; just verify no panic
-	}
+	// Config loaded but fields may vary; just verify the field is readable.
+	_ = cfg.Workspace.Backend
 }
 
 func TestCheckConfig_MissingFile(t *testing.T) {
@@ -245,9 +244,8 @@ func TestLoadStores_Success(t *testing.T) {
 	}
 	defer s.Close()
 
-	if s.Config.Workspace.Backend == "" {
-		// backend was loaded from the config
-	}
+	// backend was loaded from the config; just verify the field is readable.
+	_ = s.Config.Workspace.Backend
 	if s.Events == nil {
 		t.Error("expected non-nil Events store")
 	}

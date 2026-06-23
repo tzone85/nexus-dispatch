@@ -83,7 +83,7 @@ type priorKey struct {
 
 // priorKeyJSON is the JSON-serializable form of priorKey.
 type priorKeyJSON struct {
-	Role string        `json:"role"`
+	Role string         `json:"role"`
 	Tier ComplexityTier `json:"tier"`
 }
 
@@ -289,7 +289,7 @@ func (r *BayesianRouter) Save(path string) error {
 		return fmt.Errorf("create temp priors file: %w", err)
 	}
 	tmpName := tmp.Name()
-	defer os.Remove(tmpName) // no-op after a successful rename
+	defer func() { _ = os.Remove(tmpName) }() // no-op after a successful rename
 	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
 		return fmt.Errorf("write temp priors file: %w", err)

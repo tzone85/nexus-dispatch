@@ -50,7 +50,7 @@ func stripJSONComments(s string) string {
 		// Strip /* ... */ block comments.
 		if c == '/' && i+1 < len(s) && s[i+1] == '*' {
 			j := i + 2
-			for j+1 < len(s) && !(s[j] == '*' && s[j+1] == '/') {
+			for j+1 < len(s) && (s[j] != '*' || s[j+1] != '/') {
 				j++
 			}
 			i = j + 2

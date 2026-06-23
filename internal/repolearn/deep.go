@@ -150,7 +150,7 @@ func readFileTruncated(path string, maxBytes int) string {
 // the given glob pattern. Skips hidden and vendor directories.
 func findFirstMatchingFile(repoPath, pattern string) string {
 	var found string
-	filepath.Walk(repoPath, func(path string, info os.FileInfo, err error) error {
+	_ = filepath.Walk(repoPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() {
 			if info != nil && info.IsDir() && shouldSkipDir(info.Name()) {
 				return filepath.SkipDir

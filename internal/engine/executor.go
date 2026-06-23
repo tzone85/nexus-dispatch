@@ -280,7 +280,7 @@ func (e *Executor) spawn(ctx context.Context, repoDir string, a Assignment, stor
 			sb.WriteString("## Prior Work in This Requirement\n\n")
 			sb.WriteString("The following has already been built. Build on this, do not recreate.\n\n")
 			for _, r := range results {
-				sb.WriteString(fmt.Sprintf("- %s\n", r.Text))
+				fmt.Fprintf(&sb, "- %s\n", r.Text)
 			}
 			promptCtx.PriorWorkContext = sb.String()
 		}
@@ -335,7 +335,7 @@ func (e *Executor) spawn(ctx context.Context, repoDir string, a Assignment, stor
 
 	// Build log path for post-mortem diagnosis
 	logDir := filepath.Join(execExpandHome(e.config.Workspace.StateDir), "logs")
-	os.MkdirAll(logDir, 0o755)
+	_ = os.MkdirAll(logDir, 0o755)
 	logFile := filepath.Join(logDir, a.StoryID+".log")
 
 	// Spawn the runtime session
@@ -530,7 +530,7 @@ func (e *Executor) spawnNative(ctx context.Context, repoDir string, a Assignment
 			var sb strings.Builder
 			sb.WriteString("## Prior Work in This Requirement\n\n")
 			for _, r := range searchResults {
-				sb.WriteString(fmt.Sprintf("- %s\n", r.Text))
+				fmt.Fprintf(&sb, "- %s\n", r.Text)
 			}
 			promptCtx.PriorWorkContext = sb.String()
 		}
@@ -543,7 +543,7 @@ func (e *Executor) spawnNative(ctx context.Context, repoDir string, a Assignment
 
 	// Write launch config artifact for reproducibility.
 	if e.artifactStore != nil {
-		e.artifactStore.Write(a.StoryID, artifact.TypeLaunchConfig, artifact.LaunchConfig{
+		_ = e.artifactStore.Write(a.StoryID, artifact.TypeLaunchConfig, artifact.LaunchConfig{
 			StoryID:   a.StoryID,
 			Runtime:   rtName,
 			Model:     modelCfg.Model,
