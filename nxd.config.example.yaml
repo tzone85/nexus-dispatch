@@ -57,6 +57,7 @@ cleanup:
     worktree_prune: immediate
     branch_retention_days: 7
     log_archive: file
+    delete_dangling_branches: true
 merge:
     auto_merge: true
     review_before_merge: false

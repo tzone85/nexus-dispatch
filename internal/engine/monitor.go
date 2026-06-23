@@ -1008,6 +1008,9 @@ func (m *Monitor) dispatchNextWave(ctx context.Context, rc *RunContext, repoDir 
 
 	if allDone {
 		log.Printf("[auto-resume] all %d stories complete for requirement %s", len(stories), rc.ReqID)
+		// Leave the workspace neat: remove dangling branches (and their open
+		// PRs) from stories that never merged. Merged branches are already gone.
+		m.cleanupDanglingBranches(rc.ReqID, repoDir)
 		// Mark requirement complete.
 		emitEventOrLog(m.eventStore, m.projStore,
 			state.NewEvent(state.EventReqCompleted, "monitor", "", map[string]any{"id": rc.ReqID}))
