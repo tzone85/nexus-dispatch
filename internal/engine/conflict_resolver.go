@@ -157,6 +157,23 @@ func (cr *ConflictResolver) RebaseWithResolution(ctx context.Context, storyID, w
 				continue
 			}
 
+			// Generated lock-file check: resolve deterministically (story branch
+			// version via --ours, staged by the bulk StageFiles below). Lock files
+			// like package-lock.json are huge and machine-generated — sending them
+			// to the LLM blows the pipeline timeout for no benefit; the post-merge
+			// build/QA validates dependencies.
+			if isGeneratedLockFile(file) {
+				log.Printf("[conflict-resolver] deterministic resolve (--ours) for generated lock file %s in %s", file, storyID)
+				cmd := exec.Command("git", "checkout", "--ours", "--", file)
+				cmd.Dir = worktreePath
+				if out, err := cmd.CombinedOutput(); err != nil {
+					_ = nxdgit.RebaseAbort(worktreePath)
+					return fmt.Errorf("git checkout --ours %s: %w (%s)", file, err, strings.TrimSpace(string(out)))
+				}
+				cr.emitEscalationEvent(storyID, file, "lock_file_deterministic")
+				continue
+			}
+
 			content, rErr := os.ReadFile(absPath)
 			if rErr != nil {
 				_ = nxdgit.RebaseAbort(worktreePath)
@@ -235,6 +252,28 @@ func (cr *ConflictResolver) RebaseWithResolution(ctx context.Context, storyID, w
 
 	_ = nxdgit.RebaseAbort(worktreePath)
 	return fmt.Errorf("conflict resolution exhausted after %d rounds", cr.maxRounds)
+}
+
+// generatedLockFiles are package-manager lock files that are machine-generated
+// and must never be LLM-resolved — a conflict is resolved by taking one side
+// and letting the build regenerate.
+var generatedLockFiles = map[string]bool{
+	"package-lock.json":   true,
+	"npm-shrinkwrap.json": true,
+	"yarn.lock":           true,
+	"pnpm-lock.yaml":      true,
+	"go.sum":              true,
+	"Cargo.lock":          true,
+	"composer.lock":       true,
+	"Gemfile.lock":        true,
+	"poetry.lock":         true,
+	"Pipfile.lock":        true,
+}
+
+// isGeneratedLockFile reports whether the path's base name is a known
+// machine-generated dependency lock file.
+func isGeneratedLockFile(path string) bool {
+	return generatedLockFiles[filepath.Base(path)]
 }
 
 // handleBinaryConflict applies a deterministic policy for binary-file conflicts
