@@ -55,6 +55,7 @@ func DefaultConfig() Config {
 			PollIntervalMs:         10000,
 			StuckThresholdS:        120,
 			ContextFreshnessTokens: 150000,
+			PipelineTimeoutS:       900, // 15 min — room for slow local LLM calls + conflict resolution
 		},
 		Cleanup: CleanupConfig{
 			WorktreePrune:          "immediate",
