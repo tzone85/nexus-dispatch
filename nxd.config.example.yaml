@@ -53,6 +53,7 @@ monitor:
     poll_interval_ms: 10000
     stuck_threshold_s: 120
     context_freshness_tokens: 150000
+    pipeline_timeout_s: 900
 cleanup:
     worktree_prune: immediate
     branch_retention_days: 7

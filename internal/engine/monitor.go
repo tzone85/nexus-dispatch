@@ -387,9 +387,14 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 	// would mark the story DB as devdb.OutcomeFailed and pollute metrics.
 	parentCtx := ctx
 
-	// Wrap context with a 5-minute timeout to prevent pipeline LLM calls
-	// (review, QA, conflict resolution) from blocking indefinitely.
-	pipelineCtx, pipelineCancel := context.WithTimeout(ctx, 5*time.Minute)
+	// Bound the post-execution pipeline (review, QA, conflict resolution).
+	// Configurable because slow local LLM calls + conflict resolution under
+	// concurrent builds can exceed a tight limit. Falls back to 15m when unset.
+	pipelineTimeout := time.Duration(m.config.Monitor.PipelineTimeoutS) * time.Second
+	if pipelineTimeout <= 0 {
+		pipelineTimeout = 15 * time.Minute
+	}
+	pipelineCtx, pipelineCancel := context.WithTimeout(ctx, pipelineTimeout)
 	defer pipelineCancel()
 	ctx = pipelineCtx
 

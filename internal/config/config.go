@@ -168,6 +168,11 @@ type MonitorConfig struct {
 	PollIntervalMs         int `yaml:"poll_interval_ms"`
 	StuckThresholdS        int `yaml:"stuck_threshold_s"`
 	ContextFreshnessTokens int `yaml:"context_freshness_tokens"`
+	// PipelineTimeoutS bounds the whole post-execution pipeline (review + QA +
+	// merge/conflict-resolution) per story. Slow local LLM calls plus rebase-
+	// conflict resolution under concurrent builds can exceed a tight limit and
+	// trip "context deadline exceeded". Default 900s.
+	PipelineTimeoutS int `yaml:"pipeline_timeout_s"`
 }
 
 // ControllerConfig configures the periodic active controller.
