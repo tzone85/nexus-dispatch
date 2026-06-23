@@ -70,7 +70,9 @@ func (e *Estimator) Estimate(ctx context.Context, requirement, repoPath string, 
 func (e *Estimator) planStories(ctx context.Context, requirement, repoPath string) ([]PlannedStory, error) {
 	planner := NewPlanner(e.llmClient, e.config, e.eventStore, e.projStore)
 	reqID := fmt.Sprintf("est-%s", time.Now().Format("20060102-150405"))
-	result, err := planner.Plan(ctx, reqID, requirement, repoPath)
+	// Estimation is a read-only quote: decompose to size the work but persist
+	// nothing, so it stays re-runnable and never pollutes project state.
+	result, err := planner.PlanEphemeral(ctx, reqID, requirement, repoPath)
 	if err != nil {
 		return nil, err
 	}

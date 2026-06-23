@@ -4,6 +4,8 @@ package engine
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -78,6 +80,21 @@ func (p *Planner) PlanWithContext(ctx context.Context, reqID, requirement, repoP
 // graph. It emits REQ_SUBMITTED, STORY_CREATED (per story), and REQ_PLANNED
 // events.
 func (p *Planner) Plan(ctx context.Context, reqID, requirement, repoPath string) (PlanResult, error) {
+	return p.plan(ctx, reqID, requirement, repoPath, true)
+}
+
+// PlanEphemeral runs the same decomposition as Plan but persists nothing — no
+// REQ_SUBMITTED, STORY_CREATED, or REQ_PLANNED events reach the event store or
+// projection. It backs `nxd estimate`, which is a read-only quote: it must be
+// re-runnable any number of times without polluting project state or colliding
+// on stories.id.
+func (p *Planner) PlanEphemeral(ctx context.Context, reqID, requirement, repoPath string) (PlanResult, error) {
+	return p.plan(ctx, reqID, requirement, repoPath, false)
+}
+
+// plan is the shared implementation. When persist is false every event-store
+// and projection write is skipped, making the call a pure decomposition.
+func (p *Planner) plan(ctx context.Context, reqID, requirement, repoPath string, persist bool) (PlanResult, error) {
 	// Validate requirement before sending to LLM
 	if sanitize.DetectPromptInjection(requirement) {
 		return PlanResult{}, fmt.Errorf("requirement rejected: prompt injection detected")
@@ -87,14 +104,16 @@ func (p *Planner) Plan(ctx context.Context, reqID, requirement, repoPath string)
 	}
 
 	// Emit requirement submitted
-	reqPayload := map[string]any{
-		"id":          reqID,
-		"title":       requirement,
-		"description": requirement,
-		"repo_path":   repoPath,
-	}
-	if err := p.emitAndProject(state.EventReqSubmitted, "system", "", reqPayload); err != nil {
-		return PlanResult{}, fmt.Errorf("emit req submitted: %w", err)
+	if persist {
+		reqPayload := map[string]any{
+			"id":          reqID,
+			"title":       requirement,
+			"description": requirement,
+			"repo_path":   repoPath,
+		}
+		if err := p.emitAndProject(state.EventReqSubmitted, "system", "", reqPayload); err != nil {
+			return PlanResult{}, fmt.Errorf("emit req submitted: %w", err)
+		}
 	}
 
 	// Scan repo for tech stack — prefer RepoProfile if available
@@ -199,13 +218,15 @@ architecture and conventions when planning stories.`, profileContext)
 
 	// Emit planning-started heartbeat so the operator sees progress while the
 	// Tech Lead LLM call runs (typically several minutes on local Ollama models).
-	planningStarted := state.NewEvent(state.EventReqPlanningStarted, "tech-lead", "", map[string]any{
-		"req_id": reqID,
-		"model":  p.config.Models.TechLead.Model,
-	})
-	// Best-effort — failure here must not abort planning.
-	_ = p.eventStore.Append(planningStarted)
-	_ = p.projStore.Project(planningStarted)
+	if persist {
+		planningStarted := state.NewEvent(state.EventReqPlanningStarted, "tech-lead", "", map[string]any{
+			"req_id": reqID,
+			"model":  p.config.Models.TechLead.Model,
+		})
+		// Best-effort — failure here must not abort planning.
+		_ = p.eventStore.Append(planningStarted)
+		_ = p.projStore.Project(planningStarted)
+	}
 
 	// Call Tech Lead
 	resp, err := p.llmClient.Complete(ctx, req)
@@ -241,13 +262,10 @@ architecture and conventions when planning stories.`, profileContext)
 		}
 	}
 
-	// Make story IDs globally unique by prefixing with short req ID.
-	// LLMs always generate generic IDs like "s-001" which collide across
-	// requirements.
-	prefix := reqID
-	if len(prefix) > 8 {
-		prefix = prefix[:8]
-	}
+	// Make story IDs globally unique by prefixing with a short, collision-
+	// resistant namespace derived from the req ID. LLMs always generate generic
+	// IDs like "s-001" which collide across requirements.
+	prefix := storyIDPrefix(reqID)
 	idMap := make(map[string]string, len(stories))
 	for i, s := range stories {
 		// Reject duplicate story IDs — LLM hallucination would silently drop stories.
@@ -369,29 +387,31 @@ architecture and conventions when planning stories.`, profileContext)
 		return PlanResult{}, fmt.Errorf("dependency cycle: %w", err)
 	}
 
-	// Emit events for each story
-	for _, s := range stories {
-		storyPayload := map[string]any{
-			"id":                  s.ID,
-			"req_id":              reqID,
-			"title":               s.Title,
-			"description":         s.Description,
-			"acceptance_criteria": string(s.AcceptanceCriteria),
-			"complexity":          s.Complexity,
-			"depends_on":          s.DependsOn,
-			"owned_files":         s.OwnedFiles,
-			"wave_hint":           s.WaveHint,
+	// Emit events for each story (skipped for ephemeral estimate planning).
+	if persist {
+		for _, s := range stories {
+			storyPayload := map[string]any{
+				"id":                  s.ID,
+				"req_id":              reqID,
+				"title":               s.Title,
+				"description":         s.Description,
+				"acceptance_criteria": string(s.AcceptanceCriteria),
+				"complexity":          s.Complexity,
+				"depends_on":          s.DependsOn,
+				"owned_files":         s.OwnedFiles,
+				"wave_hint":           s.WaveHint,
+			}
+			if err := p.emitAndProject(state.EventStoryCreated, "tech-lead", s.ID, storyPayload); err != nil {
+				return PlanResult{}, fmt.Errorf("emit story created %s: %w", s.ID, err)
+			}
 		}
-		if err := p.emitAndProject(state.EventStoryCreated, "tech-lead", s.ID, storyPayload); err != nil {
-			return PlanResult{}, fmt.Errorf("emit story created %s: %w", s.ID, err)
-		}
-	}
 
-	// Emit requirement planned
-	if err := p.eventStore.Append(state.NewEvent(state.EventReqPlanned, "tech-lead", "", map[string]any{
-		"id": reqID,
-	})); err != nil {
-		return PlanResult{}, fmt.Errorf("emit req planned: %w", err)
+		// Emit requirement planned
+		if err := p.eventStore.Append(state.NewEvent(state.EventReqPlanned, "tech-lead", "", map[string]any{
+			"id": reqID,
+		})); err != nil {
+			return PlanResult{}, fmt.Errorf("emit req planned: %w", err)
+		}
 	}
 
 	return PlanResult{
@@ -529,6 +549,24 @@ func mapToolStories(toolStories []ToolStory) []PlannedStory {
 		}
 	}
 	return stories
+}
+
+// storyIDPrefix returns a short, collision-resistant namespace prefix derived
+// from the requirement ID. LLM-generated story IDs ("s-001") collide across
+// requirements, so each is namespaced with this prefix.
+//
+// Short IDs (≤8 chars, e.g. test fixtures "r-001") are returned verbatim for
+// readability. Longer IDs are hashed: blindly truncating to the first 8 chars
+// dropped all the distinguishing entropy — a ULID's leading chars are only its
+// millisecond-timestamp high bits (so two requirements within ~256ms collided),
+// and every estimate reqID ("est-YYYYMMDD-...") truncated to a constant
+// "est-2026", making each estimate after the first crash on stories.id.
+func storyIDPrefix(reqID string) string {
+	if len(reqID) <= 8 {
+		return reqID
+	}
+	sum := sha256.Sum256([]byte(reqID))
+	return hex.EncodeToString(sum[:])[:8]
 }
 
 // emitAndProject appends an event to the event store and projects it.

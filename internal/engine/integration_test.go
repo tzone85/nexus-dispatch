@@ -84,7 +84,7 @@ func TestIntegration_PlannerToDispatcher(t *testing.T) {
 	planner := engine.NewPlanner(client, cfg, es, ps)
 
 	// --- Phase 1: Plan ---
-	planResult, err := planner.Plan(context.Background(), "r-integ-1", "Add user management API", repoDir)
+	planResult, err := planner.Plan(context.Background(), "r-integ", "Add user management API", repoDir)
 	if err != nil {
 		t.Fatalf("plan: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestIntegration_PlannerToDispatcher(t *testing.T) {
 	}
 
 	// Verify stories were projected into the store.
-	allStories, err := ps.ListStories(state.StoryFilter{ReqID: "r-integ-1"})
+	allStories, err := ps.ListStories(state.StoryFilter{ReqID: "r-integ"})
 	if err != nil {
 		t.Fatalf("list stories: %v", err)
 	}
@@ -106,26 +106,26 @@ func TestIntegration_PlannerToDispatcher(t *testing.T) {
 	dispatcher := engine.NewDispatcher(cfg, es, ps)
 	completed := make(map[string]bool)
 
-	assignments, err := dispatcher.DispatchWave(planResult.Graph, completed, "r-integ-1", planResult.Stories, 1)
+	assignments, err := dispatcher.DispatchWave(planResult.Graph, completed, "r-integ", planResult.Stories, 1)
 	if err != nil {
 		t.Fatalf("dispatch wave 1: %v", err)
 	}
 
-	// Story IDs are prefixed: reqID "r-integ-1" (9 chars) → prefix "r-integ-"
-	// So "s-001" → "r-integ--s-001", "s-002" → "r-integ--s-002", etc.
+	// Story IDs are prefixed: reqID "r-integ" (9 chars) → prefix "r-integ-"
+	// So "s-001" → "r-integ-s-001", "s-002" → "r-integ-s-002", etc.
 
 	// Wave 1: s-001 (no deps) is the only story ready.
 	if len(assignments) != 1 {
 		t.Fatalf("expected 1 assignment in wave 1, got %d", len(assignments))
 	}
-	if assignments[0].StoryID != "r-integ--s-001" {
-		t.Fatalf("expected r-integ--s-001 in wave 1, got %s", assignments[0].StoryID)
+	if assignments[0].StoryID != "r-integ-s-001" {
+		t.Fatalf("expected r-integ-s-001 in wave 1, got %s", assignments[0].StoryID)
 	}
 
 	// Verify story is now 'assigned' in projection.
-	s001, err := ps.GetStory("r-integ--s-001")
+	s001, err := ps.GetStory("r-integ-s-001")
 	if err != nil {
-		t.Fatalf("get story r-integ--s-001: %v", err)
+		t.Fatalf("get story r-integ-s-001: %v", err)
 	}
 	if s001.Status != "assigned" {
 		t.Fatalf("expected s-001 status 'assigned', got %q", s001.Status)
@@ -137,8 +137,8 @@ func TestIntegration_PlannerToDispatcher(t *testing.T) {
 	}
 
 	// --- Phase 3: Dispatch Wave 2 ---
-	completed["r-integ--s-001"] = true
-	assignments2, err := dispatcher.DispatchWave(planResult.Graph, completed, "r-integ-1", planResult.Stories, 2)
+	completed["r-integ-s-001"] = true
+	assignments2, err := dispatcher.DispatchWave(planResult.Graph, completed, "r-integ", planResult.Stories, 2)
 	if err != nil {
 		t.Fatalf("dispatch wave 2: %v", err)
 	}
@@ -154,24 +154,24 @@ func TestIntegration_PlannerToDispatcher(t *testing.T) {
 		assignmentMap[a.StoryID] = a
 	}
 
-	if a, ok := assignmentMap["r-integ--s-002"]; ok {
+	if a, ok := assignmentMap["r-integ-s-002"]; ok {
 		if a.Role != "intermediate" {
 			t.Fatalf("s-002 (complexity 5) should route to intermediate, got %s", a.Role)
 		}
 	} else {
-		t.Fatal("r-integ--s-002 not found in wave 2 assignments")
+		t.Fatal("r-integ-s-002 not found in wave 2 assignments")
 	}
 
-	if a, ok := assignmentMap["r-integ--s-003"]; ok {
+	if a, ok := assignmentMap["r-integ-s-003"]; ok {
 		if a.Role != "junior" {
 			t.Fatalf("s-003 (complexity 3) should route to junior, got %s", a.Role)
 		}
 	} else {
-		t.Fatal("r-integ--s-003 not found in wave 2 assignments")
+		t.Fatal("r-integ-s-003 not found in wave 2 assignments")
 	}
 
 	// Verify all wave 2 stories are now 'assigned'.
-	for _, id := range []string{"r-integ--s-002", "r-integ--s-003"} {
+	for _, id := range []string{"r-integ-s-002", "r-integ-s-003"} {
 		story, err := ps.GetStory(id)
 		if err != nil {
 			t.Fatalf("get story %s: %v", id, err)
@@ -481,7 +481,7 @@ func TestIntegration_PlannerEventPersistence(t *testing.T) {
 	cfg := config.DefaultConfig()
 	planner := engine.NewPlanner(client, cfg, es, ps)
 
-	_, err := planner.Plan(context.Background(), "r-persist", "Persist test", repoDir)
+	_, err := planner.Plan(context.Background(), "r-persis", "Persist test", repoDir)
 	if err != nil {
 		t.Fatalf("plan: %v", err)
 	}
@@ -511,7 +511,7 @@ func TestIntegration_PlannerEventPersistence(t *testing.T) {
 		t.Fatalf("expected 1 REQ_PLANNED event, got %d", len(plannedEvents))
 	}
 
-	// Verify projection has the story (prefixed: "r-persis" + "-" + "s-p1").
+	// Verify projection has the story (reqID "r-persis" ≤8 chars → verbatim prefix).
 	story, err := ps.GetStory("r-persis-s-p1")
 	if err != nil {
 		t.Fatalf("get story: %v", err)
@@ -521,7 +521,7 @@ func TestIntegration_PlannerEventPersistence(t *testing.T) {
 	}
 
 	// Verify the requirement projection.
-	req, err := ps.GetRequirement("r-persist")
+	req, err := ps.GetRequirement("r-persis")
 	if err != nil {
 		t.Fatalf("get requirement: %v", err)
 	}
