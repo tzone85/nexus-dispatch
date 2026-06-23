@@ -77,9 +77,6 @@ func TestTruncateConflictContent_LongContent(t *testing.T) {
 	// Generate content longer than maxConflictContentBytes.
 	input := strings.Repeat("x", maxConflictContentBytes+100)
 	got := truncateConflictContent(input)
-	if len(got) <= maxConflictContentBytes {
-		// Should be truncated to limit + truncation notice.
-	}
 	if !strings.Contains(got, "truncated") {
 		t.Errorf("expected truncation notice in output")
 	}
@@ -100,10 +97,10 @@ func TestBinaryConflictPolicy_OversizedBinaryPattern(t *testing.T) {
 		{"server", true},
 		{"main", true},
 		{"app", true},
-		{"cmd/server", true},       // last segment is "server"
-		{"cmd/main", true},          // last segment is "main"
+		{"cmd/server", true}, // last segment is "server"
+		{"cmd/main", true},   // last segment is "main"
 		{"binary", true},
-		{"app.exe", false},          // regex only matches exact ".exe" as a segment
+		{"app.exe", false}, // regex only matches exact ".exe" as a segment
 		{"README.md", false},
 		{"main.go", false},
 		{"internal/server/handler.go", false},

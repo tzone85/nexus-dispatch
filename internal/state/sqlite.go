@@ -122,23 +122,23 @@ func NewSQLiteStore(dsn string) (*SQLiteStore, error) {
 	}
 
 	if _, err := db.Exec(initSQL); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("apply migration: %w", err)
 	}
 
 	// Migrate existing databases: add acceptance_criteria column if missing.
-	db.Exec(`ALTER TABLE stories ADD COLUMN acceptance_criteria TEXT NOT NULL DEFAULT ''`)
+	_, _ = db.Exec(`ALTER TABLE stories ADD COLUMN acceptance_criteria TEXT NOT NULL DEFAULT ''`)
 
 	// Migrate existing databases: add owned_files and wave_hint columns if missing.
-	db.Exec(`ALTER TABLE stories ADD COLUMN owned_files TEXT NOT NULL DEFAULT '[]'`)
-	db.Exec(`ALTER TABLE stories ADD COLUMN wave_hint TEXT NOT NULL DEFAULT 'parallel'`)
+	_, _ = db.Exec(`ALTER TABLE stories ADD COLUMN owned_files TEXT NOT NULL DEFAULT '[]'`)
+	_, _ = db.Exec(`ALTER TABLE stories ADD COLUMN wave_hint TEXT NOT NULL DEFAULT 'parallel'`)
 
 	// Migrate existing databases: add repo_path column to requirements if missing.
-	db.Exec(`ALTER TABLE requirements ADD COLUMN repo_path TEXT NOT NULL DEFAULT ''`)
+	_, _ = db.Exec(`ALTER TABLE requirements ADD COLUMN repo_path TEXT NOT NULL DEFAULT ''`)
 
 	// Migrate existing databases: add wave and pr_number columns if missing.
-	db.Exec(`ALTER TABLE stories ADD COLUMN wave INTEGER NOT NULL DEFAULT 0`)
-	db.Exec(`ALTER TABLE stories ADD COLUMN pr_number INTEGER NOT NULL DEFAULT 0`)
+	_, _ = db.Exec(`ALTER TABLE stories ADD COLUMN wave INTEGER NOT NULL DEFAULT 0`)
+	_, _ = db.Exec(`ALTER TABLE stories ADD COLUMN pr_number INTEGER NOT NULL DEFAULT 0`)
 
 	// Migrate existing databases: add escalation columns if missing.
 	escalationMigrations := []string{
@@ -148,16 +148,16 @@ func NewSQLiteStore(dsn string) (*SQLiteStore, error) {
 		"ALTER TABLE escalations ADD COLUMN to_tier INTEGER DEFAULT 0",
 	}
 	for _, m := range escalationMigrations {
-		db.Exec(m) // errors ignored for idempotency
+		_, _ = db.Exec(m) // errors ignored for idempotency
 	}
 
 	// Migrate: add classification columns to requirements
-	db.Exec(`ALTER TABLE requirements ADD COLUMN req_type TEXT NOT NULL DEFAULT ''`)
-	db.Exec(`ALTER TABLE requirements ADD COLUMN is_existing BOOLEAN NOT NULL DEFAULT 0`)
-	db.Exec(`ALTER TABLE requirements ADD COLUMN investigation_report_json TEXT NOT NULL DEFAULT ''`)
+	_, _ = db.Exec(`ALTER TABLE requirements ADD COLUMN req_type TEXT NOT NULL DEFAULT ''`)
+	_, _ = db.Exec(`ALTER TABLE requirements ADD COLUMN is_existing BOOLEAN NOT NULL DEFAULT 0`)
+	_, _ = db.Exec(`ALTER TABLE requirements ADD COLUMN investigation_report_json TEXT NOT NULL DEFAULT ''`)
 
 	// Migrate: add merged_at column to stories
-	db.Exec(`ALTER TABLE stories ADD COLUMN merged_at TIMESTAMP`)
+	_, _ = db.Exec(`ALTER TABLE stories ADD COLUMN merged_at TIMESTAMP`)
 
 	return &SQLiteStore{db: db}, nil
 }
@@ -328,7 +328,7 @@ func (s *SQLiteStore) GetStory(id string) (Story, error) {
 		story.MergedAt = mergedAt.Time
 	}
 	if ownedFilesJSON != "" {
-		json.Unmarshal([]byte(ownedFilesJSON), &story.OwnedFiles)
+		_ = json.Unmarshal([]byte(ownedFilesJSON), &story.OwnedFiles)
 	}
 	if story.OwnedFiles == nil {
 		story.OwnedFiles = []string{}
@@ -362,7 +362,7 @@ func (s *SQLiteStore) ListStories(filter StoryFilter) ([]Story, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list stories: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var stories []Story
 	for rows.Next() {
@@ -381,7 +381,7 @@ func (s *SQLiteStore) ListStories(filter StoryFilter) ([]Story, error) {
 			story.MergedAt = mergedAt.Time
 		}
 		if ownedFilesJSON != "" {
-			json.Unmarshal([]byte(ownedFilesJSON), &story.OwnedFiles)
+			_ = json.Unmarshal([]byte(ownedFilesJSON), &story.OwnedFiles)
 		}
 		if story.OwnedFiles == nil {
 			story.OwnedFiles = []string{}
@@ -422,7 +422,7 @@ func (s *SQLiteStore) ListRequirementsFiltered(filter ReqFilter) ([]Requirement,
 	if err != nil {
 		return nil, fmt.Errorf("list requirements: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var reqs []Requirement
 	for rows.Next() {
@@ -729,7 +729,7 @@ func (s *SQLiteStore) BackfillAcceptanceCriteria(events []Event) {
 		ac := payloadStr(payload, "acceptance_criteria")
 		storyID := payloadStr(payload, "id")
 		if ac != "" && storyID != "" {
-			s.db.Exec(
+			_, _ = s.db.Exec(
 				`UPDATE stories SET acceptance_criteria = ? WHERE id = ? AND acceptance_criteria = ''`,
 				ac, storyID,
 			)

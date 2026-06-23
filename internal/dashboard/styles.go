@@ -72,11 +72,6 @@ var (
 	// Escalation styles.
 	escalationPendingStyle  = lipgloss.NewStyle().Foreground(colorRed).Bold(true)
 	escalationResolvedStyle = lipgloss.NewStyle().Foreground(colorGreen)
-
-	// Complexity badge.
-	complexityStyle = lipgloss.NewStyle().
-			Foreground(colorOrange).
-			Bold(true)
 )
 
 // storyStatusStyle returns the lipgloss style for a given story status string.

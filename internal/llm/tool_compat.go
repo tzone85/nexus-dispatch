@@ -55,9 +55,9 @@ func InjectToolSchema(systemPrompt string, tools []ToolDefinition) string {
 	b.WriteString("Each element must have \"name\" (string) and \"arguments\" (object).\n\n")
 
 	for _, tool := range tools {
-		b.WriteString(fmt.Sprintf("### %s\n", tool.Name))
-		b.WriteString(fmt.Sprintf("%s\n", tool.Description))
-		b.WriteString(fmt.Sprintf("Parameters: %s\n\n", string(tool.Parameters)))
+		fmt.Fprintf(&b, "### %s\n", tool.Name)
+		fmt.Fprintf(&b, "%s\n", tool.Description)
+		fmt.Fprintf(&b, "Parameters: %s\n\n", string(tool.Parameters))
 	}
 
 	b.WriteString("Respond ONLY with the JSON object. No prose before or after.\n")

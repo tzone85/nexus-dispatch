@@ -34,7 +34,7 @@ func BuildWaveBrief(currentStoryID string, waveStories []WaveStoryInfo) string {
 		if len(s.OwnedFiles) > 0 {
 			files = strings.Join(s.OwnedFiles, ", ")
 		}
-		sb.WriteString(fmt.Sprintf("- %s \"%s\" — owns: %s\n", s.ID, s.Title, files))
+		fmt.Fprintf(&sb, "- %s \"%s\" — owns: %s\n", s.ID, s.Title, files)
 	}
 
 	return sb.String()

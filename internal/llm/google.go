@@ -176,11 +176,7 @@ func buildGoogleRequest(req CompletionRequest) googleRequest {
 	if len(req.Tools) > 0 {
 		decls := make([]googleFuncDecl, 0, len(req.Tools))
 		for _, td := range req.Tools {
-			decls = append(decls, googleFuncDecl{
-				Name:        td.Name,
-				Description: td.Description,
-				Parameters:  td.Parameters,
-			})
+			decls = append(decls, googleFuncDecl(td))
 		}
 		gReq.Tools = []googleTool{{FunctionDeclarations: decls}}
 	}

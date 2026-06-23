@@ -12,14 +12,6 @@ import (
 	"github.com/tzone85/nexus-dispatch/internal/state"
 )
 
-// fakeLLMClient is a no-op llm.Client used by buildNativeClient tests.
-// We don't drive Complete() — only the construction path matters.
-type fakeLLMClient struct{}
-
-func (fakeLLMClient) Complete(ctx interface{ Done() <-chan struct{} }, _ llm.CompletionRequest) (llm.CompletionResponse, error) {
-	return llm.CompletionResponse{}, nil
-}
-
 // minimalExecutor builds an Executor with just enough state to drive
 // the helpers. The executor's required dependencies (registry,
 // stores) are injected so the helpers can be exercised in isolation.

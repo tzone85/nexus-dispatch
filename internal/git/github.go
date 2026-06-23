@@ -177,7 +177,7 @@ func RebaseOnto(worktreePath, upstream string) error {
 		// Abort the failed rebase to leave the worktree in a clean state.
 		abort := exec.Command("git", "rebase", "--abort")
 		abort.Dir = worktreePath
-		abort.CombinedOutput()
+		_, _ = abort.CombinedOutput()
 		return fmt.Errorf("git rebase %s: %w (%s)", upstream, err, strings.TrimSpace(string(out)))
 	}
 	return nil

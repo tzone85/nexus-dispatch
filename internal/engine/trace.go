@@ -36,7 +36,6 @@ var (
 	traceToolCallRe   = regexp.MustCompile(`(?i)(?:Read|Write|Edit|Bash|Grep|Glob|Agent)\s*[(\[]`)
 	traceFileEditRe   = regexp.MustCompile(`(?:Edited|Updated|Modified)\s+(.+\.(?:go|py|ts|js|tsx|jsx|rs|rb|java|c|cpp|h))`)
 	traceFileCreateRe = regexp.MustCompile(`(?:Created|Wrote)\s+(.+\.(?:go|py|ts|js|tsx|jsx|rs|rb|java|c|cpp|h))`)
-	traceBashCmdRe    = regexp.MustCompile(`(?:^|\s)\$\s+(.+)`)
 	traceErrorRe      = regexp.MustCompile(`(?i)(?:error|FAIL|panic|fatal|undefined|cannot find)`)
 	traceTestRe       = regexp.MustCompile(`(?:PASS|FAIL|ok\s+\S+|---\s+(?:PASS|FAIL))`)
 	traceCommitRe     = regexp.MustCompile(`(?:\[[\w/]+\s+[a-f0-9]+\]|git commit)`)

@@ -61,11 +61,11 @@ func (w *Watchdog) Check(sessionName string, rt runtime.Runtime) CheckResult {
 
 	switch status {
 	case runtime.StatusPermissionPrompt:
-		rt.SendInput(sessionName, "Y")
+		_ = rt.SendInput(sessionName, "Y")
 		result.Action = "permission_bypass"
 
 	case runtime.StatusPlanMode:
-		rt.SendInput(sessionName, "Escape")
+		_ = rt.SendInput(sessionName, "Escape")
 		result.Action = "plan_escape"
 
 	case runtime.StatusTerminated, runtime.StatusDone:
@@ -89,7 +89,7 @@ func (w *Watchdog) Check(sessionName string, rt runtime.Runtime) CheckResult {
 			if elapsed.Seconds() >= float64(w.config.StuckThresholdS) {
 				result.Status = runtime.StatusStuck
 				result.Action = "stuck_detected"
-				w.eventStore.Append(state.NewEvent(state.EventAgentStuck, "", "", map[string]any{
+				_ = w.eventStore.Append(state.NewEvent(state.EventAgentStuck, "", "", map[string]any{
 					"session_name": sessionName,
 					"stuck_for_s":  int(elapsed.Seconds()),
 				}))

@@ -173,7 +173,7 @@ func (c *CLIRuntime) BuildCommand(cfg SessionConfig) (string, error) {
 	}
 	if prompt != "" {
 		promptDir := filepath.Join(cfg.WorkDir, ".nxd-prompts")
-		os.MkdirAll(promptDir, 0o755)
+		_ = os.MkdirAll(promptDir, 0o755)
 		promptFile := filepath.Join(promptDir, "prompt.txt")
 		if err := os.WriteFile(promptFile, []byte(prompt), 0o644); err != nil {
 			return "", fmt.Errorf("write prompt file: %w", err)

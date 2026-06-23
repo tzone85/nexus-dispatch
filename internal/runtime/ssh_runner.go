@@ -91,7 +91,7 @@ func (r *SSHRunner) Run(pe PreparedExecution) error {
 	if err != nil {
 		return fmt.Errorf("create stage dir: %w", err)
 	}
-	defer os.RemoveAll(stageDir)
+	defer func() { _ = os.RemoveAll(stageDir) }()
 
 	// Upload setup files via scp.
 	for localPath, content := range pe.SetupFiles {

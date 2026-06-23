@@ -48,7 +48,7 @@ func runPlan(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("create temp dir: %w", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	es, err := state.NewFileStore(filepath.Join(tmpDir, "events.jsonl"))
 	if err != nil {

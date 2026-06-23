@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"nhooyr.io/websocket"
-	"nhooyr.io/websocket/wsjson"
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
 
 	"github.com/tzone85/nexus-dispatch/internal/state"
 )
@@ -66,7 +66,7 @@ func (h *Hub) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[ws] accept error: %v", err)
 		return
 	}
-	defer conn.CloseNow()
+	defer func() { _ = conn.CloseNow() }()
 
 	h.addClient(conn)
 	defer h.removeClient(conn)
@@ -194,7 +194,7 @@ func (h *Hub) broadcast(ctx context.Context) {
 	var dead []*websocket.Conn
 	for _, conn := range conns {
 		if err := wsjson.Write(ctx, conn, msg); err != nil {
-			conn.CloseNow()
+			_ = conn.CloseNow()
 			dead = append(dead, conn)
 		}
 	}

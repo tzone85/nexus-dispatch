@@ -265,7 +265,7 @@ func checkDiskSpace(cfg config.Config) checkResult {
 		}
 		return checkResult{"Disk/permissions", "warn", fmt.Sprintf("Write check failed: %v", err)}
 	}
-	os.Remove(tmpFile)
+	_ = os.Remove(tmpFile)
 	return checkResult{"Disk/permissions", "ok", shortPath(stateDir) + " is writable"}
 }
 

@@ -1,0 +1,37 @@
+# golangci-lint v2 configuration.
+#
+# The project standardises on the default linter set (errcheck, govet,
+# ineffassign, staticcheck, unused). The exclusions below encode the
+# project's actual conventions so that lint is a meaningful gate rather
+# than thousands of low-value findings:
+#
+#   * errcheck is not enforced in *_test.go — test setup (os.WriteFile,
+#     deferred Close, Project/Append seeding) intentionally ignores errors.
+#   * fmt.Fprint* writes to stdout / cobra command output and *.Close in
+#     deferred cleanup are treated as always-safe and excluded globally.
+#   * build tag `e2e` is enabled so test helpers consumed only by
+#     e2e-tagged tests are not falsely reported as unused.
+version: "2"
+
+run:
+  build-tags:
+    - e2e
+
+linters:
+  default: standard
+  settings:
+    errcheck:
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+  exclusions:
+    rules:
+      # Test code intentionally ignores errors in setup/teardown.
+      - path: _test\.go
+        linters:
+          - errcheck
+      # Deferred / best-effort Close is treated as safe across the codebase.
+      - linters:
+          - errcheck
+        text: "Error return value of `[^`]+\\.Close` is not checked"

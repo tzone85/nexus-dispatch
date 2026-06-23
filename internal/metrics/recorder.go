@@ -131,7 +131,7 @@ func (r *Recorder) ReadAll() ([]MetricEntry, error) {
 		}
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	var entries []MetricEntry
 	scanner := bufio.NewScanner(f)

@@ -32,11 +32,11 @@ type RepoProfile struct {
 	Iteration  int       `json:"iteration"` // monotonically increasing per pass
 
 	// Pass 1 — static scan
-	TechStack   TechStackDetail `json:"tech_stack"`
-	Build       BuildConfig     `json:"build"`
-	Test        TestConfig      `json:"test"`
-	Structure   RepoStructure   `json:"structure"`
-	CI          CIConfig        `json:"ci"`
+	TechStack TechStackDetail `json:"tech_stack"`
+	Build     BuildConfig     `json:"build"`
+	Test      TestConfig      `json:"test"`
+	Structure RepoStructure   `json:"structure"`
+	CI        CIConfig        `json:"ci"`
 
 	// Pass 2 — git history
 	Conventions  Conventions  `json:"conventions"`
@@ -60,25 +60,25 @@ type TechStackDetail struct {
 
 // BuildConfig holds detected build and lint commands.
 type BuildConfig struct {
-	BuildCommand string   `json:"build_command,omitempty"`
-	LintCommand  string   `json:"lint_command,omitempty"`
-	FormatCommand string  `json:"format_command,omitempty"`
-	MakeTargets  []string `json:"make_targets,omitempty"` // available Makefile targets
+	BuildCommand  string   `json:"build_command,omitempty"`
+	LintCommand   string   `json:"lint_command,omitempty"`
+	FormatCommand string   `json:"format_command,omitempty"`
+	MakeTargets   []string `json:"make_targets,omitempty"` // available Makefile targets
 }
 
 // TestConfig holds detected test commands and conventions.
 type TestConfig struct {
-	TestCommand    string   `json:"test_command,omitempty"`
-	TestFramework  string   `json:"test_framework,omitempty"`
-	CoverageTool   string   `json:"coverage_tool,omitempty"`
-	TestFilePattern string  `json:"test_file_pattern,omitempty"` // e.g. "*_test.go", "test_*.py"
-	TestDirs       []string `json:"test_dirs,omitempty"`         // e.g. ["test/", "tests/", "spec/"]
+	TestCommand     string   `json:"test_command,omitempty"`
+	TestFramework   string   `json:"test_framework,omitempty"`
+	CoverageTool    string   `json:"coverage_tool,omitempty"`
+	TestFilePattern string   `json:"test_file_pattern,omitempty"` // e.g. "*_test.go", "test_*.py"
+	TestDirs        []string `json:"test_dirs,omitempty"`         // e.g. ["test/", "tests/", "spec/"]
 }
 
 // CIConfig holds detected CI/CD system information.
 type CIConfig struct {
-	System    string   `json:"system,omitempty"`    // "github_actions", "gitlab_ci", "circleci", etc.
-	Files     []string `json:"files,omitempty"`     // paths to CI config files
+	System string   `json:"system,omitempty"` // "github_actions", "gitlab_ci", "circleci", etc.
+	Files  []string `json:"files,omitempty"`  // paths to CI config files
 }
 
 // RepoStructure describes the top-level directory layout.
@@ -104,11 +104,11 @@ type DirInfo struct {
 
 // Conventions captures coding and workflow conventions detected from git history.
 type Conventions struct {
-	CommitFormat     string `json:"commit_format,omitempty"`      // "conventional", "freeform", "ticket-prefix"
-	BranchPattern    string `json:"branch_pattern,omitempty"`     // e.g. "feature/*, fix/*"
-	ContributorCount int    `json:"contributor_count"`
-	CommitCount      int    `json:"commit_count"`
-	ActiveDays       int    `json:"active_days"`                  // days with at least 1 commit
+	CommitFormat     string         `json:"commit_format,omitempty"`  // "conventional", "freeform", "ticket-prefix"
+	BranchPattern    string         `json:"branch_pattern,omitempty"` // e.g. "feature/*, fix/*"
+	ContributorCount int            `json:"contributor_count"`
+	CommitCount      int            `json:"commit_count"`
+	ActiveDays       int            `json:"active_days"`              // days with at least 1 commit
 	ChurnHotspots    []ChurnHotspot `json:"churn_hotspots,omitempty"` // most-changed files
 }
 
@@ -173,62 +173,62 @@ func (p *RepoProfile) Summary() string {
 	b.WriteString("## Repository Profile\n")
 
 	// Tech stack
-	b.WriteString(fmt.Sprintf("Language: %s", p.TechStack.PrimaryLanguage))
+	fmt.Fprintf(&b, "Language: %s", p.TechStack.PrimaryLanguage)
 	if p.TechStack.LanguageVersion != "" {
-		b.WriteString(fmt.Sprintf(" %s", p.TechStack.LanguageVersion))
+		fmt.Fprintf(&b, " %s", p.TechStack.LanguageVersion)
 	}
 	if p.TechStack.PrimaryBuildTool != "" {
-		b.WriteString(fmt.Sprintf(" (build: %s)", p.TechStack.PrimaryBuildTool))
+		fmt.Fprintf(&b, " (build: %s)", p.TechStack.PrimaryBuildTool)
 	}
 	b.WriteString("\n")
 	if p.TechStack.PrimaryFramework != "" {
-		b.WriteString(fmt.Sprintf("Framework: %s\n", p.TechStack.PrimaryFramework))
+		fmt.Fprintf(&b, "Framework: %s\n", p.TechStack.PrimaryFramework)
 	}
 	if len(p.TechStack.SecondaryLanguages) > 0 {
-		b.WriteString(fmt.Sprintf("Also uses: %s\n", strings.Join(p.TechStack.SecondaryLanguages, ", ")))
+		fmt.Fprintf(&b, "Also uses: %s\n", strings.Join(p.TechStack.SecondaryLanguages, ", "))
 	}
 
 	// Build commands
 	if p.Build.BuildCommand != "" {
-		b.WriteString(fmt.Sprintf("Build: %s\n", p.Build.BuildCommand))
+		fmt.Fprintf(&b, "Build: %s\n", p.Build.BuildCommand)
 	}
 	if p.Build.LintCommand != "" {
-		b.WriteString(fmt.Sprintf("Lint: %s\n", p.Build.LintCommand))
+		fmt.Fprintf(&b, "Lint: %s\n", p.Build.LintCommand)
 	}
 	if p.Test.TestCommand != "" {
-		b.WriteString(fmt.Sprintf("Test: %s\n", p.Test.TestCommand))
+		fmt.Fprintf(&b, "Test: %s\n", p.Test.TestCommand)
 	}
 	if p.Test.TestFramework != "" {
-		b.WriteString(fmt.Sprintf("Test framework: %s\n", p.Test.TestFramework))
+		fmt.Fprintf(&b, "Test framework: %s\n", p.Test.TestFramework)
 	}
 
 	// CI
 	if p.CI.System != "" {
-		b.WriteString(fmt.Sprintf("CI: %s\n", p.CI.System))
+		fmt.Fprintf(&b, "CI: %s\n", p.CI.System)
 	}
 
 	// Structure
-	b.WriteString(fmt.Sprintf("Files: %d total, %d source\n", p.Structure.TotalFiles, p.Structure.SourceFiles))
+	fmt.Fprintf(&b, "Files: %d total, %d source\n", p.Structure.TotalFiles, p.Structure.SourceFiles)
 	if len(p.Structure.EntryPoints) > 0 {
 		paths := make([]string, 0, len(p.Structure.EntryPoints))
 		for _, ep := range p.Structure.EntryPoints {
 			paths = append(paths, ep.Path)
 		}
-		b.WriteString(fmt.Sprintf("Entry points: %s\n", strings.Join(paths, ", ")))
+		fmt.Fprintf(&b, "Entry points: %s\n", strings.Join(paths, ", "))
 	}
 
 	// Conventions (from Pass 2)
 	if p.Conventions.ContributorCount > 0 {
-		b.WriteString(fmt.Sprintf("Contributors: %d, Commits: %d\n", p.Conventions.ContributorCount, p.Conventions.CommitCount))
+		fmt.Fprintf(&b, "Contributors: %d, Commits: %d\n", p.Conventions.ContributorCount, p.Conventions.CommitCount)
 	}
 	if p.Conventions.CommitFormat != "" {
-		b.WriteString(fmt.Sprintf("Commit style: %s\n", p.Conventions.CommitFormat))
+		fmt.Fprintf(&b, "Commit style: %s\n", p.Conventions.CommitFormat)
 	}
 
 	// Key signals
 	for _, s := range p.Signals {
 		if s.Kind == "llm_summary" {
-			b.WriteString(fmt.Sprintf("\n%s\n", s.Message))
+			fmt.Fprintf(&b, "\n%s\n", s.Message)
 		}
 	}
 

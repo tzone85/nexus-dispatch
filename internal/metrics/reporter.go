@@ -169,31 +169,31 @@ func PrintSummary(w io.Writer, s Summary) {
 		successRate = float64(s.SuccessCount) / float64(total) * 100
 	}
 
-	fmt.Fprintf(w, "Requirements: %d | Stories: %d\n", s.TotalRequirements, s.TotalStories)
-	fmt.Fprintf(w, "LLM calls: %d (%.0f%% success)\n", total, successRate)
-	fmt.Fprintf(w, "Escalations: %d\n\n", s.EscalationCount)
+	_, _ = fmt.Fprintf(w, "Requirements: %d | Stories: %d\n", s.TotalRequirements, s.TotalStories)
+	_, _ = fmt.Fprintf(w, "LLM calls: %d (%.0f%% success)\n", total, successRate)
+	_, _ = fmt.Fprintf(w, "Escalations: %d\n\n", s.EscalationCount)
 
 	totalTokens := s.TotalTokensIn + s.TotalTokensOut
-	fmt.Fprintf(w, "Token usage by phase:\n")
+	_, _ = fmt.Fprintf(w, "Token usage by phase:\n")
 	for _, phase := range sortedKeys(s.ByPhase) {
 		ps := s.ByPhase[phase]
 		phaseTotal := ps.TokensIn + ps.TokensOut
-		fmt.Fprintf(w, "  %-14s %6dK tokens (%d calls)\n", phase+":", phaseTotal/1000, ps.Count)
+		_, _ = fmt.Fprintf(w, "  %-14s %6dK tokens (%d calls)\n", phase+":", phaseTotal/1000, ps.Count)
 	}
-	fmt.Fprintf(w, "  %-14s %6dK tokens\n\n", "Total:", totalTokens/1000)
+	_, _ = fmt.Fprintf(w, "  %-14s %6dK tokens\n\n", "Total:", totalTokens/1000)
 
 	if len(s.ByStage) > 0 {
-		fmt.Fprintf(w, "Token usage by stage:\n")
+		_, _ = fmt.Fprintf(w, "Token usage by stage:\n")
 		for _, stage := range sortedKeys(s.ByStage) {
 			sg := s.ByStage[stage]
 			stageTotal := sg.TokensIn + sg.TokensOut
-			fmt.Fprintf(w, "  %-14s %6dK tokens (%d calls)\n", stage+":", stageTotal/1000, sg.Count)
+			_, _ = fmt.Fprintf(w, "  %-14s %6dK tokens (%d calls)\n", stage+":", stageTotal/1000, sg.Count)
 		}
-		fmt.Fprintln(w)
+		_, _ = fmt.Fprintln(w)
 	}
 
 	if len(s.ByTier) > 0 {
-		fmt.Fprintf(w, "Token usage by tier:\n")
+		_, _ = fmt.Fprintf(w, "Token usage by tier:\n")
 		tiers := make([]int, 0, len(s.ByTier))
 		for t := range s.ByTier {
 			tiers = append(tiers, t)
@@ -202,19 +202,19 @@ func PrintSummary(w io.Writer, s Summary) {
 		for _, t := range tiers {
 			ts := s.ByTier[t]
 			tierTotal := ts.TokensIn + ts.TokensOut
-			fmt.Fprintf(w, "  %-14s %6dK tokens (%d calls)\n", tierLabel(t)+":", tierTotal/1000, ts.Count)
+			_, _ = fmt.Fprintf(w, "  %-14s %6dK tokens (%d calls)\n", tierLabel(t)+":", tierTotal/1000, ts.Count)
 		}
-		fmt.Fprintln(w)
+		_, _ = fmt.Fprintln(w)
 	}
 
 	if len(s.ByRole) > 0 {
-		fmt.Fprintf(w, "Token usage by role:\n")
+		_, _ = fmt.Fprintf(w, "Token usage by role:\n")
 		for _, role := range sortedKeys(s.ByRole) {
 			rs := s.ByRole[role]
 			roleTotal := rs.TokensIn + rs.TokensOut
-			fmt.Fprintf(w, "  %-14s %6dK tokens (%d calls)\n", role+":", roleTotal/1000, rs.Count)
+			_, _ = fmt.Fprintf(w, "  %-14s %6dK tokens (%d calls)\n", role+":", roleTotal/1000, rs.Count)
 		}
-		fmt.Fprintln(w)
+		_, _ = fmt.Fprintln(w)
 	}
 
 	if len(s.ByStory) > 0 {
@@ -232,16 +232,16 @@ func PrintSummary(w io.Writer, s Summary) {
 		if len(rows) > 10 {
 			rows = rows[:10]
 		}
-		fmt.Fprintf(w, "Top stories by token usage:\n")
+		_, _ = fmt.Fprintf(w, "Top stories by token usage:\n")
 		for _, r := range rows {
-			fmt.Fprintf(w, "  %-30s %6dK tokens (%d calls)\n", truncate(r.id, 30), r.total/1000, r.count)
+			_, _ = fmt.Fprintf(w, "  %-30s %6dK tokens (%d calls)\n", truncate(r.id, 30), r.total/1000, r.count)
 		}
-		fmt.Fprintln(w)
+		_, _ = fmt.Fprintln(w)
 	}
 
 	if total > 0 {
 		avgMs := s.TotalDurationMs / int64(total)
-		fmt.Fprintf(w, "Avg latency: %s per call\n", time.Duration(avgMs)*time.Millisecond)
+		_, _ = fmt.Fprintf(w, "Avg latency: %s per call\n", time.Duration(avgMs)*time.Millisecond)
 	}
 }
 

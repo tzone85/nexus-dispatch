@@ -72,7 +72,7 @@ func TestListWorktrees(t *testing.T) {
 	if err := nxdgit.CreateWorktree(repo, wtPath, "feature/list-test"); err != nil {
 		t.Fatalf("create worktree: %v", err)
 	}
-	defer nxdgit.DeleteWorktree(repo, wtPath)
+	defer func() { _ = nxdgit.DeleteWorktree(repo, wtPath) }()
 
 	trees, err := nxdgit.ListWorktrees(repo)
 	if err != nil {

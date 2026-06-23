@@ -477,7 +477,7 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 
 	// Persist the diff as an artifact for post-mortem inspection.
 	if m.artifactStore != nil {
-		m.artifactStore.WriteRaw(storyID, artifact.TypeGitDiff, diff)
+		_ = m.artifactStore.WriteRaw(storyID, artifact.TypeGitDiff, diff)
 	}
 
 	// Look up story details used by review, MemPalace mining, and QA feedback.
@@ -585,7 +585,7 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 
 		// Persist QA result as artifact.
 		if m.artifactStore != nil {
-			m.artifactStore.Write(storyID, artifact.TypeQAResult, map[string]any{
+			_ = m.artifactStore.Write(storyID, artifact.TypeQAResult, map[string]any{
 				"passed": result.Passed,
 				"checks": result.Checks,
 			})
@@ -1183,7 +1183,7 @@ func (m *Monitor) handleManagerEscalation(ctx context.Context, story PlannedStor
 // optionally removing the worktree for a clean start.
 func (m *Monitor) executeRetryAction(storyID string, action ManagerAction, worktreePath string) {
 	if action.RetryConfig != nil && action.RetryConfig.WorktreeReset {
-		os.RemoveAll(worktreePath)
+		_ = os.RemoveAll(worktreePath)
 	}
 
 	resetTier := 0

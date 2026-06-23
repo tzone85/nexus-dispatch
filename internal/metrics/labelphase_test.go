@@ -15,7 +15,7 @@ import (
 func TestLabelPhase_EmptyNoOps(t *testing.T) {
 	dir := t.TempDir()
 	rec := NewRecorder(filepath.Join(dir, "metrics.jsonl"))
-	defer rec.Close()
+	defer func() { _ = rec.Close() }()
 	mc := NewMetricsClient(fakeInnerLP{}, rec, "REQ-1", "execute", "")
 
 	got := LabelPhase(mc, "")
@@ -29,7 +29,7 @@ func TestLabelPhase_EmptyNoOps(t *testing.T) {
 func TestLabelPhase_AppliesPhaseLabel(t *testing.T) {
 	dir := t.TempDir()
 	rec := NewRecorder(filepath.Join(dir, "metrics.jsonl"))
-	defer rec.Close()
+	defer func() { _ = rec.Close() }()
 	mc := NewMetricsClient(fakeInnerLP{}, rec, "REQ-1", "execute", "")
 
 	got := LabelPhase(mc, "review")

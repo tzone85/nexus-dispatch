@@ -112,7 +112,7 @@ func (r *Runner) run(ctx context.Context, repoPath string, args ...string) (stri
 
 // detectChangesJSON mirrors the JSON schema from code-review-graph detect-changes.
 type detectChangesJSON struct {
-	Summary          string `json:"summary"`
+	Summary          string  `json:"summary"`
 	RiskScore        float64 `json:"risk_score"`
 	ChangedFunctions []struct {
 		Name      string  `json:"name"`
@@ -189,11 +189,11 @@ func parseStatus(raw string) (*GraphInfo, error) {
 		key, val := strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
 		switch key {
 		case "Nodes":
-			fmt.Sscanf(val, "%d", &info.NodeCount)
+			_, _ = fmt.Sscanf(val, "%d", &info.NodeCount)
 		case "Edges":
-			fmt.Sscanf(val, "%d", &info.EdgeCount)
+			_, _ = fmt.Sscanf(val, "%d", &info.EdgeCount)
 		case "Files":
-			fmt.Sscanf(val, "%d", &info.FileCount)
+			_, _ = fmt.Sscanf(val, "%d", &info.FileCount)
 		case "Languages":
 			info.Languages = strings.Split(val, ", ")
 		case "Last updated":

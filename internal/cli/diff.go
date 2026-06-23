@@ -1,14 +1,12 @@
 package cli
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 
 	"github.com/spf13/cobra"
-	"github.com/tzone85/nexus-dispatch/internal/artifact"
 	"github.com/tzone85/nexus-dispatch/internal/sanitize"
 )
 
@@ -84,15 +82,8 @@ func runDiff(cmd *cobra.Command, args []string) error {
 // artifact store's launch_config.json for a recorded worktree path, then falls
 // back to the conventional path under {stateDir}/worktrees/{storyID}.
 func resolveWorktreePath(stateDir, storyID string) (string, error) {
-	// Try artifact store launch config first.
-	launchPath := filepath.Join(stateDir, "artifacts", storyID, string(artifact.TypeLaunchConfig)+".json")
-	if data, err := os.ReadFile(launchPath); err == nil {
-		var lc artifact.LaunchConfig
-		if err := json.Unmarshal(data, &lc); err == nil && lc.Prompt != "" {
-			// LaunchConfig doesn't store worktree path directly, but we
-			// can check the conventional location.
-		}
-	}
+	// LaunchConfig doesn't record the worktree path directly, so fall through
+	// to the conventional location under {stateDir}/worktrees/{storyID}.
 
 	// Conventional worktree path.
 	conventional := filepath.Join(stateDir, "worktrees", storyID)

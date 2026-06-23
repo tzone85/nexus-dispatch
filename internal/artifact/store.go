@@ -137,7 +137,7 @@ func (s *Store) Append(storyID string, artifactType Type, data any) error {
 	if err != nil {
 		return fmt.Errorf("open trace file: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	_, err = f.Write(line)
 	return err

@@ -38,9 +38,6 @@ func TestTruncateDiff(t *testing.T) {
 
 	long := "a very long diff that exceeds the limit"
 	got := truncateDiff(long, 10)
-	if len(got) <= 10 {
-		// truncated + indicator appended
-	}
 	if got[:10] != long[:10] {
 		t.Error("expected prefix to match")
 	}

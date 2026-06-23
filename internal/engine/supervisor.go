@@ -81,7 +81,7 @@ Respond with JSON: {"on_track": bool, "concerns": ["..."], "reprioritize": ["sto
 	if !result.OnTrack {
 		eventType = state.EventSupervisorDriftDetected
 	}
-	s.eventStore.Append(state.NewEvent(eventType, "supervisor", "", map[string]any{
+	_ = s.eventStore.Append(state.NewEvent(eventType, "supervisor", "", map[string]any{
 		"on_track": result.OnTrack,
 		"concerns": result.Concerns,
 	}))

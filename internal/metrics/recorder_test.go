@@ -114,7 +114,7 @@ func TestRecorder_ReadAll_NonNotExistError(t *testing.T) {
 	}
 	// We expect either an error or nil,nil (file-not-found treated as empty).
 	// The key thing is it must not panic and must not return junk data.
-	if entries != nil && len(entries) > 0 {
+	if len(entries) > 0 {
 		t.Errorf("expected no entries for bad path, got %d", len(entries))
 	}
 }

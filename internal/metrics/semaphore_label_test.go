@@ -26,7 +26,7 @@ func (fakeInner) Complete(ctx context.Context, req llm.CompletionRequest) (llm.C
 func TestLabelStory_PenetratesSemaphoreWrapper(t *testing.T) {
 	dir := t.TempDir()
 	rec := NewRecorder(filepath.Join(dir, "metrics.jsonl"))
-	defer rec.Close()
+	defer func() { _ = rec.Close() }()
 
 	mc := NewMetricsClient(fakeInner{}, rec, "REQ-1", "execute", "")
 	wrapped := llm.NewSemaphoreClient(mc, 1)
@@ -94,7 +94,7 @@ func TestLabelStory_PenetratesSemaphoreWrapper(t *testing.T) {
 func TestRewrap_SharesSemaphoreChannel(t *testing.T) {
 	dir := t.TempDir()
 	rec := NewRecorder(filepath.Join(dir, "metrics.jsonl"))
-	defer rec.Close()
+	defer func() { _ = rec.Close() }()
 	mc := NewMetricsClient(fakeInner{}, rec, "REQ-1", "execute", "")
 
 	original := llm.NewSemaphoreClient(mc, 1)

@@ -129,7 +129,7 @@ func runReq(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer lock.Release()
+	defer func() { _ = lock.Release() }()
 
 	// Determine LLM client — --godmode flag takes precedence over config
 	godmode, _ := cmd.Flags().GetBool("godmode")
@@ -220,8 +220,8 @@ func runReq(cmd *cobra.Command, args []string) error {
 		"confidence":  classification.Confidence,
 	}
 	classEvt := state.NewEvent(state.EventReqClassified, "", "", classPayload)
-	s.Events.Append(classEvt)
-	s.Proj.Project(classEvt)
+	_ = s.Events.Append(classEvt)
+	_ = s.Proj.Project(classEvt)
 
 	// Emit investigation event if report exists
 	if report != nil {
@@ -230,8 +230,8 @@ func runReq(cmd *cobra.Command, args []string) error {
 			"req_id": reqID,
 			"report": string(reportJSON),
 		})
-		s.Events.Append(invEvt)
-		s.Proj.Project(invEvt)
+		_ = s.Events.Append(invEvt)
+		_ = s.Proj.Project(invEvt)
 	}
 
 	planStart := time.Now()
@@ -262,8 +262,8 @@ func runReq(cmd *cobra.Command, args []string) error {
 	reviewMode, _ := cmd.Flags().GetBool("review")
 	if reviewMode {
 		evt := state.NewEvent(state.EventReqPendingReview, "", "", map[string]any{"id": reqID})
-		s.Events.Append(evt)
-		s.Proj.Project(evt)
+		_ = s.Events.Append(evt)
+		_ = s.Proj.Project(evt)
 		fmt.Fprintf(out, "\nPlan ready for review.\n")
 		fmt.Fprintf(out, "  Review:  nxd status --req %s\n", reqID)
 		fmt.Fprintf(out, "  Approve: nxd approve %s\n", reqID)
