@@ -130,6 +130,38 @@ func TestOllamaClient_ModelNotFound(t *testing.T) {
 	}
 }
 
+// A 503 (overloaded) / 429 (rate limited) from the Ollama server must be
+// classified as a transient capacity error so the pipeline pauses-and-resumes
+// instead of treating it as a story-quality failure.
+func TestOllamaClient_OverloadIsCapacityError(t *testing.T) {
+	for _, status := range []int{http.StatusServiceUnavailable, http.StatusTooManyRequests} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(status)
+			w.Write([]byte(`{"error": "server overloaded, please retry shortly"}`))
+		}))
+
+		client := llm.NewOllamaClient("test-model",
+			llm.WithOllamaBaseURL(server.URL),
+			llm.WithOllamaTimeout(2*time.Second),
+		)
+		_, err := client.Complete(context.Background(), llm.CompletionRequest{
+			Model:    "test-model",
+			Messages: []llm.Message{{Role: llm.RoleUser, Content: "Hi"}},
+		})
+		server.Close()
+
+		if err == nil {
+			t.Fatalf("status %d: expected error", status)
+		}
+		if !llm.IsCapacityError(err) {
+			t.Errorf("status %d: IsCapacityError = false, want true (err=%v)", status, err)
+		}
+		if llm.IsFatalAPIError(err) {
+			t.Errorf("status %d: IsFatalAPIError = true, want false (err=%v)", status, err)
+		}
+	}
+}
+
 func TestOllamaClient_ConnectionRefused(t *testing.T) {
 	// Use a port that nothing is listening on
 	client := llm.NewOllamaClient("test-model",

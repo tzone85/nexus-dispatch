@@ -135,6 +135,14 @@ kill <stale-pid>
 rm -f ~/.nxd/nxd.lock ~/.nxd/events.jsonl ~/.nxd/nxd.db
 ```
 
+## Current State (2026-06-24) — Ollama capacity clean pause
+
+- **Transient Ollama overload no longer burns the escalation chain.** Running several concurrent builds against one Ollama instance, the server returns transient overload/loading/OOM conditions (HTTP 429/503, "server busy", "no slots available", "model is loading", "out of memory", "context deadline exceeded", "connection refused"). Previously these were treated as story-quality failures and the requirement only paused *after* burning reset → manager → tech-lead re-plan, with misleading messages ("agent produced no code changes", "re-plan failed").
+- **Fix (`internal/llm/errors.go` + `internal/engine/capacity_pause.go`):**
+  - `llm.IsCapacityError(err)` classifies 429/503/529 (typed `*APIError`) **and** stringified Ollama HTTP-client errors carrying a capacity signature. `llm.ContainsCapacitySignature(string)` is the shared vocabulary. Capacity is distinct from `IsFatalAPIError` (401/403/billing — permanent) and from a 404 model-not-found (operator config error). Signatures are the strings `internal/llm/ollama.go` and the Ollama server actually emit.
+  - `Monitor.pauseIfCapacity(storyID, stage, err)` pauses the requirement **without consuming an escalation attempt or advancing the tier**. Wired at: reviewer, merge/conflict-resolution, manager diagnosis, tech-lead re-plan. `agentCompletionHasCapacityError(storyID)` scans the latest `STORY_COMPLETED` payload's recorded `error` field so a native (Gemma) agent that hit an overload (empty diff) pauses cleanly instead of escalating as "no code changes". The pause reason states the cause is transient — resume after the server recovers.
+- Tests: `internal/llm/capacity_test.go`, the overload case in `internal/llm/ollama_test.go`, and `internal/engine/capacity_pause_test.go` (unit + post-execution review/empty-diff paths).
+
 ## Current State (2026-06-24) — audit hardening
 
 - **Planner degenerate-plan guard**: `Planner.plan` (`internal/engine/planner.go`) now rejects an empty story list and any story with an empty id/title *before* emitting REQ_PLANNED/STORY_CREATED, so a requirement can no longer be stranded with nothing to dispatch. Tests: `internal/engine/planner_validation_test.go`.

@@ -475,6 +475,18 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 		return
 	}
 	if diff == "" {
+		// A native (Gemma) agent that hit an Ollama overload still emits
+		// STORY_COMPLETED with the error recorded in its payload and an empty
+		// diff. Without this check it looks identical to a lazy agent and would
+		// be escalated as "produced no code changes" — burning a tier on a
+		// transient limit. Pause cleanly instead so a resume after the server
+		// recovers re-dispatches the story.
+		if m.agentCompletionHasCapacityError(storyID) {
+			log.Printf("[pipeline] %s produced no diff but its agent hit an Ollama capacity limit — pausing without escalation", storyID)
+			outcomeForRelease = devdb.OutcomePaused
+			m.pauseRequirement(storyID, capacityPauseReason("agent execution", fmt.Errorf("agent completion recorded an Ollama capacity/overload error")))
+			return
+		}
 		log.Printf("[pipeline] no changes produced for %s, resetting to draft for re-dispatch", storyID)
 		m.resetStoryToDraft(storyID, "monitor", "agent produced no code changes")
 		return
@@ -529,6 +541,15 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 		result, err := m.reviewer.Review(ctx, storyID, storyTitle, storyAC, diff, blastRadius, fileTree)
 		if err != nil {
 			EmitStageCompleted(m.eventStore, m.projStore, "monitor", storyID, "review", "failure", reviewStart)
+			// Transient Ollama capacity/overload (429/503, server busy, no
+			// slots, model loading, OOM) — pause cleanly WITHOUT burning an
+			// escalation attempt, since the story never had a chance to fail
+			// on its own merits and review will succeed once the server
+			// recovers.
+			if m.pauseIfCapacity(storyID, "review", err) {
+				outcomeForRelease = devdb.OutcomePaused
+				return
+			}
 			// Fatal API errors (auth failures, billing exhaustion,
 			// permission denied) will never succeed on retry -- pause
 			// the entire requirement to stop the infinite loop.
@@ -672,6 +693,12 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 
 		if err != nil {
 			EmitStageCompleted(m.eventStore, m.projStore, "monitor", storyID, "merge", "failure", mergeStart)
+			// Transient Ollama capacity/overload during LLM conflict
+			// resolution — pause cleanly without burning an escalation tier.
+			if m.pauseIfCapacity(storyID, "merge/conflict-resolution", err) {
+				outcomeForRelease = devdb.OutcomePaused
+				return
+			}
 			// Fatal API errors during conflict resolution (credits exhausted,
 			// auth failure) must pause the requirement immediately.
 			if llm.IsFatalAPIError(err) {
@@ -1151,6 +1178,11 @@ func (m *Monitor) handleManagerEscalation(ctx context.Context, story PlannedStor
 	action, err := m.manager.Diagnose(ctx, dc)
 	if err != nil {
 		log.Printf("[manager] diagnosis failed for %s: %v", storyID, err)
+		// Transient Ollama capacity/overload during manager diagnosis —
+		// pause cleanly without burning the tier.
+		if m.pauseIfCapacity(storyID, "manager-diagnosis", err) {
+			return
+		}
 		if llm.IsFatalAPIError(err) {
 			m.pauseRequirement(storyID, fmt.Sprintf("fatal API error in manager: %v", err))
 			return
@@ -1384,6 +1416,13 @@ func (m *Monitor) handleTechLeadEscalation(ctx context.Context, story PlannedSto
 	replacements, err := m.planner.RePlan(ctx, storyID, rc.ReqID, failureContext.String())
 	if err != nil {
 		log.Printf("[tech-lead] re-plan failed for %s: %v", storyID, err)
+		// Transient Ollama capacity/overload during re-plan — the pause is
+		// already clean (re-plan failure pauses), but route it through
+		// pauseIfCapacity so the operator sees the accurate transient reason
+		// instead of a misleading "re-plan failed".
+		if m.pauseIfCapacity(storyID, "tech-lead-replan", err) {
+			return
+		}
 		m.pauseRequirement(storyID, fmt.Sprintf("tech lead re-plan failed: %v", err))
 		return
 	}
