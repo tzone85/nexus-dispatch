@@ -100,6 +100,40 @@ tbody tr:nth-child(even) {
   color: #888888;
 }
 
+/* ── Story detail (description + acceptance criteria) ──────────────── */
+.story-title-toggle {
+  cursor: pointer;
+  border-bottom: 1px dotted #5a6da0;
+}
+.story-title-toggle:hover {
+  color: #9db4ff;
+}
+tr.story-detail > td {
+  background: #161d33;
+  padding: 12px 16px;
+  border-left: 3px solid #5a6da0;
+}
+.detail-desc,
+.detail-ac {
+  margin-bottom: 10px;
+}
+.detail-desc strong,
+.detail-ac strong {
+  display: block;
+  color: #9db4ff;
+  margin-bottom: 4px;
+  font-size: 0.85em;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.detail-ac ul {
+  margin: 0;
+  padding-left: 20px;
+}
+.detail-ac li {
+  margin: 3px 0;
+}
+
 /* ── Status Badges ─────────────────────────────────────────────────── */
 .status-active,
 .status-working,

@@ -28,7 +28,7 @@ nxd resume → dispatcher → executor → agents (parallel per wave)
 | `internal/llm/semaphore.go` | Concurrency limiter wrapping `llm.Client` (default 1 for single-GPU Ollama) |
 | `internal/artifact/store.go` | Per-story artifact persistence (launch config, trace JSONL, diffs, QA/review results) |
 | `internal/scratchboard/` | Cross-agent knowledge sharing (JSONL-backed, per-requirement) |
-| `internal/criteria/` | Declarative success criteria (file_exists, file_contains, test_passes, coverage_above, command_succeeds) |
+| `internal/criteria/` | Declarative success criteria (file_exists, file_contains, test_passes, coverage_above, command_succeeds); `format.go` is a pure formatter (`Format`/`FormatMarkdown`) that splits run-on acceptance-criteria blobs into discrete human-readable items |
 | `internal/web/eventbus.go` | In-process pub/sub for instant WebSocket event push |
 | `internal/web/static/app.js` | Web dashboard frontend: DAG SVG visualization, agents, pipeline, stories, activity, review gates |
 | `internal/graph/export.go` | DAG export as JSON with nodes, edges, wave assignments |
@@ -134,6 +134,10 @@ Test project at `~/Sites/misc/nxd-smoke-test` with `nxd.yaml` configured for `ge
 kill <stale-pid>
 rm -f ~/.nxd/nxd.lock ~/.nxd/events.jsonl ~/.nxd/nxd.db
 ```
+
+## Current State (2026-06-24)
+
+- **Human-readable acceptance criteria**: `internal/criteria/format.go` (`Format`/`FormatMarkdown`, pure, fully unit-tested) segments a run-on acceptance-criteria blob into discrete items — sentence-splitting that guards abbreviations (`e.g.`) and identifier periods (`WorldState.copy()`) and strips `-`/`*`/`•`/`1.` markers. Surfaces: `nxd review <story>` prints a `Description:` block + a bulleted `Acceptance Criteria:` block; the web snapshot exposes `acceptance_criteria_items` (story_id → []string) and the dashboard expands a detail row (description + criteria checklist) when a story title is clicked (`storyDetailRow`/`toggleStoryDetail` in `app.js`). The Tech-Lead prompt (`prompts.go`) and planner tool schema (`planner_tools.go`) now require 3-6 intent-first criteria, one per line.
 
 ## Current State (2026-06-02)
 
