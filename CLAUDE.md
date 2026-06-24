@@ -135,6 +135,12 @@ kill <stale-pid>
 rm -f ~/.nxd/nxd.lock ~/.nxd/events.jsonl ~/.nxd/nxd.db
 ```
 
+## Current State (2026-06-24) — audit hardening
+
+- **Planner degenerate-plan guard**: `Planner.plan` (`internal/engine/planner.go`) now rejects an empty story list and any story with an empty id/title *before* emitting REQ_PLANNED/STORY_CREATED, so a requirement can no longer be stranded with nothing to dispatch. Tests: `internal/engine/planner_validation_test.go`.
+- **Conflict path quoting fix**: `git.ConflictedFiles` (`internal/git/conflict.go`) uses `git status --porcelain -z` and parses NUL-delimited records, returning raw paths instead of git's octal-escaped `core.quotepath` form. Filenames with spaces/non-ASCII (e.g. `résumé draft.txt`) now flow correctly into SniffBinary/StageFiles/conflict resolver. Test: `internal/git/conflict_quotepath_test.go`.
+- **Post-merge integration fixer wired**: `runResume` (`internal/cli/resume.go`) now constructs `engine.NewTechLeadFixer` (Tech-Lead model/stage) and attaches it via `WithMonTechLeadFixer`. The feature + monitor logic existed but the setter was never called, so the post-merge build-validation stage never ran. Source-scan regression test: `internal/cli/resume_wiring_test.go`.
+
 ## Current State (2026-06-24)
 
 - **Human-readable acceptance criteria**: `internal/criteria/format.go` (`Format`/`FormatMarkdown`, pure, fully unit-tested) segments a run-on acceptance-criteria blob into discrete items — sentence-splitting that guards abbreviations (`e.g.`) and identifier periods (`WorldState.copy()`) and strips `-`/`*`/`•`/`1.` markers. Surfaces: `nxd review <story>` prints a `Description:` block + a bulleted `Acceptance Criteria:` block; the web snapshot exposes `acceptance_criteria_items` (story_id → []string) and the dashboard expands a detail row (description + criteria checklist) when a story title is clicked (`storyDetailRow`/`toggleStoryDetail` in `app.js`). The Tech-Lead prompt (`prompts.go`) and planner tool schema (`planner_tools.go`) now require 3-6 intent-first criteria, one per line.
