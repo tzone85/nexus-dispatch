@@ -355,7 +355,7 @@ File: %s
 		return "", err
 	}
 
-	resolved := stripCodeFences(resp.Content)
+	resolved := extractResolvedFileContent(resp.Content)
 
 	// Sanity check: resolved content must not contain conflict markers.
 	if strings.Contains(resolved, "<<<<<<<") || strings.Contains(resolved, ">>>>>>>") {
@@ -431,7 +431,7 @@ CRITICAL OUTPUT RULES:
 		return "", err
 	}
 
-	resolved := stripCodeFences(resp.Content)
+	resolved := extractResolvedFileContent(resp.Content)
 
 	if strings.Contains(resolved, "<<<<<<<") || strings.Contains(resolved, ">>>>>>>") {
 		return "", fmt.Errorf("tech lead output still contains conflict markers")
@@ -508,6 +508,26 @@ func truncateConflictContent(content string) string {
 }
 
 // stripCodeFences removes leading/trailing markdown code fences from LLM output.
+// extractResolvedFileContent pulls the resolved file out of an LLM response.
+// Conflict-resolution models sometimes wrap the file in a ```fenced block with
+// conversational preamble/postamble ("Resolved. Kept X ... File content to
+// apply: ```json {…}``` Grant write to apply."). Writing that whole reply
+// verbatim corrupts the file (it broke a real build's package.json into invalid
+// JSON). When a fenced block is present return ONLY its contents; otherwise
+// fall back to trimming stray fences.
+func extractResolvedFileContent(resp string) string {
+	if i := strings.Index(resp, "```"); i >= 0 {
+		rest := resp[i+3:]
+		if nl := strings.IndexByte(rest, '\n'); nl >= 0 {
+			rest = rest[nl+1:]
+		}
+		if j := strings.Index(rest, "```"); j >= 0 {
+			return strings.TrimSpace(rest[:j])
+		}
+	}
+	return strings.TrimSpace(stripCodeFences(resp))
+}
+
 func stripCodeFences(s string) string {
 	s = strings.TrimSpace(s)
 	if strings.HasPrefix(s, "```") {
