@@ -137,7 +137,7 @@ func TestResolveFile_PromptContainsNoFenceInstruction(t *testing.T) {
 	// The ReplayClient returns a fixed response without recording the prompt,
 	// so we verify the prompt by calling resolveFile with a controlled input
 	// and checking there are no conflict markers in the output.
-	client := llm.NewReplayClient(llm.CompletionResponse{Content: "resolved content"})
+	client := llm.NewReplayClient(llm.CompletionResponse{Content: "package main\n\nfunc main() {}\n"})
 
 	cr := &ConflictResolver{
 		llmClient: client,

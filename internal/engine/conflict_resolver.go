@@ -362,6 +362,12 @@ File: %s
 		return "", fmt.Errorf("LLM output still contains conflict markers")
 	}
 
+	// Reject conversational commentary. When the model returns prose with no
+	// fenced block, writing it would destroy the file; failing here escalates.
+	if looksLikeResolverChatter(resolved) {
+		return "", fmt.Errorf("LLM returned commentary, not file content")
+	}
+
 	return resolved, nil
 }
 
@@ -435,6 +441,10 @@ CRITICAL OUTPUT RULES:
 
 	if strings.Contains(resolved, "<<<<<<<") || strings.Contains(resolved, ">>>>>>>") {
 		return "", fmt.Errorf("tech lead output still contains conflict markers")
+	}
+
+	if looksLikeResolverChatter(resolved) {
+		return "", fmt.Errorf("tech lead returned commentary, not file content")
 	}
 
 	return resolved, nil
@@ -526,6 +536,56 @@ func extractResolvedFileContent(resp string) string {
 		}
 	}
 	return strings.TrimSpace(stripCodeFences(resp))
+}
+
+// resolverChatterMarkers are phrases that appear in a conflict-resolution model's
+// CONVERSATIONAL reply but should never appear in actual merged source. When the
+// model ignores the "return only file content" instruction and emits prose with
+// NO fenced block (so extractResolvedFileContent has nothing to extract and
+// returns the prose itself), writing that result DESTROYS the file. These markers
+// are specific enough that real code/comments don't trip them.
+var resolverChatterMarkers = []string{
+	"conflict resolved",
+	"resolved content",
+	"resolved file content",
+	"resolved content below",
+	"resolved content:",
+	"kept both sides",
+	"both sides merged",
+	"kept head's",
+	"kept incoming",
+	"write blocked on permission",
+	"blocked on permission",
+	"permission denied by harness",
+	"cannot write the file",
+	"can't write the file",
+	"i cannot write",
+	"i can't write",
+	"can't write it here",
+	"want me to apply",
+	"want me to run",
+	"grant write to apply",
+	"working tree is",
+	"returning the resolved content",
+	"apply it to",
+	"apply this on branch",
+	"all functionality retained",
+	"no selector collisions",
+	"separate class namespaces",
+}
+
+// looksLikeResolverChatter reports whether s is conflict-resolver commentary
+// rather than merged file content. It is intentionally conservative: a single
+// high-confidence marker is enough, because these phrases do not occur in valid
+// source files, and writing chatter to disk corrupts the file irrecoverably.
+func looksLikeResolverChatter(s string) bool {
+	lower := strings.ToLower(s)
+	for _, m := range resolverChatterMarkers {
+		if strings.Contains(lower, m) {
+			return true
+		}
+	}
+	return false
 }
 
 func stripCodeFences(s string) string {

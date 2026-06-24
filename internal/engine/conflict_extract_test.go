@@ -33,3 +33,34 @@ func TestExtractResolvedFileContent(t *testing.T) {
 		t.Fatalf("fenced-only extraction failed: %q", g)
 	}
 }
+
+func TestLooksLikeResolverChatter(t *testing.T) {
+	// Prose-only replies that destroy files when written verbatim (no fence to
+	// extract, so extraction returns the prose itself).
+	chatter := []string{
+		"Conflict resolved. Kept both sides:\n\nNo selector collisions — separate class namespaces, all functionality retained.",
+		"Resolved file content:",
+		"Permission denied by harness. Cannot write the file myself. Resolved content below:",
+		"Working tree is `master` (no `src/`), so I can't write the file here.",
+		"Both sides merged — HEAD tests + branch tests. Write blocked on permission, so resolved content below:",
+		"Want me to apply this on branch nxd/abc and run the tests?",
+	}
+	for _, c := range chatter {
+		if !looksLikeResolverChatter(c) {
+			t.Errorf("expected chatter to be flagged:\n%q", c)
+		}
+	}
+
+	// Real merged source must NOT be flagged.
+	code := []string{
+		"package main\n\nfunc main() {}\n",
+		"import { useState } from 'react';\nexport const App = () => null;",
+		".ui-button { color: red; }\n.app-layout { display: flex; }",
+		"{\n  \"name\": \"frontend\",\n  \"private\": true\n}",
+	}
+	for _, c := range code {
+		if looksLikeResolverChatter(c) {
+			t.Errorf("real source wrongly flagged as chatter:\n%q", c)
+		}
+	}
+}
