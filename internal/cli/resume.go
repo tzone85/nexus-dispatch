@@ -454,12 +454,24 @@ func runResume(cmd *cobra.Command, args []string) error {
 		conflictResolver = engine.NewConflictResolver(mergerClient, seniorModel.Model, seniorModel.MaxTokens, s.Events)
 	}
 
+	// Optional post-merge integration-build validation. After a wave merges, if
+	// main no longer compiles the Tech Lead diagnoses the cross-story break and
+	// records a focused fix suggestion. The feature was implemented and
+	// unit-tested but never wired here, so the stage never ran in production.
+	var techLeadFixer *engine.TechLeadFixer
+	if llmClient != nil {
+		techLead := s.Config.Models.TechLead
+		fixerClient := metrics.LabelStage(llmClient, "tech_lead")
+		techLeadFixer = engine.NewTechLeadFixer(fixerClient, techLead.Model, techLead.MaxTokens, s.Events, s.Proj)
+	}
+
 	monitor.Configure(
 		engine.WithMonMemPalace(mp),
 		engine.WithMonBayesianRouter(bayesianRouter),
 		engine.WithMonArtifactStore(artStore),
 		engine.WithMonCodeGraph(cg),
 		engine.WithMonConflictResolver(conflictResolver),
+		engine.WithMonTechLeadFixer(techLeadFixer),
 		engine.WithMonDryRun(dryRun),
 		// Auto-resume: when a wave completes, dispatch the next ready wave
 		// without waiting for the user to re-run "nxd resume".

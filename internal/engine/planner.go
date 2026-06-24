@@ -255,6 +255,26 @@ architecture and conventions when planning stories.`, profileContext)
 		}
 	}
 
+	// Reject a degenerate plan before any event is emitted. An empty story
+	// list (the LLM returned `[]`) would otherwise emit REQ_PLANNED with no
+	// stories, stranding the requirement forever with nothing to dispatch.
+	if len(stories) == 0 {
+		return PlanResult{}, fmt.Errorf("tech lead returned zero stories — requirement cannot be planned")
+	}
+
+	// Reject any story missing an id or a title. A blank story object (`{}`)
+	// from a small model carries no work; auto-assigning it an ID below would
+	// dispatch an agent against nothing. Validate before the auto-ID fill so an
+	// empty id is caught rather than masked.
+	for i, s := range stories {
+		if strings.TrimSpace(s.ID) == "" {
+			return PlanResult{}, fmt.Errorf("story %d has an empty id", i)
+		}
+		if strings.TrimSpace(s.Title) == "" {
+			return PlanResult{}, fmt.Errorf("story %s has an empty title", s.ID)
+		}
+	}
+
 	// Ensure all stories have IDs. Smaller models sometimes omit them.
 	for i, s := range stories {
 		if s.ID == "" {

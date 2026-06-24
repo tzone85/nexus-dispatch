@@ -26,11 +26,18 @@ func StartRebase(worktreePath, upstream string) error {
 }
 
 // ConflictedFiles returns the list of files with unresolved merge conflicts
-// in the given worktree. It uses `git status --porcelain` which reliably
+// in the given worktree. It uses `git status --porcelain -z` which reliably
 // detects all unmerged states (UU, AA, DD, AU, UA, DU, UD), unlike
 // `git diff --diff-filter=U` which can miss some conflict types.
+//
+// The `-z` flag emits NUL-terminated records with raw (unquoted) paths.
+// Default porcelain output quotes and octal-escapes paths containing spaces
+// or non-ASCII bytes (e.g. `"r\303\251sum\303\251 draft.txt"`), which would
+// flow as a bogus path into SniffBinary/StageFiles and break the conflict
+// resolver. Each record is "XY<space>path"; the path is rec[3:] verbatim —
+// no TrimSpace, since a real path may legitimately contain trailing spaces.
 func ConflictedFiles(worktreePath string) ([]string, error) {
-	cmd := exec.Command("git", "status", "--porcelain")
+	cmd := exec.Command("git", "status", "--porcelain", "-z")
 	cmd.Dir = worktreePath
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -38,15 +45,15 @@ func ConflictedFiles(worktreePath string) ([]string, error) {
 	}
 
 	var files []string
-	for _, line := range strings.Split(string(out), "\n") {
-		if len(line) < 4 {
+	for _, rec := range strings.Split(string(out), "\x00") {
+		if len(rec) < 4 {
 			continue
 		}
 		// Unmerged status codes: UU, AA, DD, AU, UA, DU, UD
-		xy := line[:2]
+		xy := rec[:2]
 		if xy == "UU" || xy == "AA" || xy == "DD" ||
 			xy == "AU" || xy == "UA" || xy == "DU" || xy == "UD" {
-			files = append(files, strings.TrimSpace(line[3:]))
+			files = append(files, rec[3:])
 		}
 	}
 	return files, nil
