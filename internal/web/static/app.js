@@ -91,7 +91,11 @@ function renderState(data) {
   renderAgents(data.agents || [], data.agent_traces || []);
   renderPipeline(data.pipeline || {});
   renderDAG(data.dag, data.stories || []);
-  renderStories(data.stories || [], data.story_dbs || {});
+  renderStories(
+    data.stories || [],
+    data.story_dbs || {},
+    data.acceptance_criteria_items || {},
+  );
   renderEvents(data.events || []);
   renderEscalations(data.escalations || []);
   renderMetrics(data.metrics);
@@ -415,7 +419,11 @@ function renderPipeline(p) {
   document.getElementById("progress-text").textContent = pct + "% complete";
 }
 
-function renderStories(stories, storyDBs) {
+function renderStories(stories, storyDBs, acItems) {
+  // acItems is a server-supplied map of story_id -> string[] (criteria already
+  // split into readable items by the Go criteria package). All values are
+  // routed through esc() before being placed in innerHTML.
+  const ac = acItems || {};
   const sorted = [...stories].sort((a, b) => {
     const va = a[sortField] != null ? a[sortField] : "";
     const vb = b[sortField] != null ? b[sortField] : "";
@@ -473,8 +481,12 @@ function renderStories(stories, storyDBs) {
         (s.escalation_tier || 0) +
         "</td>" +
         "<td>" +
+        '<span class="story-title-toggle" title="Show description & acceptance criteria"' +
+        " onclick=\"toggleStoryDetail('" +
+        storyId +
+        "')\">" +
         esc(s.title) +
-        "</td>" +
+        "</span></td>" +
         "<td>" +
         dbCell +
         "</td>" +
@@ -498,10 +510,56 @@ function renderStories(stories, storyDBs) {
         "', target_tier:0}); })\">" +
         "&#x21C4;</button>" +
         "</td>" +
-        "</tr>"
+        "</tr>" +
+        storyDetailRow(storyId, s.description, ac[s.id])
       );
     })
     .join("");
+}
+
+/**
+ * Build the hidden detail row for a story: plain-language description plus the
+ * acceptance criteria as a bulleted checklist, so a user can click the title
+ * and understand the story's intent.
+ */
+function storyDetailRow(storyId, description, items) {
+  const desc = (description || "").trim();
+  const list = Array.isArray(items) ? items : [];
+  if (!desc && !list.length) {
+    return (
+      '<tr class="story-detail" id="detail-' +
+      storyId +
+      '" hidden><td colspan="7" class="muted">No description or acceptance criteria recorded.</td></tr>'
+    );
+  }
+  let inner = "";
+  if (desc) {
+    inner +=
+      '<div class="detail-desc"><strong>Description</strong><p>' +
+      esc(desc) +
+      "</p></div>";
+  }
+  if (list.length) {
+    inner +=
+      '<div class="detail-ac"><strong>Acceptance Criteria</strong><ul>' +
+      list.map((i) => "<li>" + esc(i) + "</li>").join("") +
+      "</ul></div>";
+  }
+  return (
+    '<tr class="story-detail" id="detail-' +
+    storyId +
+    '" hidden><td colspan="7">' +
+    inner +
+    "</td></tr>"
+  );
+}
+
+/** Toggle the visibility of a story's detail row. */
+function toggleStoryDetail(storyId) {
+  const row = document.getElementById("detail-" + storyId);
+  if (row) {
+    row.hidden = !row.hidden;
+  }
 }
 
 function eventClass(type) {
@@ -1001,7 +1059,11 @@ document.querySelectorAll("#stories-table th[data-sort]").forEach((th) => {
       sortDir = 1;
     }
     if (currentState)
-      renderStories(currentState.stories || [], currentState.story_dbs || {});
+      renderStories(
+        currentState.stories || [],
+        currentState.story_dbs || {},
+        currentState.acceptance_criteria_items || {},
+      );
   });
 });
 

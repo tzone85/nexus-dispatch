@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"path/filepath"
 
+	"github.com/tzone85/nexus-dispatch/internal/criteria"
 	"github.com/tzone85/nexus-dispatch/internal/graph"
 	"github.com/tzone85/nexus-dispatch/internal/improver"
 	"github.com/tzone85/nexus-dispatch/internal/state"
@@ -28,6 +29,10 @@ type StateSnapshot struct {
 	DAG             *graph.DAGExport      `json:"dag,omitempty"`
 	StoryDBs        map[string]StoryDB    `json:"story_dbs,omitempty"`
 	DBSummary       *DBSummary            `json:"db_summary,omitempty"`
+	// AcceptanceCriteriaItems maps story_id -> the story's acceptance criteria
+	// split into discrete, human-readable items so the dashboard can render a
+	// clean checklist instead of a run-on technical blob.
+	AcceptanceCriteriaItems map[string][]string `json:"acceptance_criteria_items,omitempty"`
 }
 
 // StoryDB is the dashboard-friendly per-story devdb status.
@@ -83,6 +88,16 @@ func (s *Server) BuildSnapshot() (StateSnapshot, error) {
 			continue
 		}
 		snap.Stories = append(snap.Stories, stories...)
+	}
+
+	// Pre-split each story's acceptance criteria into readable items for the UI.
+	for _, story := range snap.Stories {
+		if items := criteria.Format(story.AcceptanceCriteria); len(items) > 0 {
+			if snap.AcceptanceCriteriaItems == nil {
+				snap.AcceptanceCriteriaItems = make(map[string][]string, len(snap.Stories))
+			}
+			snap.AcceptanceCriteriaItems[story.ID] = items
+		}
 	}
 
 	// Pipeline counts

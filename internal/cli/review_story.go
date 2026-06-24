@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/tzone85/nexus-dispatch/internal/criteria"
 )
 
 func newReviewStoryCmd() *cobra.Command {
@@ -36,6 +38,16 @@ func runReviewStory(cmd *cobra.Command, args []string) error {
 
 	fmt.Fprintf(out, "Story: %s\nID: %s\nStatus: %s\nComplexity: %d\nBranch: %s\n\n",
 		story.Title, story.ID, story.Status, story.Complexity, story.Branch)
+
+	// Surface the story's intent so a human reviewing the change can read the
+	// description and acceptance criteria as a clean bulleted list rather than
+	// a run-on technical blob.
+	if desc := strings.TrimSpace(story.Description); desc != "" {
+		fmt.Fprintf(out, "Description:\n%s\n\n", desc)
+	}
+	if ac := criteria.FormatMarkdown(story.AcceptanceCriteria); ac != "" {
+		fmt.Fprintf(out, "Acceptance Criteria:\n%s\n\n", ac)
+	}
 
 	if story.Branch != "" {
 		repoDir, _ := os.Getwd()

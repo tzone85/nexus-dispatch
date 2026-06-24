@@ -56,7 +56,7 @@ func PlannerTools() []llm.ToolDefinition {
 					},
 					"acceptance_criteria": {
 						"type": "string",
-						"description": "How to verify the story is done"
+						"description": "3-6 discrete, human-readable criteria, one per line starting with '- '. Each line is a single plain-language verifiable outcome (intent first, exact command in parentheses at the end). A human reading only this must understand what the story delivers."
 					},
 					"dependencies": {
 						"type": "array",

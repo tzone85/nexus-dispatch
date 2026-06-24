@@ -208,7 +208,20 @@ Guidelines:
 - Stories with score 1-3 should be simple enough for a junior developer
 - Stories with score 4-5 need intermediate-level work
 - Stories with score 6+ need senior-level architecture decisions
-- Identify cross-story dependencies explicitly`,
+- Identify cross-story dependencies explicitly
+
+Human-readable acceptance criteria (REQUIRED FORMAT):
+The acceptance_criteria field is read by humans clicking through the story, not
+only by the implementing agent. Write it so a reader understands the INTENT.
+- Write 3-6 discrete criteria, ONE per line, each starting with '- '.
+- Each line is a single, self-contained, verifiable statement in plain language.
+- Lead with the observable outcome (what is true when done), not the command.
+  Put any exact build/test command at the END of its line in parentheses.
+  Good:  '- The parser rejects unknown verbs without crashing (verified by go test ./parser).'
+  Avoid: 'go test ./parser green. parser handles verbs. no panic.'
+- Never pack multiple checks into one run-on sentence separated by periods.
+- A non-author reading only the criteria should be able to explain what the
+  story delivers.`,
 
 	RoleSenior: `You are a Senior Developer on Team {team_name}.
 
