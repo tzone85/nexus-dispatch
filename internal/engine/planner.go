@@ -181,6 +181,7 @@ IMPORTANT:
 - All stories MUST reference specific file paths in their descriptions.
 - Distribute work across different files to minimize merge conflicts between parallel agents.
 - Each file path MUST appear in exactly ONE story's owned_files — no overlapping file ownership between stories.
+- Security (OWASP Top 10 baseline — a security gate runs on every story before merge, so design for it): enforce access control server-side (deny by default, check ownership — no IDOR); use modern crypto and crypto/rand, never hardcode secrets (use env/secret manager); prevent injection (parameterized queries, no string-built SQL/shell, context-aware output encoding for XSS); validate inputs at trust boundaries; harden config (no debug in prod, no secrets/stack traces in responses or logs); audit dependencies for CVEs; verify auth tokens and rate-limit auth; avoid deserializing untrusted data; guard server-side fetches against SSRF. State the specific protection in the acceptance criteria for any web/HTML/API/templating/auth surface.
 - Use explicit relative paths from the project root (e.g., "src/api/handler.go", not just "handler.go").
 - Keep story complexity at or below %d.
 - For simple requirements (1-2 files), prefer fewer stories (1-2) over many small ones.

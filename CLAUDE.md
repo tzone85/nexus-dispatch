@@ -36,6 +36,8 @@ nxd resume → dispatcher → executor → agents (parallel per wave)
 | `internal/cli/logs.go` | `nxd logs <story-id>` — trace JSONL viewer with `--follow`, `--lines`, `--raw` |
 | `internal/cli/diff.go` | `nxd diff <story-id>` — worktree diff against base branch with `--stat`, `--cached` |
 | `internal/cli/dashboard.go` | Wires event bus into WebSocket hub |
+| `internal/security/` | Security agent brains (LLM-free): growable OWASP Top 10 + CWE `KnowledgeBase` (JSON-persisted, immutable `Add`, `Covers` by ID-or-CWE, `Checklist` for prompts), multi-tool scanner runner (gosec/govulncheck/gitleaks/semgrep/npm-audit, graceful degrade, real parsers), language detection, findings/report |
+| `internal/engine/security_gate.go` | `SecurityGate`: `ScanRepo` (standalone `nxd security scan`) + `ReviewStory` (per-story pre-merge gate in `postExecutionPipeline`, after QA before merge). Scanners ∪ LLM threat-model review against the KB; pauses on findings ≥ gate severity; self-upskills the KB from confirmed findings |
 
 ## Build & Test
 
@@ -53,6 +55,15 @@ make mempalace-check              # smoke the MemPalace bridge end-to-end
 - `GOOS=windows GOARCH=amd64 go build -o dist/nxd.exe ./cmd/nxd` cross-compiles a Windows PE32+ binary.
 - Native Windows: all read-only commands work (`status`, `dashboard`, `doctor`, `config`, `events`, `metrics`, `report`, `projects`). Full agent pipeline (`req`/`resume`) needs tmux → run inside WSL2.
 - Platform-specific code lives in `_unix.go` / `_windows.go` build-tagged pairs: `internal/cli/req_*.go` (daemon detach), `internal/engine/lockfile_*.go` (advisory lock + process liveness), `internal/devdb/docker/host_*.go` (docker default host). Shell command exec goes through `internal/shellexec` (`sh -c` on Unix, `cmd.exe /C` on Windows, override with `NXD_SHELL`).
+
+## Current State (2026-06-26) — security agent (ported from VXD)
+
+Self-upskilling security agent, mirrored from vortex-dispatch (offline-friendly: scanners are local binaries, LLM layer uses the configured Ollama/cloud client).
+- **`internal/security/`** (LLM-free, unit-tested): growable OWASP Top 10 + CWE `KnowledgeBase` (JSON at `<state_dir>/security/knowledge.json`; `Add` immutable/versioned/dedup, `Covers` matches ID or CWE, `Checklist` renders for prompts) + a runner orchestrating **gosec, govulncheck, gitleaks, semgrep, npm audit** (language-aware applicability, PATH detection, graceful degrade — skipped tools are *listed*, never silently dropped; pure per-tool parsers → real findings).
+- **`engine/security_gate.go`** `SecurityGate`: `ScanRepo` (standalone) + `ReviewStory` (per-story, in `postExecutionPipeline` after QA before merge via `Monitor.SetSecurityGate`, wired in `resume.go` — `TestResume_WiresSecurityGate`). Findings ≥ `security.gate_severity` (default **critical**) pause the requirement; never escalate. Self-upskilling: confirmed high+ findings of a new vuln class → learned KB rule + `SECURITY_RULE_LEARNED`.
+- **CLI:** `nxd security scan [path] [--json] [--llm] [--min <sev>]` + `nxd security kb` (falls back to DefaultConfig so it runs in any repo). Planner prompt now carries the OWASP Top 10 so every story is designed secure.
+- **Config:** `security.{disable_gate, gate_severity (default critical), auto_learn (default true), kb_path}`.
+- **Verified:** scanned NXD itself (Go/JS/Python/Shell, all 5 scanners ran, crit=0). Full suite 31 pkgs + vet + golangci-lint clean. Mirrors VXD `internal/security` verbatim (zero VXD refs).
 
 ## Core Infrastructure: MemPalace
 
@@ -239,6 +250,11 @@ Architectural ceilings (cannot reach 95% without major refactor):
 - `test/dryrun_test.go` — 2 tests: full planner pipeline with DryRunClient, dispatch wave ordering
 
 ## Event Types
+
+Security agent events (added 2026-06-26):
+- `STORY_SECURITY_PASSED` / `STORY_SECURITY_FAILED` — per-story security gate result; a FAILED gate pauses the requirement (human decision) rather than escalating
+- `SECURITY_SCAN_COMPLETED` — a standalone `nxd security scan` finished (findings count, max severity)
+- `SECURITY_RULE_LEARNED` — the agent added a new vulnerability class to the knowledge base from a confirmed finding (self-upskilling)
 
 Controller events (added 2026-04-12):
 - `CONTROLLER_ANALYSIS` — emitted each tick with stories_checked and actions_taken counts

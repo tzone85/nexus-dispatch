@@ -38,6 +38,8 @@ const (
 	EventStoryQAStarted       EventType = "STORY_QA_STARTED"
 	EventStoryQAPassed        EventType = "STORY_QA_PASSED"
 	EventStoryQAFailed        EventType = "STORY_QA_FAILED"
+	EventStorySecurityPassed  EventType = "STORY_SECURITY_PASSED"
+	EventStorySecurityFailed  EventType = "STORY_SECURITY_FAILED"
 	EventStoryPRCreated       EventType = "STORY_PR_CREATED"
 	EventStoryMerged          EventType = "STORY_MERGED"
 	EventStoryMergeReady      EventType = "STORY_MERGE_READY"
@@ -72,6 +74,9 @@ const (
 	EventControllerStuckDetected EventType = "CONTROLLER_STUCK_DETECTED"
 
 	// Cleanup events.
+	EventSecurityScanCompleted EventType = "SECURITY_SCAN_COMPLETED"
+	EventSecurityRuleLearned   EventType = "SECURITY_RULE_LEARNED"
+
 	EventWorktreePruned EventType = "WORKTREE_PRUNED"
 	EventBranchDeleted  EventType = "BRANCH_DELETED"
 	EventGCCompleted    EventType = "GC_COMPLETED"

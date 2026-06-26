@@ -110,6 +110,15 @@ func DefaultConfig() Config {
 				{Kind: "test_passes", Value: "go test ./..."},
 			},
 		},
+		Security: SecurityConfig{
+			// The pipeline gate pauses a build only on CRITICAL findings (leaked
+			// secrets, LLM-confirmed injection/hardcoded credentials) so it is
+			// high-signal and does not stall builds on context-dependent SAST
+			// noise. The standalone `nxd security scan` reports high/medium too
+			// (default --min high). Tighten the gate via security.gate_severity.
+			GateSeverity: "critical",
+			AutoLearn:    true,
+		},
 		// DDD + TDD on by default. Per-requirement opt-out via the
 		// `methodology: relaxed` directive in the requirement text or a
 		// `.spec/methodology.md` file. Operators can disable globally by

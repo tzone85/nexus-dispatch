@@ -489,6 +489,21 @@ nxd learn [--force] [--pass <1|2|3>]
 
 ---
 
+### nxd security
+
+Security agent: scan a repository with deterministic scanners (gosec, govulncheck, gitleaks, semgrep, npm audit) plus an optional LLM threat-model review against a growable OWASP/CWE knowledge base that learns new vulnerability classes from confirmed findings. The same agent runs as a per-story pre-merge gate during `nxd resume`.
+
+```bash
+nxd security scan [path] [--json] [--llm] [--min <critical|high|medium|low>]
+nxd security kb [--json]
+```
+
+- `scan` reports findings by severity and lists applicable scanners that are not installed (no silent gaps). Exit code is non-zero when a finding meets `--min` (default `high`) — CI-friendly.
+- `kb` shows the knowledge base: version, baseline rules, and `+`-marked learned rules.
+- Configure via the `security:` section of `nxd.yaml` (`disable_gate`, `gate_severity` default `critical`, `auto_learn`, `kb_path`).
+
+---
+
 ### nxd spec
 
 Spec-driven development scaffolding. `nxd spec init` creates a `.spec/` folder with 8 markdown files covering the 5W1H dimensions; the planner picks them up as structured context.

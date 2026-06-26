@@ -34,6 +34,7 @@ func init() {
 	rootCmd.AddCommand(newEscalationsCmd())
 	rootCmd.AddCommand(newGCCmd())
 	rootCmd.AddCommand(newConfigCmd())
+	rootCmd.AddCommand(newSecurityCmd())
 	rootCmd.AddCommand(newEventsCmd())
 	rootCmd.AddCommand(newDashboardCmd())
 	rootCmd.AddCommand(newArchiveCmd())

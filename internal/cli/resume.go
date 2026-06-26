@@ -28,6 +28,7 @@ import (
 	"github.com/tzone85/nexus-dispatch/internal/routing"
 	"github.com/tzone85/nexus-dispatch/internal/runtime"
 	"github.com/tzone85/nexus-dispatch/internal/scratchboard"
+	"github.com/tzone85/nexus-dispatch/internal/security"
 	"github.com/tzone85/nexus-dispatch/internal/state"
 	"github.com/tzone85/nexus-dispatch/internal/tmux"
 )
@@ -478,6 +479,20 @@ func runResume(cmd *cobra.Command, args []string) error {
 		engine.WithMonAutoResume(dispatcher, executor),
 		engine.WithMonDevDBLifecycle(devdbLifecycle),
 	)
+
+	// Enable the per-story security gate: after QA and before merge, run the
+	// security agent (scanners + LLM threat-model review against the growable
+	// knowledge base) and pause the requirement when a finding meets the gate
+	// severity. Skipped in dry-run and when security.disable_gate is set.
+	if !dryRun && !s.Config.Security.DisableGate {
+		gateSev := security.ParseSeverity(s.Config.Security.GateSeverity)
+		senior := s.Config.Models.Senior
+		monitor.SetSecurityGate(engine.NewSecurityGate(
+			llmClient, senior.Model, senior.MaxTokens, securityKBPath(s.Config),
+			gateSev, s.Config.Security.AutoLearn, s.Events, s.Proj,
+		))
+		log.Printf("[resume] security gate enabled (block at %s+, auto-learn=%v)", gateSev, s.Config.Security.AutoLearn)
+	}
 
 	rc := &engine.RunContext{
 		ReqID:          reqID,
