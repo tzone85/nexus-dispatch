@@ -74,6 +74,11 @@ type Monitor struct {
 	// integration build fails on main.
 	techLeadFixer *TechLeadFixer
 
+	// securityGate runs the security agent (scanners + LLM threat-model review)
+	// on each story after QA and before merge, pausing the requirement when a
+	// finding meets the gate severity. Nil disables the per-story security gate.
+	securityGate *SecurityGate
+
 	// dryRun causes the post-execution pipeline to simulate a successful
 	// agent diff instead of checking the real worktree.
 	dryRun bool
@@ -171,6 +176,13 @@ func (m *Monitor) SetAutoResume(d *Dispatcher, e *Executor) {
 // SetManager enables tier-2 (manager) escalation handling. When set, the
 // monitor intercepts tier-2 stories before dispatch and routes them through
 // the Manager for LLM-powered failure diagnosis and corrective actions.
+// SetSecurityGate wires the per-story security agent (scanners + LLM threat-model
+// review). A finding at or above the configured gate severity pauses the
+// requirement for a human decision rather than escalating. Nil disables it.
+func (m *Monitor) SetSecurityGate(g *SecurityGate) {
+	m.securityGate = g
+}
+
 func (m *Monitor) SetManager(mgr *Manager) {
 	m.manager = mgr
 }
@@ -672,6 +684,28 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 	// Record Bayesian outcome: QA passed. Check if this was a retry
 	// (partial credit) or first attempt (full success).
 	m.recordBayesianSuccess(storyID, ag.Assignment.Role)
+
+	// 2.5 Security gate (per-story, pre-merge). Runs the security agent on the
+	// story's worktree. A finding at/above the gate severity PAUSES the
+	// requirement for a human decision (fix, dismiss, or proceed) rather than
+	// escalating — security needs judgment, not a tier-burning retry. A
+	// security-tool failure is logged and never blocks the merge.
+	if m.securityGate != nil {
+		passed, summary, secErr := m.securityGate.ReviewStory(ctx, storyID, storyTitle, diff, ag.WorktreePath)
+		switch {
+		case secErr != nil:
+			if m.pauseIfCapacity(storyID, "security review", secErr) {
+				return
+			}
+			log.Printf("[pipeline] security review error for %s (continuing to merge): %v", storyID, secErr)
+		case !passed:
+			log.Printf("[pipeline] security gate FLAGGED %s: %s", storyID, summary)
+			m.pauseRequirement(storyID, fmt.Sprintf("security gate: %s (review the finding, then fix on the branch or `nxd resume <req>` to proceed)", summary))
+			return
+		default:
+			log.Printf("[pipeline] security gate passed for %s", storyID)
+		}
+	}
 
 	// 3. Merge (serialized: rebase onto latest main, then push + merge)
 	if m.config.Merge.ReviewBeforeMerge {

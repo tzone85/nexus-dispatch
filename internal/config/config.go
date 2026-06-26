@@ -47,6 +47,7 @@ type Config struct {
 	Memory        MemoryConfig             `yaml:"memory"`
 	Investigation InvestigationConfig      `yaml:"investigation"`
 	QA            QAConfig                 `yaml:"qa"`
+	Security      SecurityConfig           `yaml:"security,omitempty"`
 	Runtimes      map[string]RuntimeConfig `yaml:"runtimes"`
 	Plugins       PluginConfig             `yaml:"plugins"`
 	Methodology   MethodologyConfig        `yaml:"methodology"`
@@ -231,6 +232,26 @@ type TokenRate struct {
 // QAConfig holds quality-assurance settings including declarative success criteria.
 type QAConfig struct {
 	SuccessCriteria []SuccessCriterion `yaml:"success_criteria"`
+}
+
+// SecurityConfig controls the security agent: the per-story pre-merge security
+// gate, the standalone `nxd security scan`, and the self-upskilling knowledge
+// base shared by both.
+type SecurityConfig struct {
+	// DisableGate turns OFF the per-story pre-merge security gate. The gate runs
+	// deterministic scanners + an LLM threat-model review on each story and
+	// pauses the requirement (for a human decision) when a finding meets/exceeds
+	// GateSeverity. Default (false) = gate ON. The standalone scan always works.
+	DisableGate bool `yaml:"disable_gate,omitempty"`
+	// GateSeverity is the build-pausing block threshold: critical|high|medium|low.
+	// Empty ⇒ "critical" (pause only on secrets / confirmed injection).
+	GateSeverity string `yaml:"gate_severity,omitempty"`
+	// AutoLearn grows the knowledge base from confirmed high+ findings so future
+	// builds inherit vulnerability classes seen in past ones. Default true.
+	AutoLearn bool `yaml:"auto_learn"`
+	// KBPath overrides where the knowledge base persists. Empty ⇒
+	// <state_dir>/security/knowledge.json.
+	KBPath string `yaml:"kb_path,omitempty"`
 }
 
 // SuccessCriterion defines a single declarative success check in config YAML.

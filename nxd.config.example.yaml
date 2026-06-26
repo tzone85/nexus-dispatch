@@ -146,6 +146,9 @@ qa:
           value: go vet ./...
         - kind: test_passes
           value: go test ./...
+security:
+    gate_severity: critical
+    auto_learn: true
 runtimes:
     aider:
         command: aider

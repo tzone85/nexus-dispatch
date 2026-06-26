@@ -237,6 +237,14 @@ func (s *SQLiteStore) Project(evt Event) error {
 		return s.updateStoryStatus(evt.StoryID, "pr_submitted")
 	case EventStoryQAFailed:
 		return s.updateStoryStatus(evt.StoryID, "draft")
+	case EventStorySecurityPassed, EventStorySecurityFailed:
+		// Informational: the security gate's pass/fail is recorded in the event
+		// log; pausing on failure is handled by the pipeline (REQ_PAUSED).
+		return nil
+	case EventSecurityScanCompleted, EventSecurityRuleLearned:
+		// Informational: standalone scan results + knowledge-base growth are
+		// recorded in the event log; no projection state to mutate.
+		return nil
 	case EventStoryPRCreated:
 		return s.projectStoryPRCreated(evt.StoryID, payload)
 	case EventStoryMerged:
