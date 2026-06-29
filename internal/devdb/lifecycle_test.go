@@ -159,3 +159,92 @@ func TestLifecycle_Release_FailedWithoutKeepDB_Deletes(t *testing.T) {
 		t.Errorf("expected one delete call, got %v", rp.deleted)
 	}
 }
+
+// fakeProjector records events the lifecycle drives into the read model.
+type fakeProjector struct {
+	projected []state.Event
+}
+
+func (f *fakeProjector) Project(evt state.Event) error {
+	f.projected = append(f.projected, evt)
+	return nil
+}
+
+func TestLifecycle_Provision_ProjectsCreatedEvent(t *testing.T) {
+	es := &fakeEventStore{}
+	pr := &fakeProjector{}
+	lc := devdb.NewLifecycle(null.New(), es, devdb.Config{Provider: "null"}).WithProjector(pr)
+
+	if _, err := lc.Provision(context.Background(), "story-1", "myproj", t.TempDir()); err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	if len(pr.projected) != 1 || pr.projected[0].Type != state.EventStoryDBCreated {
+		t.Fatalf("STORY_DB_CREATED must be projected, got %+v", pr.projected)
+	}
+	if pr.projected[0].StoryID != "story-1" {
+		t.Errorf("projected created story_id = %q, want story-1", pr.projected[0].StoryID)
+	}
+}
+
+// Release must recover the story ID from the DB name and project the deletion;
+// projectStoryDBDeleted keys its UPDATE on story_id, so an empty value would
+// silently match zero rows (regression guard for the missing-StoryID bug).
+func TestLifecycle_Release_ProjectsDeletedEventWithStoryID(t *testing.T) {
+	es := &fakeEventStore{}
+	pr := &fakeProjector{}
+	lc := devdb.NewLifecycle(null.New(), es, devdb.Config{Provider: "null"}).WithProjector(pr)
+
+	db := devdb.DB{ID: "null-nxd-myproj-story-1", Name: "nxd-myproj-story-1"}
+	if err := lc.Release(context.Background(), db, devdb.OutcomeSuccess); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	if len(pr.projected) != 1 || pr.projected[0].Type != state.EventStoryDBDeleted {
+		t.Fatalf("STORY_DB_DELETED must be projected, got %+v", pr.projected)
+	}
+	if pr.projected[0].StoryID != "story-1" {
+		t.Errorf("deleted event story_id = %q, want story-1 (recovered from db name)", pr.projected[0].StoryID)
+	}
+}
+
+// End-to-end: provisioning then releasing must create and then transition a
+// story_databases row in a real projection store. Before the wiring fix the
+// table stayed empty in production.
+func TestLifecycle_ProjectsRoundTripIntoSQLiteStore(t *testing.T) {
+	es := &fakeEventStore{}
+	store, err := state.NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	lc := devdb.NewLifecycle(null.New(), es, devdb.Config{Provider: "null"}).WithProjector(store)
+
+	db, err := lc.Provision(context.Background(), "story-1", "myproj", t.TempDir())
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	rows, err := store.ListStoryDatabases(state.StoryDBFilter{})
+	if err != nil {
+		t.Fatalf("ListStoryDatabases: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected a story_databases row after Provision, got %d", len(rows))
+	}
+	if rows[0].Status != "created" {
+		t.Errorf("status after provision = %q, want created", rows[0].Status)
+	}
+
+	if err := lc.Release(context.Background(), db, devdb.OutcomeSuccess); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	rows, err = store.ListStoryDatabases(state.StoryDBFilter{})
+	if err != nil {
+		t.Fatalf("ListStoryDatabases after release: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row after Release, got %d", len(rows))
+	}
+	if rows[0].Status != "deleted" {
+		t.Errorf("status after release = %q, want deleted (StoryID-keyed UPDATE must match)", rows[0].Status)
+	}
+}

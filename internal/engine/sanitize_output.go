@@ -13,10 +13,8 @@ import (
 	"time"
 )
 
-// VXD Phase 1.1, 1.2, 1.4 ports.
-//
-// captureFileTree, hallucinationLinePatterns, scrubFile, validateBuild are
-// adapted from the VXD sibling at ~/Sites/misc/vortex-dispatch/. The patterns
+// captureFileTree, hallucinationLinePatterns, scrubFile, validateBuild guard
+// against LLM output artifacts leaking into committed source. The patterns
 // list was tuned over ~2 months of production use against Claude / Sonnet
 // outputs; we keep them verbatim because small-model (Gemma) preambles look
 // nearly identical.
@@ -233,10 +231,10 @@ func validateNoConflictMarkers(worktreePath string) []string {
 // observed (output truncated to 4 KB). Returns nil + log message if no
 // known project type is detected.
 //
-// VXD Phase 1.2: this is a non-blocking signal. Callers log the failure
-// rather than aborting the pipeline, because the reviewer / QA stage will
-// still flag the broken build and a hint is more useful than a blocked
-// merge for stories that intentionally split refactor work.
+// This is a non-blocking signal. Callers log the failure rather than aborting
+// the pipeline, because the reviewer / QA stage will still flag the broken
+// build and a hint is more useful than a blocked merge for stories that
+// intentionally split refactor work.
 func validateBuild(ctx context.Context, worktreePath string) error {
 	type check struct {
 		marker string

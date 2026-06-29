@@ -151,7 +151,3 @@ Patterns and ideas borrowed from [Gastown](https://github.com/steveyegge/gastown
 ## License
 
 [Apache License 2.0](LICENSE)
-
----
-
-_Made with ❤️ by [Vortex Dispatch](https://github.com/tzone85/vortex-dispatch) (NXD is the offline-first sibling). Remove this line freely._

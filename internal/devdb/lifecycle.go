@@ -27,13 +27,22 @@ type EventAppender interface {
 	Append(state.Event) error
 }
 
+// EventProjector projects an emitted event into the read model. The Lifecycle
+// emits STORY_DB_* events directly (callers never see them), so it must drive
+// the projection itself — otherwise the story_databases table stays empty in
+// production even though the projection switch handles those event types.
+type EventProjector interface {
+	Project(state.Event) error
+}
+
 // Lifecycle orchestrates a Provider + event emission + worktree file writes.
 // Engine code uses Lifecycle, not Provider directly.
 type Lifecycle struct {
-	provider Provider
-	events   EventAppender
-	cfg      Config
-	clock    func() time.Time
+	provider  Provider
+	events    EventAppender
+	projector EventProjector
+	cfg       Config
+	clock     func() time.Time
 }
 
 // NewLifecycle wires a Lifecycle with the supplied Provider, event appender,
@@ -44,6 +53,25 @@ func NewLifecycle(p Provider, ea EventAppender, cfg Config) *Lifecycle {
 		events:   ea,
 		cfg:      cfg,
 		clock:    func() time.Time { return time.Now().UTC() },
+	}
+}
+
+// WithProjector attaches a projector so emitted STORY_DB_* events also update
+// the read model. Returns the receiver for chaining. When nil (the default),
+// events are appended only.
+func (l *Lifecycle) WithProjector(p EventProjector) *Lifecycle {
+	l.projector = p
+	return l
+}
+
+// emit appends an event and, when a projector is wired, projects it so the
+// read model reflects the DB lifecycle. Append failures are swallowed (events
+// are best-effort telemetry, matching the prior behaviour); a projection
+// failure is non-fatal too — the append already durably recorded the event.
+func (l *Lifecycle) emit(evt state.Event) {
+	_ = l.events.Append(evt)
+	if l.projector != nil {
+		_ = l.projector.Project(evt)
 	}
 }
 
@@ -90,12 +118,17 @@ func (l *Lifecycle) Release(ctx context.Context, db DB, outcome StoryOutcome) er
 		status = "retained"
 	}
 
+	// The DB name encodes the story ID (FormatDBName). Recover it so the
+	// emitted events carry StoryID — projectStoryDBDeleted/Failed key their
+	// UPDATE on story_id, so an empty value would silently match zero rows.
+	storyID := ParseStoryID(PrefixNXD, db.Name)
+
 	if !keep {
 		if err := l.provider.Delete(ctx, db.ID); err != nil {
 			// Emit a failed-release event so GC can pick up later. We do not
 			// return the error after the event is emitted — callers don't
 			// need to block pipeline progress on release failures.
-			l.emitFailed("", db.Name, fmt.Sprintf("release: %v", err))
+			l.emitFailed(storyID, db.Name, fmt.Sprintf("release: %v", err))
 			return fmt.Errorf("devdb release: %w", err)
 		}
 	}
@@ -111,8 +144,9 @@ func (l *Lifecycle) Release(ctx context.Context, db DB, outcome StoryOutcome) er
 		"status":           status,
 	}
 	data, _ := json.Marshal(payload)
-	_ = l.events.Append(state.Event{
+	l.emit(state.Event{
 		Type:      state.EventStoryDBDeleted,
+		StoryID:   storyID,
 		Timestamp: l.clock(),
 		Payload:   data,
 	})
@@ -129,7 +163,7 @@ func (l *Lifecycle) emitCreated(storyID string, db DB) {
 		"conn_string_hash": "sha256:" + hex.EncodeToString(h[:]),
 	}
 	data, _ := json.Marshal(payload)
-	_ = l.events.Append(state.Event{
+	l.emit(state.Event{
 		Type:      state.EventStoryDBCreated,
 		StoryID:   storyID,
 		Timestamp: l.clock(),
@@ -145,7 +179,7 @@ func (l *Lifecycle) emitFailed(storyID, name, errMsg string) {
 		"error":    errMsg,
 	}
 	data, _ := json.Marshal(payload)
-	_ = l.events.Append(state.Event{
+	l.emit(state.Event{
 		Type:      state.EventStoryDBFailed,
 		StoryID:   storyID,
 		Timestamp: l.clock(),

@@ -61,7 +61,7 @@ func NewReviewer(client llm.Client, provider, model string, maxTokens int, es st
 // additional LLM call. A separate text-only LLM call is made only when
 // the provider does not support tools.
 //
-// VXD Phase 1.4 (M10): the variadic `extra` parameter accepts up to two
+// The variadic `extra` parameter accepts up to two
 // optional strings — extra[0] is the blast-radius context (existing) and
 // extra[1] is the worktree file tree (`git ls-files` output) so the
 // reviewer doesn't hallucinate "missing file X" when X is in the repo
@@ -77,7 +77,7 @@ func (r *Reviewer) Review(ctx context.Context, storyID, title, acceptanceCriteri
 		blastRadiusCtx = "\n" + extra[0] + "\n"
 	}
 
-	// VXD Phase 1.4: optional worktree file tree.
+	// Optional worktree file tree.
 	fileTreeCtx := ""
 	if len(extra) > 1 && extra[1] != "" {
 		fileTreeCtx = "\n\nWorktree files (git ls-files):\n" + extra[1] + "\n"

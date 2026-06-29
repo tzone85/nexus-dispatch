@@ -73,7 +73,7 @@ func TestNewDevDBLifecycle_NullDisabled(t *testing.T) {
 	cfg := config.Config{}
 	cfg.DevDB.Provider = "null"
 
-	lc := newDevDBLifecycle(cfg, nil)
+	lc := newDevDBLifecycle(cfg, nil, nil)
 	if lc != nil {
 		t.Error("expected nil lifecycle for null provider")
 	}
@@ -83,7 +83,7 @@ func TestNewDevDBLifecycle_EmptyDisabled(t *testing.T) {
 	cfg := config.Config{}
 	cfg.DevDB.Provider = ""
 
-	lc := newDevDBLifecycle(cfg, nil)
+	lc := newDevDBLifecycle(cfg, nil, nil)
 	if lc != nil {
 		t.Error("expected nil lifecycle when devdb section absent")
 	}
@@ -101,7 +101,7 @@ func TestNewDevDBLifecycle_DockerReturnsNonNil(t *testing.T) {
 	cfg.DevDB.Provider = "docker"
 	cfg.DevDB.Docker.Image = "postgres:16"
 
-	lc := newDevDBLifecycle(cfg, es)
+	lc := newDevDBLifecycle(cfg, es, nil)
 	if lc == nil {
 		t.Fatal("expected non-nil lifecycle for docker provider")
 	}
@@ -111,7 +111,7 @@ func TestNewDevDBLifecycle_UnsupportedReturnsNil(t *testing.T) {
 	cfg := config.Config{}
 	cfg.DevDB.Provider = "ghost"
 
-	lc := newDevDBLifecycle(cfg, nil)
+	lc := newDevDBLifecycle(cfg, nil, nil)
 	if lc != nil {
 		t.Error("expected nil lifecycle on unsupported provider (graceful degrade)")
 	}
