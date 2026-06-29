@@ -68,7 +68,7 @@ func TestParseStoryID_Roundtrip(t *testing.T) {
 }
 
 func TestParseStoryID_WrongPrefix(t *testing.T) {
-	got := devdb.ParseStoryID("vxd", "nxd-myproj-story-1")
+	got := devdb.ParseStoryID("abc", "nxd-myproj-story-1")
 	if got != "" {
 		t.Errorf("ParseStoryID with wrong prefix = %q, want empty", got)
 	}

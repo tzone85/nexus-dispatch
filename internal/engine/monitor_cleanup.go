@@ -21,7 +21,11 @@ func danglingBranchesToClean(stories []state.Story, baseBranch string) []string 
 		}
 		branch := s.Branch
 		if branch == "" {
-			branch = "vxd/" + s.ID
+			// Mirror the dispatcher's canonical branch naming
+			// (see Dispatcher.DispatchWave: "nxd/<storyID>"). Using any other
+			// prefix here points cleanup at a branch that never existed, so the
+			// real dangling branch is silently left behind.
+			branch = "nxd/" + s.ID
 		}
 		if branch == "" || branch == baseBranch || seen[branch] {
 			continue

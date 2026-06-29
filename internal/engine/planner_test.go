@@ -82,6 +82,17 @@ func TestPlanner_Plan(t *testing.T) {
 		t.Fatalf("expected projected story title 'Add user model', got %s", story.Title)
 	}
 
+	// REQ_PLANNED must be projected, not just appended: the requirement row
+	// has to transition to "planned" on the default plan path (otherwise
+	// `nxd pause` and the status buckets read a stale "submitted").
+	req, err := projStore.GetRequirement("r-001")
+	if err != nil {
+		t.Fatalf("get requirement: %v", err)
+	}
+	if req.Status != "planned" {
+		t.Fatalf("expected requirement status 'planned' after Plan, got %q", req.Status)
+	}
+
 	// Verify LLM was called exactly once
 	if client.CallCount() != 1 {
 		t.Fatalf("expected 1 LLM call, got %d", client.CallCount())

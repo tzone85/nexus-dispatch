@@ -111,7 +111,7 @@ Type "echo ''"
 Enter
 Type "echo 'NXD: Offline-first AI agent orchestration powered by Ollama.'"
 Enter
-Type "echo 'Same pipeline as VXD, no cloud APIs needed.'"
+Type "echo 'Full multi-agent pipeline, no cloud APIs needed.'"
 Enter
 Type "echo ''"
 Enter

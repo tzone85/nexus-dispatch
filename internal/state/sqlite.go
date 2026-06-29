@@ -215,6 +215,8 @@ func (s *SQLiteStore) Project(evt Event) error {
 
 	case EventStoryCreated:
 		return s.projectStoryCreated(payload)
+	case EventAgentSpawned:
+		return s.projectAgentSpawned(evt, payload)
 	case EventStoryEstimated:
 		return s.updateStoryStatus(evt.StoryID, "estimated")
 	case EventStoryAssigned:
@@ -745,8 +747,33 @@ func (s *SQLiteStore) BackfillAcceptanceCriteria(events []Event) {
 	}
 }
 
+// projectAgentSpawned records a dispatched agent in the agents table from an
+// AGENT_SPAWNED event. Without this the table stays empty in production and
+// every consumer of ListAgents (`nxd agents`, the dashboard agents panel, and
+// crash recovery's session→story map) sees nothing. Idempotent so projection
+// replay is safe.
+func (s *SQLiteStore) projectAgentSpawned(evt Event, payload map[string]any) error {
+	role := payloadStr(payload, "role")
+	sessionName := payloadStr(payload, "session_name")
+	_, err := s.db.Exec(
+		`INSERT INTO agents (id, type, status, current_story_id, session_name)
+		 VALUES (?, ?, 'idle', ?, ?)
+		 ON CONFLICT(id) DO UPDATE SET
+		     type = excluded.type,
+		     current_story_id = excluded.current_story_id,
+		     session_name = excluded.session_name,
+		     updated_at = CURRENT_TIMESTAMP`,
+		evt.AgentID, role, evt.StoryID, sessionName,
+	)
+	if err != nil {
+		return fmt.Errorf("project agent spawned: %w", err)
+	}
+	return nil
+}
+
 // InsertAgent inserts an agent record directly into the agents table.
-// This is used by test helpers since AGENT_SPAWNED events are not projected.
+// Convenience for tests and direct seeding; live runs populate the table via
+// the AGENT_SPAWNED projection (projectAgentSpawned).
 func (s *SQLiteStore) InsertAgent(id, agentType, model, runtime, sessionName string) error {
 	_, err := s.db.Exec(
 		`INSERT OR IGNORE INTO agents (id, type, model, runtime, status, session_name) VALUES (?, ?, ?, ?, 'idle', ?)`,

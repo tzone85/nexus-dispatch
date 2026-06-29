@@ -56,8 +56,8 @@ func TestWriteCheckpoint_MultipleAgents(t *testing.T) {
 		Phase:      PhaseMonitoring,
 		WaveNumber: 3,
 		ActiveAgents: []CheckpointAgent{
-			{StoryID: "s-a", SessionName: "vxd-s-a", WorktreePath: "/tmp/a", RuntimeName: "claude", Branch: "feat/a"},
-			{StoryID: "s-b", SessionName: "vxd-s-b", WorktreePath: "/tmp/b", RuntimeName: "gemini", Branch: "feat/b"},
+			{StoryID: "s-a", SessionName: "sess-s-a", WorktreePath: "/tmp/a", RuntimeName: "claude", Branch: "feat/a"},
+			{StoryID: "s-b", SessionName: "sess-s-b", WorktreePath: "/tmp/b", RuntimeName: "gemini", Branch: "feat/b"},
 		},
 		Timestamp: time.Now(),
 		PID:       42,

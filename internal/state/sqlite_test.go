@@ -328,6 +328,41 @@ func TestSQLiteStore_ListRequirements(t *testing.T) {
 	}
 }
 
+func TestSQLiteStore_ProjectAgentSpawned(t *testing.T) {
+	db, _ := state.NewSQLiteStore(":memory:")
+	defer db.Close()
+
+	evt := state.NewEvent(state.EventAgentSpawned, "dev-req1-1", "story-1", map[string]any{
+		"role":         "dev",
+		"session_name": "nxd-req1-dev-1",
+	})
+	if err := db.Project(evt); err != nil {
+		t.Fatalf("Project(AGENT_SPAWNED): %v", err)
+	}
+
+	agents, err := db.ListAgents(state.AgentFilter{})
+	if err != nil {
+		t.Fatalf("ListAgents: %v", err)
+	}
+	if len(agents) != 1 {
+		t.Fatalf("AGENT_SPAWNED must populate the agents table; got %d agents", len(agents))
+	}
+	a := agents[0]
+	if a.ID != "dev-req1-1" || a.Type != "dev" ||
+		a.SessionName != "nxd-req1-dev-1" || a.CurrentStoryID != "story-1" {
+		t.Errorf("projected agent = %+v; want id/type/session/current_story populated", a)
+	}
+
+	// Projection replay must be idempotent (no duplicate rows).
+	if err := db.Project(evt); err != nil {
+		t.Fatalf("re-Project(AGENT_SPAWNED): %v", err)
+	}
+	again, _ := db.ListAgents(state.AgentFilter{})
+	if len(again) != 1 {
+		t.Fatalf("re-projecting AGENT_SPAWNED duplicated the agent: got %d", len(again))
+	}
+}
+
 func TestSQLiteStore_InsertAgent(t *testing.T) {
 	db, _ := state.NewSQLiteStore(":memory:")
 	defer db.Close()

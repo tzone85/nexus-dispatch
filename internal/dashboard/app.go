@@ -232,7 +232,7 @@ func (m Model) renderStatusBar() string {
 	}
 
 	bar := left + middle + strings.Repeat(" ", gap) + right
-	attribution := lipgloss.NewStyle().Foreground(colorDimGray).Render(" Made with ♥ by Vortex Dispatch ")
+	attribution := lipgloss.NewStyle().Foreground(colorDimGray).Render(" Made with ♥ by Nexus Dispatch ")
 	return statusBarStyle.Width(m.width).Render(bar) + "\n" + attribution
 }
 

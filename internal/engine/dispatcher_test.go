@@ -109,6 +109,50 @@ func TestDispatcher_DispatchWave(t *testing.T) {
 	}
 }
 
+func TestDispatcher_ProjectsSpawnedAgents(t *testing.T) {
+	es, ps, cleanup := newTestStores(t)
+	defer cleanup()
+
+	evt := state.NewEvent(state.EventStoryCreated, "tech-lead", "s-001", map[string]any{
+		"id": "s-001", "req_id": "r-001", "title": "Task", "description": "desc", "complexity": 2,
+	})
+	ps.Project(evt)
+
+	dispatcher := engine.NewDispatcher(config.DefaultConfig(), es, ps)
+	dag := graph.New()
+	dag.AddNode("s-001")
+
+	assignments, err := dispatcher.DispatchWave(dag, map[string]bool{}, "r-001",
+		[]engine.PlannedStory{{ID: "s-001", Title: "Task", Complexity: 2}}, 1)
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if len(assignments) != 1 {
+		t.Fatalf("expected 1 assignment, got %d", len(assignments))
+	}
+
+	// The dispatcher must project AGENT_SPAWNED so downstream consumers
+	// (`nxd agents`, dashboard, crash recovery) can see the dispatched agent.
+	sqlStore := ps.(*state.SQLiteStore)
+	agents, err := sqlStore.ListAgents(state.AgentFilter{})
+	if err != nil {
+		t.Fatalf("ListAgents: %v", err)
+	}
+	if len(agents) != 1 {
+		t.Fatalf("expected dispatched agent in projection, got %d", len(agents))
+	}
+	a := agents[0]
+	if a.ID != assignments[0].AgentID {
+		t.Errorf("agent id = %q, want %q", a.ID, assignments[0].AgentID)
+	}
+	if a.SessionName != assignments[0].SessionName || a.SessionName == "" {
+		t.Errorf("agent session = %q, want %q", a.SessionName, assignments[0].SessionName)
+	}
+	if a.CurrentStoryID != "s-001" {
+		t.Errorf("agent current_story_id = %q, want s-001", a.CurrentStoryID)
+	}
+}
+
 func TestDispatcher_EmptyWave(t *testing.T) {
 	es, ps, cleanup := newTestStores(t)
 	defer cleanup()
@@ -287,7 +331,7 @@ func TestDispatchWave_RejectsUnsafeStoryID(t *testing.T) {
 		"story&evil",
 		"story|pipe",
 		"story\nnewline",
-		"story evil",  // space
+		"story evil", // space
 		"../traversal",
 	}
 

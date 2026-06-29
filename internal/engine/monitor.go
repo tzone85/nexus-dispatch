@@ -435,7 +435,7 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 	// trigger conflict-resolver "prompt too long" errors on Ollama models.
 	stripBinariesFromBranch(ag.WorktreePath, storyID)
 
-	// VXD Phase 1.1: scrub LLM reasoning preamble from committed source
+	// Scrub LLM reasoning preamble from committed source
 	// files. Agents (especially small models) sometimes prepend "Looking at
 	// the code, I'll add..." as the first lines of a file. We strip that
 	// before the reviewer sees the diff.
@@ -452,7 +452,7 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 		}
 	}
 
-	// VXD Phase 1.1: validate that no merge conflict markers leaked
+	// Validate that no merge conflict markers leaked
 	// through. If they did, reset to draft — running review/QA against a
 	// half-merged file produces useless output.
 	if conflicted := validateNoConflictMarkers(ag.WorktreePath); len(conflicted) > 0 {
@@ -461,7 +461,7 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 		return
 	}
 
-	// VXD Phase 1.2: non-blocking build validation. Failures are logged
+	// Non-blocking build validation. Failures are logged
 	// (and surface to the reviewer via the diff context) but do not abort
 	// the pipeline — the review/QA gates are the canonical merge blockers.
 	if !m.dryRun {
@@ -547,7 +547,7 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 			}
 		}
 
-		// VXD Phase 1.4: pass git ls-files so reviewer can verify file
+		// Pass git ls-files so reviewer can verify file
 		// existence claims instead of hallucinating about missing files.
 		fileTree := captureFileTree(ag.WorktreePath)
 		result, err := m.reviewer.Review(ctx, storyID, storyTitle, storyAC, diff, blastRadius, fileTree)
@@ -1709,7 +1709,7 @@ func autoCommit(worktreePath, storyID string) {
 // they are not already present, preventing CLAUDE.md, .nxd-prompts/,
 // .serena/, and other tool artifacts from being committed by agents.
 //
-// VXD Phase 1.3: extended pattern list to cover post-completion artifacts
+// Extended pattern list to cover post-completion artifacts
 // (WAVE_CONTEXT.md, .nxd-fix-gaps.md) and the NXD config itself, which
 // agents sometimes echo back into the worktree.
 func ensureGitignorePatterns(worktreePath string) {

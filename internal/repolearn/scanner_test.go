@@ -215,10 +215,10 @@ func TestParseMakefileTargets(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "Makefile", `.PHONY: build test lint clean install
 
-BINARY=vxd
+BINARY=myapp
 
 build:
-	go build -o $(BINARY) ./cmd/vxd/
+	go build -o $(BINARY) ./cmd/myapp/
 
 test:
 	go test ./... -race
@@ -474,7 +474,7 @@ func TestProfileSummary(t *testing.T) {
 		Structure: RepoStructure{
 			TotalFiles:  100,
 			SourceFiles: 50,
-			EntryPoints: []EntryPoint{{Path: "cmd/vxd/main.go", Kind: "cmd"}},
+			EntryPoints: []EntryPoint{{Path: "cmd/myapp/main.go", Kind: "cmd"}},
 		},
 		Conventions: Conventions{
 			ContributorCount: 3,
@@ -494,7 +494,7 @@ func TestProfileSummary(t *testing.T) {
 	mustContain(t, summary, "make lint")
 	mustContain(t, summary, "make test")
 	mustContain(t, summary, "github_actions")
-	mustContain(t, summary, "cmd/vxd/main.go")
+	mustContain(t, summary, "cmd/myapp/main.go")
 	mustContain(t, summary, "Contributors: 3")
 	mustContain(t, summary, "conventional")
 }

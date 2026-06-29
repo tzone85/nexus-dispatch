@@ -323,7 +323,7 @@ func runResume(cmd *cobra.Command, args []string) error {
 	controller := engine.NewController(s.Config.Controller, nil, s.Events, s.Proj)
 
 	// Wire devdb Lifecycle if configured. Nil when provider is "" or "null".
-	devdbLifecycle := newDevDBLifecycle(s.Config, s.Events)
+	devdbLifecycle := newDevDBLifecycle(s.Config, s.Events, s.Proj)
 	if devdbLifecycle != nil {
 		log.Printf("[startup] devdb enabled: provider=%s", s.Config.DevDB.Provider)
 	}
@@ -557,7 +557,7 @@ func newDevDBProvider(cfg config.Config) (devdb.Provider, error) {
 
 // newDevDBLifecycle builds a Lifecycle from config. Returns nil when devdb is
 // disabled (provider == "" or "null").
-func newDevDBLifecycle(cfg config.Config, events state.EventStore) *devdb.Lifecycle {
+func newDevDBLifecycle(cfg config.Config, events state.EventStore, projector devdb.EventProjector) *devdb.Lifecycle {
 	if cfg.DevDB.Provider == "" || cfg.DevDB.Provider == "null" {
 		return nil
 	}
@@ -571,7 +571,7 @@ func newDevDBLifecycle(cfg config.Config, events state.EventStore) *devdb.Lifecy
 		Template:     cfg.DevDB.Template,
 		KeepDBOnFail: cfg.DevDB.OnFailure.KeepDB,
 		RetainHours:  time.Duration(cfg.DevDB.OnFailure.RetainHours) * time.Hour,
-	})
+	}).WithProjector(projector)
 }
 
 // runDevDBOrphanRecovery finds and deletes DB containers left behind by

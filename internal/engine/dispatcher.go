@@ -119,6 +119,9 @@ func (d *Dispatcher) DispatchWave(dag *graph.DAG, completed map[string]bool, req
 		if err := d.eventStore.Append(spawnEvt); err != nil {
 			return nil, fmt.Errorf("emit agent spawned: %w", err)
 		}
+		if err := d.projStore.Project(spawnEvt); err != nil {
+			return nil, fmt.Errorf("project agent spawned: %w", err)
+		}
 
 		// Emit assignment event
 		assignEvt := state.NewEvent(state.EventStoryAssigned, agentID, story.ID, map[string]any{

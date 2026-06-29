@@ -427,10 +427,13 @@ architecture and conventions when planning stories.`, profileContext)
 			}
 		}
 
-		// Emit requirement planned
-		if err := p.eventStore.Append(state.NewEvent(state.EventReqPlanned, "tech-lead", "", map[string]any{
+		// Emit requirement planned. Must project (like REQ_SUBMITTED and
+		// STORY_CREATED above) or the requirement row stays at "submitted" in
+		// the projection on the default `nxd req` path — breaking `nxd pause`
+		// (rejects un-planned reqs) and the dashboard/status buckets.
+		if err := p.emitAndProject(state.EventReqPlanned, "tech-lead", "", map[string]any{
 			"id": reqID,
-		})); err != nil {
+		}); err != nil {
 			return PlanResult{}, fmt.Errorf("emit req planned: %w", err)
 		}
 	}
