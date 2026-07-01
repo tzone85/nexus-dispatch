@@ -9,4 +9,4 @@
 # machine unless the operator opts in. Pinning a known-good version keeps
 # the bridge args (search --results, wake-up, mine, ...) stable across
 # upstream upgrades — see internal/memory/bridge_args_test.go.
-mempalace==2.0.0
+mempalace==3.5.0
