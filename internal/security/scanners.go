@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"log"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -76,10 +77,15 @@ func applicableScanners(langs []string, available map[string]bool) []Scanner {
 }
 
 // RunScanners runs every applicable+available scanner against repoDir and
-// returns deduped findings, the scanners that ran, and the applicable scanners
-// that were skipped because they are not installed. One scanner failing (parse
-// or exec error) is swallowed so a single broken tool never aborts the scan.
-func RunScanners(ctx context.Context, repoDir string) (findings []Finding, ran, skipped []ScannerKind) {
+// returns deduped findings, the scanners that ran clean, the applicable
+// scanners that were skipped because they are not installed, and the scanners
+// that ran but errored (exec crash, timeout, parse failure). A scanner failing
+// never aborts the scan, but its failure is NOT silently swallowed: it is
+// logged and reported in `failed` rather than counted as a clean run —
+// otherwise a tool that failed to inspect the code is indistinguishable from
+// one that found nothing, and the security gate would report a build as
+// scanned-clean when coverage was actually lost.
+func RunScanners(ctx context.Context, repoDir string) (findings []Finding, ran, skipped, failed []ScannerKind) {
 	langs := DetectLanguages(repoDir)
 	available := map[string]bool{}
 	for _, s := range allScanners() {
@@ -95,14 +101,45 @@ func RunScanners(ctx context.Context, repoDir string) (findings []Finding, ran, 
 			skipped = append(skipped, s.Kind)
 			continue
 		}
-		ran = append(ran, s.Kind)
 		fs, err := s.Run(ctx, repoDir)
 		if err != nil {
-			continue // graceful: log handled by caller; keep going
+			// Graceful degradation: keep scanning with the other tools, but make
+			// the coverage loss visible — a failed scan must never masquerade as
+			// a clean one.
+			failed = append(failed, s.Kind)
+			log.Printf("[security] scanner %s failed (coverage lost for this tool): %v", s.Kind, err)
+			continue
 		}
+		ran = append(ran, s.Kind)
 		findings = append(findings, fs...)
 	}
-	return DedupeFindings(findings), ran, skipped
+	return DedupeFindings(findings), ran, skipped, failed
+}
+
+// KnownScanners returns the full scanner registry regardless of PATH
+// availability or repo languages, so other packages can report on missing
+// tools without duplicating the list.
+func KnownScanners() []Scanner {
+	return allScanners()
+}
+
+// InstallHint returns the install command for a scanner binary, or "" when no
+// hint is known. Hints target macOS/Homebrew and the Go toolchain.
+func InstallHint(bin string) string {
+	switch bin {
+	case "gosec":
+		return "go install github.com/securego/gosec/v2/cmd/gosec@latest"
+	case "govulncheck":
+		return "go install golang.org/x/vuln/cmd/govulncheck@latest"
+	case "gitleaks":
+		return "brew install gitleaks"
+	case "semgrep":
+		return "brew install semgrep"
+	case "npm":
+		return "brew install node"
+	default:
+		return ""
+	}
 }
 
 // DetectScanners returns the scanners applicable to repoDir and available on the
@@ -242,9 +279,9 @@ func parseSemgrep(out []byte, repoDir string) ([]Finding, error) {
 func parseNpmAudit(out []byte) ([]Finding, error) {
 	var doc struct {
 		Vulnerabilities map[string]struct {
-			Name     string `json:"name"`
-			Severity string `json:"severity"`
-			Range    string `json:"range"`
+			Name     string            `json:"name"`
+			Severity string            `json:"severity"`
+			Range    string            `json:"range"`
 			Via      []json.RawMessage `json:"via"`
 		} `json:"vulnerabilities"`
 	}

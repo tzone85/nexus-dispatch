@@ -24,26 +24,26 @@ type MemoryConfig struct {
 // Forward-compatibility rules:
 //   - Equal version       → load normally.
 //   - YAML missing version → log a one-time hint that operators should pin
-//                            it; load normally with current defaults.
+//     it; load normally with current defaults.
 //   - YAML major < current → log a migration suggestion + load with
-//                            shimmed defaults; the binary still works.
+//     shimmed defaults; the binary still works.
 //   - YAML major > current → fail loudly: the operator is running an
-//                            older NXD build than their config expects.
+//     older NXD build than their config expects.
 const CurrentSchemaVersion = "1.0"
 
 type Config struct {
 	// Version pins the nxd.yaml schema version. Should match
 	// CurrentSchemaVersion at build time. See the constant's docs above.
-	Version   string                   `yaml:"version"`
-	Workspace WorkspaceConfig          `yaml:"workspace"`
-	Models    ModelsConfig             `yaml:"models"`
-	Routing   RoutingConfig            `yaml:"routing"`
-	Monitor   MonitorConfig            `yaml:"monitor"`
-	Cleanup   CleanupConfig            `yaml:"cleanup"`
-	Merge     MergeConfig              `yaml:"merge"`
-	Planning  PlanningConfig           `yaml:"planning"`
-	Billing    BillingConfig            `yaml:"billing"`
-	Controller ControllerConfig         `yaml:"controller"`
+	Version       string                   `yaml:"version"`
+	Workspace     WorkspaceConfig          `yaml:"workspace"`
+	Models        ModelsConfig             `yaml:"models"`
+	Routing       RoutingConfig            `yaml:"routing"`
+	Monitor       MonitorConfig            `yaml:"monitor"`
+	Cleanup       CleanupConfig            `yaml:"cleanup"`
+	Merge         MergeConfig              `yaml:"merge"`
+	Planning      PlanningConfig           `yaml:"planning"`
+	Billing       BillingConfig            `yaml:"billing"`
+	Controller    ControllerConfig         `yaml:"controller"`
 	Memory        MemoryConfig             `yaml:"memory"`
 	Investigation InvestigationConfig      `yaml:"investigation"`
 	QA            QAConfig                 `yaml:"qa"`
@@ -79,8 +79,8 @@ type MethodologyConfig struct {
 // Provider == "" or "null" disables the feature; agents do not get DBs.
 // NXD is offline-first and does not support the "ghost" cloud provider.
 type DevDBConfig struct {
-	Provider  string             `yaml:"provider"`  // "docker" | "null"
-	Template  string             `yaml:"template"`  // source DB name for forks
+	Provider  string             `yaml:"provider"` // "docker" | "null"
+	Template  string             `yaml:"template"` // source DB name for forks
 	OnFailure DevDBFailurePolicy `yaml:"on_failure"`
 	Docker    DevDBDockerConfig  `yaml:"docker"`
 }
@@ -106,15 +106,27 @@ type PlanningConfig struct {
 	SequentialFilePatterns []string `yaml:"sequential_file_patterns"`
 	MaxStoryComplexity     int      `yaml:"max_story_complexity"`
 	Godmode                bool     `yaml:"godmode"`
+	// EmitIntegrationStory, when true (default), makes the planner append a
+	// final integration story that depends on every code story, wires all
+	// components into the real entry point, bridges interface mismatches, and
+	// adds an end-to-end smoke test — closing the compose gap where unit
+	// tests pass against mocks but the whole app never runs.
+	EmitIntegrationStory bool `yaml:"emit_integration_story"`
+	// EmitScribeStory, when true (default), makes the planner append a final
+	// documentation story that depends on every other story, owns README.md +
+	// docs/, and authors the full documentation set (training guide, SVG
+	// diagrams, ADRs, docs index). Greenfield-aware: edits to a pre-existing
+	// README stay inside the nxd:scribe markers.
+	EmitScribeStory bool `yaml:"emit_scribe_story"`
 }
 
 // WorkspaceConfig holds workspace-level settings.
 type WorkspaceConfig struct {
-	StateDir            string `yaml:"state_dir"`
-	Backend             string `yaml:"backend"`
+	StateDir string `yaml:"state_dir"`
+	Backend  string `yaml:"backend"`
 	// LogLevel selects slog level filter: debug | info | warn | error.
 	// Empty means info. Honored by internal/nlog.Setup.
-	LogLevel            string `yaml:"log_level"`
+	LogLevel string `yaml:"log_level"`
 	// LogFormat selects output: text (human, default) | json (machine /
 	// log aggregators).  Honored by internal/nlog.Setup.
 	LogFormat           string `yaml:"log_format,omitempty"`
@@ -219,7 +231,7 @@ type BillingConfig struct {
 
 // LLMCostConfig tracks LLM API costs.
 type LLMCostConfig struct {
-	Mode  string              `yaml:"mode"`
+	Mode  string               `yaml:"mode"`
 	Rates map[string]TokenRate `yaml:"rates,omitempty"`
 }
 
@@ -232,6 +244,14 @@ type TokenRate struct {
 // QAConfig holds quality-assurance settings including declarative success criteria.
 type QAConfig struct {
 	SuccessCriteria []SuccessCriterion `yaml:"success_criteria"`
+	// DisableCompletionGate turns off the requirement-completion verification
+	// gate (verify the composed mainline before REQ_COMPLETED). Default false
+	// = gate ON: a red mainline blocks completion instead of shipping silently.
+	DisableCompletionGate bool `yaml:"disable_completion_gate"`
+	// CompletionFixCycles is the number of auto-fix attempts against a red
+	// mainline before the requirement is blocked (REQ_BLOCKED). 0 means the
+	// default (2); a negative value forces a hard gate (verify once, no fixes).
+	CompletionFixCycles int `yaml:"completion_fix_cycles"`
 }
 
 // SecurityConfig controls the security agent: the per-story pre-merge security
@@ -300,17 +320,17 @@ type RuntimeDetection struct {
 
 // RuntimeConfig describes an external AI coding runtime.
 type RuntimeConfig struct {
-	Command          string              `yaml:"command"`
-	Args             []string            `yaml:"args"`
-	Models           []string            `yaml:"models"`
-	Detection        RuntimeDetection    `yaml:"detection"`
-	Native           bool                `yaml:"native,omitempty"`
-	MaxIterations    int                 `yaml:"max_iterations,omitempty"`
-	CommandAllowlist []string            `yaml:"command_allowlist,omitempty"`
-	Concurrency      int                 `yaml:"concurrency,omitempty"`
-	Runner           string              `yaml:"runner,omitempty"`
-	Docker           DockerRunnerConfig  `yaml:"docker,omitempty"`
-	SSH              SSHRunnerConfig     `yaml:"ssh,omitempty"`
+	Command          string             `yaml:"command"`
+	Args             []string           `yaml:"args"`
+	Models           []string           `yaml:"models"`
+	Detection        RuntimeDetection   `yaml:"detection"`
+	Native           bool               `yaml:"native,omitempty"`
+	MaxIterations    int                `yaml:"max_iterations,omitempty"`
+	CommandAllowlist []string           `yaml:"command_allowlist,omitempty"`
+	Concurrency      int                `yaml:"concurrency,omitempty"`
+	Runner           string             `yaml:"runner,omitempty"`
+	Docker           DockerRunnerConfig `yaml:"docker,omitempty"`
+	SSH              SSHRunnerConfig    `yaml:"ssh,omitempty"`
 }
 
 // DockerRunnerConfig holds settings for the Docker execution target.

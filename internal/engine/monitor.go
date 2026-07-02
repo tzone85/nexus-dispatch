@@ -79,6 +79,16 @@ type Monitor struct {
 	// finding meets the gate severity. Nil disables the per-story security gate.
 	securityGate *SecurityGate
 
+	// docClient and docModel are used by the documentation generator that
+	// creates/updates README.md + docs/ after all stories merge. Nil disables.
+	docClient llm.Client
+	docModel  string
+
+	// completionGate verifies the composed mainline (build + tests) before
+	// REQ_COMPLETED and runs a bounded auto-fix loop on a red build. Nil falls
+	// back to the legacy advisory verification (gaps logged, never blocking).
+	completionGate *CompletionGate
+
 	// dryRun causes the post-execution pipeline to simulate a successful
 	// agent diff instead of checking the real worktree.
 	dryRun bool
@@ -179,6 +189,20 @@ func (m *Monitor) SetAutoResume(d *Dispatcher, e *Executor) {
 // SetSecurityGate wires the per-story security agent (scanners + LLM threat-model
 // review). A finding at or above the configured gate severity pauses the
 // requirement for a human decision rather than escalating. Nil disables it.
+// SetDocGenerator enables automatic README/docs generation when all stories
+// in a requirement have merged.
+func (m *Monitor) SetDocGenerator(client llm.Client, model string) {
+	m.docClient = client
+	m.docModel = model
+}
+
+// SetCompletionGate wires the requirement-completion verification gate. When
+// set, REQ_COMPLETED is only emitted after the composed mainline verifies
+// green; a red mainline that survives the auto-fix budget emits REQ_BLOCKED.
+func (m *Monitor) SetCompletionGate(g *CompletionGate) {
+	m.completionGate = g
+}
+
 func (m *Monitor) SetSecurityGate(g *SecurityGate) {
 	m.securityGate = g
 }
@@ -1074,9 +1098,64 @@ func (m *Monitor) dispatchNextWave(ctx context.Context, rc *RunContext, repoDir 
 
 	if allDone {
 		log.Printf("[auto-resume] all %d stories complete for requirement %s", len(stories), rc.ReqID)
+
+		// Generate/update README + docs/ (SVG diagrams, training guide, ADRs,
+		// index) as the final step, before the tree is verified.
+		if m.docClient != nil {
+			storyTitles := make([]string, len(stories))
+			for i, s := range stories {
+				storyTitles[i] = "- " + s.Title
+			}
+			reqTitle := rc.ReqID
+			if req, reqErr := m.projStore.GetRequirement(rc.ReqID); reqErr == nil {
+				reqTitle = req.Title
+			}
+			generateDocumentation(ctx, repoDir, reqTitle, storyTitles, m.docClient, m.docModel)
+		}
+
+		// Pull merged changes into the local checkout FIRST so verification
+		// runs against the true composed mainline (all merged stories), not a
+		// stale checkout. Without this the gate would verify the wrong tree.
+		pullBaseAfterMerge(repoDir, m.config.Merge.BaseBranch)
+
 		// Leave the workspace neat: remove dangling branches (and their open
 		// PRs) from stories that never merged. Merged branches are already gone.
 		m.cleanupDanglingBranches(rc.ReqID, repoDir)
+
+		// Completion gate: verify the composed mainline (build + tests) and
+		// auto-fix a red build up to a bounded number of cycles. Only emit
+		// REQ_COMPLETED when verification is green; otherwise emit REQ_BLOCKED
+		// so a requirement is never reported complete on code that does not
+		// compile. Falls back to the legacy advisory path when no gate is wired.
+		if m.completionGate != nil {
+			if m.completionGate.Run(ctx, rc.ReqID, repoDir) {
+				emitEventOrLog(m.eventStore, m.projStore,
+					state.NewEvent(state.EventReqCompleted, "monitor", "", map[string]any{"id": rc.ReqID}))
+			} else {
+				log.Printf("[gate] %s: completion blocked — see .nxd-fix-gaps.md; run 'nxd resume %s --godmode' after addressing the gaps", rc.ReqID, rc.ReqID)
+				emitEventOrLog(m.eventStore, m.projStore,
+					state.NewEvent(state.EventReqBlocked, "monitor", "", map[string]any{"id": rc.ReqID}))
+			}
+			return nil
+		}
+
+		// Legacy advisory verification (no gate wired): check build/tests and
+		// write a fix-gaps file, but complete the requirement regardless.
+		verifyResult := RunVerificationLoop(ctx, repoDir, 1)
+		if ShouldRunFixCycle(verifyResult) {
+			log.Printf("[verify] cycle 1 found %d gaps — generating fix requirement", len(verifyResult.Gaps))
+			if fixReq := GapsToRequirement(verifyResult.Gaps, filepath.Base(repoDir)); fixReq != "" {
+				fixPath := filepath.Join(repoDir, ".nxd-fix-gaps.md")
+				if err := os.WriteFile(fixPath, []byte(fixReq), 0o600); err != nil {
+					log.Printf("[verify] failed to write fix requirement to %s: %v", fixPath, err)
+				} else {
+					log.Printf("[verify] fix requirement written to %s — run 'nxd req --file .nxd-fix-gaps.md --godmode' to auto-fix", fixPath)
+				}
+			}
+		} else {
+			log.Printf("[verify] cycle 1 clean — no critical gaps found")
+		}
+
 		// Mark requirement complete.
 		emitEventOrLog(m.eventStore, m.projStore,
 			state.NewEvent(state.EventReqCompleted, "monitor", "", map[string]any{"id": rc.ReqID}))

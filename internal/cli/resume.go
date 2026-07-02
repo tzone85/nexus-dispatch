@@ -494,6 +494,27 @@ func runResume(cmd *cobra.Command, args []string) error {
 		log.Printf("[resume] security gate enabled (block at %s+, auto-learn=%v)", gateSev, s.Config.Security.AutoLearn)
 	}
 
+	// Enable auto-documentation: when all stories merge, the monitor
+	// generates/updates README.md + docs/ (SVG diagrams, training guide,
+	// ADRs, index) with the implemented features.
+	if llmClient != nil {
+		monitor.SetDocGenerator(llmClient, s.Config.Models.Senior.Model)
+	}
+
+	// Requirement-completion verification gate: verify the composed mainline
+	// (build + tests) before REQ_COMPLETED, with a bounded auto-fix loop. A
+	// nil client degrades to a hard gate (verify once, block on red) — the
+	// dangerous failure mode (completing on a red build) stays impossible.
+	// Skipped in dry-run and when qa.disable_completion_gate is set.
+	if !dryRun && !s.Config.QA.DisableCompletionGate {
+		senior := s.Config.Models.Senior
+		monitor.SetCompletionGate(engine.NewCompletionGate(
+			llmClient, senior.Model, senior.MaxTokens,
+			completionFixCycles(s.Config.QA.CompletionFixCycles),
+			s.Config.Merge.BaseBranch, s.Events, s.Proj,
+		))
+	}
+
 	rc := &engine.RunContext{
 		ReqID:          reqID,
 		PlannedStories: plannedStories,
@@ -534,6 +555,21 @@ func runResume(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+// completionFixCycles maps the configured qa.completion_fix_cycles to the
+// gate's auto-fix budget: 0 (unset) means the default of 2 cycles, a negative
+// value forces a hard gate (verify once, no auto-fix), anything else is used
+// verbatim.
+func completionFixCycles(configured int) int {
+	switch {
+	case configured == 0:
+		return 2
+	case configured < 0:
+		return 0
+	default:
+		return configured
+	}
 }
 
 // newDevDBProvider constructs a Provider from config, or nil for null/empty.

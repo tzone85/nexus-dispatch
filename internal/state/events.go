@@ -19,7 +19,11 @@ const (
 	EventReqPlanned   EventType = "REQ_PLANNED"
 	EventReqPaused    EventType = "REQ_PAUSED"
 	EventReqResumed   EventType = "REQ_RESUMED"
-	EventReqCompleted           EventType = "REQ_COMPLETED"
+	EventReqCompleted EventType = "REQ_COMPLETED"
+	// EventReqBlocked marks a requirement whose composed mainline stayed red
+	// after the completion gate exhausted its auto-fix budget. The requirement
+	// is NOT complete; resume with --godmode after addressing .nxd-fix-gaps.md.
+	EventReqBlocked             EventType = "REQ_BLOCKED"
 	EventReqClassified          EventType = "REQ_CLASSIFIED"
 	EventInvestigationCompleted EventType = "INVESTIGATION_COMPLETED"
 	EventReqPendingReview       EventType = "REQ_PENDING_REVIEW"
@@ -54,7 +58,7 @@ const (
 	EventStoryDBDeleted       EventType = "STORY_DB_DELETED"
 
 	// Estimate events.
-	EventReqEstimated         EventType = "REQ_ESTIMATED"
+	EventReqEstimated EventType = "REQ_ESTIMATED"
 
 	// Agent lifecycle events.
 	EventAgentSpawned    EventType = "AGENT_SPAWNED"
@@ -69,8 +73,8 @@ const (
 	EventSupervisorDriftDetected EventType = "SUPERVISOR_DRIFT_DETECTED"
 
 	// Controller events.
-	EventControllerAnalysis     EventType = "CONTROLLER_ANALYSIS"
-	EventControllerAction       EventType = "CONTROLLER_ACTION"
+	EventControllerAnalysis      EventType = "CONTROLLER_ANALYSIS"
+	EventControllerAction        EventType = "CONTROLLER_ACTION"
 	EventControllerStuckDetected EventType = "CONTROLLER_STUCK_DETECTED"
 
 	// Cleanup events.

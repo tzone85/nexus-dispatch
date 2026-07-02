@@ -268,6 +268,7 @@ func (e *Executor) spawn(ctx context.Context, repoDir string, a Assignment, stor
 		LintCommand:        lintCmd,
 		BuildCommand:       buildCmd,
 		TestCommand:        testCmd,
+		IsFrontend:         detectFrontend(story.Title, story.Description, story.OwnedFiles),
 	}
 
 	// Query MemPalace for prior work context.
@@ -321,6 +322,7 @@ func (e *Executor) spawn(ctx context.Context, repoDir string, a Assignment, stor
 			IsExistingCodebase: promptCtx.IsExistingCodebase,
 			IsBugFix:           promptCtx.IsBugFix,
 			IsInfrastructure:   promptCtx.IsInfrastructure,
+			IsFrontend:         promptCtx.IsFrontend,
 			IsRetry:            true,
 			RetryNumber:        len(attempts) + 1,
 			PriorAttempts:      priorAttempts,
@@ -520,6 +522,7 @@ func (e *Executor) spawnNative(ctx context.Context, repoDir string, a Assignment
 		RepoPath:           worktreePath,
 		Complexity:         story.Complexity,
 		ReviewFeedback:     e.latestReviewFeedback(a.StoryID),
+		IsFrontend:         detectFrontend(story.Title, story.Description, story.OwnedFiles),
 	}
 
 	if e.mempalace != nil && e.mempalace.IsAvailable() {

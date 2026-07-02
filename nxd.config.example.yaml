@@ -76,6 +76,8 @@ planning:
         - src/core/*
     max_story_complexity: 5
     godmode: false
+    emit_integration_story: true
+    emit_scribe_story: true
 billing:
     default_rate: 150
     currency: USD
@@ -146,6 +148,8 @@ qa:
           value: go vet ./...
         - kind: test_passes
           value: go test ./...
+    disable_completion_gate: false
+    completion_fix_cycles: 0
 security:
     gate_severity: critical
     auto_learn: true

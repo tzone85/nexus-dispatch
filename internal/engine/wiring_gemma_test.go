@@ -131,6 +131,8 @@ func TestWiring_PlannerToolCalling(t *testing.T) {
 	})
 
 	cfg := config.DefaultConfig()
+	cfg.Planning.EmitScribeStory = false
+	cfg.Planning.EmitIntegrationStory = false
 	planner := NewPlanner(client, cfg, es, ps)
 
 	result, err := planner.Plan(context.Background(), "r-100", "Build auth system", repoDir)

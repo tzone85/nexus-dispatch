@@ -232,13 +232,13 @@ func TestWiring_GreenfieldNoPlaybooks(t *testing.T) {
 
 	// Markers from each playbook that should NOT appear
 	playBookMarkers := []string{
-		"REPRODUCE",                       // BugHuntingMethodology
-		"NEVER rewrite",                   // LegacyCodeSurvival
+		"REPRODUCE",                        // BugHuntingMethodology
+		"NEVER rewrite",                    // LegacyCodeSurvival
 		"INFRASTRUCTURE DEBUGGING TOOLKIT", // InfrastructureDebugging
-		"Investigation Report",            // CodebaseArchaeology
-		"BEFORE PLANNING",                 // CodebaseArchaeology
-		"BUG HUNTING METHODOLOGY",         // BugHuntingMethodology
-		"LEGACY CODE SURVIVAL GUIDE",      // LegacyCodeSurvival
+		"Investigation Report",             // CodebaseArchaeology
+		"BEFORE PLANNING",                  // CodebaseArchaeology
+		"BUG HUNTING METHODOLOGY",          // BugHuntingMethodology
+		"LEGACY CODE SURVIVAL GUIDE",       // LegacyCodeSurvival
 	}
 
 	for _, role := range roles {
@@ -443,6 +443,8 @@ func TestWiring_PlannerProducesStories(t *testing.T) {
 
 	es, ps := newTestStores(t)
 	cfg := config.DefaultConfig()
+	cfg.Planning.EmitScribeStory = false
+	cfg.Planning.EmitIntegrationStory = false
 	planner := NewPlanner(client, cfg, es, ps)
 
 	result, err := planner.Plan(context.Background(), "req-100", "Build a REST API", dir)
@@ -778,6 +780,8 @@ func TestWiring_OverlappingFilesWarnsForParallel(t *testing.T) {
 
 	es, ps := newTestStores(t)
 	cfg := config.DefaultConfig()
+	cfg.Planning.EmitScribeStory = false
+	cfg.Planning.EmitIntegrationStory = false
 	planner := NewPlanner(client, cfg, es, ps)
 
 	// Should succeed (warning logged, not error)
