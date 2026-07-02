@@ -33,6 +33,7 @@ type TemplateContext struct {
 	IsExistingCodebase bool
 	IsBugFix           bool
 	IsInfrastructure   bool
+	IsFrontend         bool // true when the story builds/changes a user-facing web UI
 	IsRetry            bool // true if this is not the first attempt
 	RetryNumber        int  // which attempt this is (1-indexed)
 }
@@ -78,6 +79,7 @@ func RenderGoalWithAttempts(ctx TemplateContext) string {
 		IsExistingCodebase: ctx.IsExistingCodebase,
 		IsBugFix:           ctx.IsBugFix,
 		IsInfrastructure:   ctx.IsInfrastructure,
+		IsFrontend:         ctx.IsFrontend,
 	}
 
 	// Route to the appropriate role based on complexity.

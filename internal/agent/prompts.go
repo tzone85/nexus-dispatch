@@ -48,6 +48,7 @@ type PromptContext struct {
 	IsBugFix           bool
 	IsRefactor         bool
 	IsInfrastructure   bool
+	IsFrontend         bool // true when the story builds/changes a user-facing web UI
 	InvestigationReport string // formatted markdown, injected by planner
 	PriorWorkContext    string // MemPalace search results
 	WaveBrief           string // parallel stories in this wave
@@ -172,6 +173,9 @@ The previous implementation was rejected. Fix these issues:
 	}
 	if ctx.IsInfrastructure {
 		goal += "\n\nMANDATORY INFRASTRUCTURE WORKFLOW:\n1. Check services: docker ps -a, lsof for LISTEN\n2. Check logs: docker logs --tail 50, journalctl\n3. Check config: env vars, .env, docker-compose.yml\n4. Check resources: df -h, memory\n5. Fix and verify with health checks"
+	}
+	if ctx.IsFrontend {
+		goal += "\n" + FrontendDesignBrief
 	}
 
 	if ctx.PriorWorkContext != "" {
