@@ -40,6 +40,8 @@ func TestPlanner_Plan(t *testing.T) {
 	})
 
 	cfg := config.DefaultConfig()
+	cfg.Planning.EmitScribeStory = false
+	cfg.Planning.EmitIntegrationStory = false
 	planner := engine.NewPlanner(client, cfg, eventStore, projStore)
 
 	result, err := planner.Plan(context.Background(), "r-001", "Add user authentication", dir)
@@ -239,6 +241,8 @@ func TestPlan_ParsesOwnedFiles(t *testing.T) {
 
 	client := llm.NewReplayClient(llm.CompletionResponse{Content: response})
 	cfg := config.DefaultConfig()
+	cfg.Planning.EmitScribeStory = false
+	cfg.Planning.EmitIntegrationStory = false
 	planner := engine.NewPlanner(client, cfg, eventStore, projStore)
 
 	result, err := planner.Plan(context.Background(), "r-002", "Add API layer", dir)
@@ -324,6 +328,8 @@ func TestPlan_WarnsFileOverlapForParallel(t *testing.T) {
 
 	client := llm.NewReplayClient(llm.CompletionResponse{Content: response})
 	cfg := config.DefaultConfig()
+	cfg.Planning.EmitScribeStory = false
+	cfg.Planning.EmitIntegrationStory = false
 	planner := engine.NewPlanner(client, cfg, eventStore, projStore)
 
 	result, err := planner.Plan(context.Background(), "r-004", "Overlapping files", dir)

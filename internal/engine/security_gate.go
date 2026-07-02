@@ -18,7 +18,7 @@ const securityReviewTimeout = 3 * time.Minute
 
 // scanFunc runs the deterministic scanners against a repo. It is a seam so tests
 // can supply canned findings instead of invoking real tools.
-type scanFunc func(ctx context.Context, repoDir string) (findings []security.Finding, ran, skipped []security.ScannerKind)
+type scanFunc func(ctx context.Context, repoDir string) (findings []security.Finding, ran, skipped, failed []security.ScannerKind)
 
 // SecurityGate is nxd's security agent. It combines deterministic SAST/secret/
 // dependency scanners with an LLM threat-model review driven by a growable
@@ -81,7 +81,10 @@ func (g *SecurityGate) ScanRepo(ctx context.Context, repoDir string) (security.R
 		return security.Report{}, fmt.Errorf("load knowledge base: %w", err)
 	}
 
-	findings, ran, skipped := g.scan(ctx, repoDir)
+	findings, ran, skipped, failed := g.scan(ctx, repoDir)
+	if len(failed) > 0 {
+		log.Printf("[security-gate] scan coverage lost: %d scanner(s) failed: %v", len(failed), failed)
+	}
 
 	if g.client != nil {
 		findings = append(findings, g.llmReview(ctx, repoDir, langs, kb)...)
@@ -93,6 +96,7 @@ func (g *SecurityGate) ScanRepo(ctx context.Context, repoDir string) (security.R
 		Languages:   langs,
 		ScannersRun: ran,
 		Skipped:     skipped,
+		Failed:      failed,
 		Findings:    findings,
 		KBVersion:   kb.Version,
 	}
@@ -119,13 +123,19 @@ func (g *SecurityGate) ReviewStory(ctx context.Context, storyID, title, diff, re
 		return false, "", fmt.Errorf("load knowledge base: %w", kbErr)
 	}
 
-	findings, _, _ := g.scan(ctx, repoDir)
+	findings, _, _, failed := g.scan(ctx, repoDir)
+	if len(failed) > 0 {
+		// Coverage was lost for this story's gate. Per policy a scanner failure
+		// never blocks the merge, but it must be visible — silently passing the
+		// story would report it as secure when part of the scan never ran.
+		log.Printf("[security-gate] story %s: scan coverage lost, %d scanner(s) failed: %v", storyID, len(failed), failed)
+	}
 	if g.client != nil {
 		findings = append(findings, g.llmReviewDiff(ctx, title, diff, langs, kb)...)
 	}
 	findings = security.DedupeFindings(findings)
 
-	report := security.Report{RepoDir: repoDir, Languages: langs, Findings: findings, KBVersion: kb.Version}
+	report := security.Report{RepoDir: repoDir, Languages: langs, Failed: failed, Findings: findings, KBVersion: kb.Version}
 	blocked := report.HasAtLeast(g.gateSeverity)
 
 	if g.autoLearn {

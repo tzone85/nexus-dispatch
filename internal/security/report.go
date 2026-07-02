@@ -14,6 +14,7 @@ type Report struct {
 	Languages   []string      `json:"languages"`
 	ScannersRun []ScannerKind `json:"scanners_run"`
 	Skipped     []ScannerKind `json:"skipped"`
+	Failed      []ScannerKind `json:"failed,omitempty"`
 	Findings    []Finding     `json:"findings"`
 	KBVersion   int           `json:"kb_version"`
 }
@@ -70,7 +71,12 @@ func (r Report) FormatMarkdown() string {
 	for i, s := range r.Skipped {
 		skip[i] = string(s)
 	}
-	fmt.Fprintf(&b, "Skipped (not installed): %s\n\n", joinOrNone(skip))
+	fmt.Fprintf(&b, "Skipped (not installed): %s\n", joinOrNone(skip))
+	fail := make([]string, len(r.Failed))
+	for i, s := range r.Failed {
+		fail[i] = string(s)
+	}
+	fmt.Fprintf(&b, "Failed (ran but errored — coverage lost): %s\n\n", joinOrNone(fail))
 
 	// Findings, most severe first, then by file for stable output.
 	sorted := make([]Finding, len(r.Findings))

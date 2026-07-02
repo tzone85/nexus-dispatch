@@ -56,6 +56,15 @@ make mempalace-check              # smoke the MemPalace bridge end-to-end
 - Native Windows: all read-only commands work (`status`, `dashboard`, `doctor`, `config`, `events`, `metrics`, `report`, `projects`). Full agent pipeline (`req`/`resume`) needs tmux → run inside WSL2.
 - Platform-specific code lives in `_unix.go` / `_windows.go` build-tagged pairs: `internal/cli/req_*.go` (daemon detach), `internal/engine/lockfile_*.go` (advisory lock + process liveness), `internal/devdb/docker/host_*.go` (docker default host). Shell command exec goes through `internal/shellexec` (`sh -c` on Unix, `cmd.exe /C` on Windows, override with `NXD_SHELL`).
 
+## Current State (2026-07-02) — factory completeness: docs subsystem, completion gate, frontend skill
+
+- **Requirement-completion gate** (`engine/completion_gate.go` + `engine/verification_loop.go`): REQ_COMPLETED is only emitted after the composed mainline verifies green (deps install, build, tests, hallucination/conflict-marker scan). A red mainline gets up to `qa.completion_fix_cycles` (default 2) auto-fix agent cycles; still red → **REQ_BLOCKED** (requirement status `blocked`), gaps written to `.nxd-fix-gaps.md`, resume with `--godmode` after addressing. Nil LLM client ⇒ hard gate (verify once, block on red — completing on a red build is impossible regardless of wiring). Config: `qa.disable_completion_gate` (default false = ON), `qa.completion_fix_cycles` (0→2, negative→hard gate). Wired in `resume.go`; the local checkout is pulled to the composed mainline (`pullBaseAfterMerge`, `engine/monitor_pull.go`) before the gate verifies.
+- **Docs subsystem** (`engine/doc_generator.go` + `svg_docs.go` + `factory_docs.go` + `factory_docs_adr.go`): after all stories merge, generates/updates README.md and backstops the full documentation set — `docs/architecture.svg` + `docs/sequence.svg` as REAL rendered SVG (validated, Mermaid rejected, up to 3 retry attempts feeding the validation error back), `docs/training.md` (only if the agent didn't supply one), `docs/adr/` Architecture Decision Records (JSON-validated, one file per decision + index), and a fully deterministic `docs/README.md` index. Best-effort — a model failure logs and skips, never blocking completion. Wired via `Monitor.SetDocGenerator` in resume.go.
+- **Planner factory stories** (default ON, `planning.emit_integration_story` / `planning.emit_scribe_story`): every persisted plan appends (a) an integration story that wires all components into the real entry point, bridges interface mismatches with adapters, and adds a boot-the-app smoke test — closing the compose gap where unit tests pass against mocks but the whole never runs; (b) a scribe story owning README.md + docs/ that authors the documentation set up front (greenfield-aware: existing READMEs only edited inside `<!-- nxd:scribe:start/end -->` markers). Ephemeral estimates skip both. Tests asserting exact story counts must set both flags false.
+- **Frontend design skill** (`agent/frontend.go` + `engine/detect.go`): UI-facing stories (owned-file extensions + whole-word keyword regex) get `agent.FrontendDesignBrief` injected into their goal prompt — token-first two-pass design planning, one signature element, named banned AI-default looks, WCAG accessibility floor, copy-as-design-material. Threaded through the CLI-runtime, native-runtime, AND retry prompt paths (`TestExecutor_WiresFrontendDetection`). The planner requires the first UI story to establish a design-token foundation.
+- **Security agent deltas**: `RunScanners` now returns a fourth `failed` list — a scanner that ran but errored (crash/timeout/parse) is logged and reported as coverage LOST, never counted as a clean run; `Report.Failed` renders in the markdown summary. `KnownScanners()` + `InstallHint()` expose the registry. Coverage: internal/security at 98.3% via a fake-scanner harness (shell scripts on a controlled PATH emitting canned tool output) driving RunScanners end-to-end.
+- **CI supply-chain**: all GitHub Actions pinned to full commit SHAs with version comments.
+
 ## Current State (2026-06-26) — security agent (ported from VXD)
 
 Self-upskilling security agent, mirrored from vortex-dispatch (offline-friendly: scanners are local binaries, LLM layer uses the configured Ollama/cloud client).
@@ -250,6 +259,9 @@ Architectural ceilings (cannot reach 95% without major refactor):
 - `test/dryrun_test.go` — 2 tests: full planner pipeline with DryRunClient, dispatch wave ordering
 
 ## Event Types
+
+Completion-gate event (added 2026-07-02):
+- `REQ_BLOCKED` — the completion gate could not get the composed mainline green after its auto-fix budget; requirement status → `blocked` instead of `completed` (resume with `--godmode` after addressing `.nxd-fix-gaps.md`)
 
 Security agent events (added 2026-06-26):
 - `STORY_SECURITY_PASSED` / `STORY_SECURITY_FAILED` — per-story security gate result; a FAILED gate pauses the requirement (human decision) rather than escalating

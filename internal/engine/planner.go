@@ -393,6 +393,33 @@ architecture and conventions when planning stories.`, profileContext)
 		}
 	}
 
+	// Integration story: a final code story that depends on every other code
+	// story, wires all independently-built components into the application
+	// entry point, reconciles interface mismatches with adapters, and writes a
+	// smoke test that BOOTS the app and asserts the documented surface actually
+	// responds. This closes the systemic gap where per-story unit tests pass
+	// (against mocks) but the whole never composes — unwired handlers, no auth,
+	// incompatible interfaces.
+	if persist && p.config.Planning.EmitIntegrationStory && len(stories) > 0 {
+		deps := make([]string, 0, len(stories))
+		for _, s := range stories {
+			deps = append(deps, s.ID)
+		}
+		stories = append(stories, buildIntegrationStory(prefix, requirement, deps))
+	}
+
+	// README Scribe: append a final story that documents what was built. It
+	// depends on every other story so it runs last (after all code is merged),
+	// owns README.md + docs/, and is greenfield-aware. Skipped for ephemeral
+	// estimates and when planning.emit_scribe_story is disabled.
+	if persist && p.config.Planning.EmitScribeStory && len(stories) > 0 {
+		deps := make([]string, 0, len(stories))
+		for _, s := range stories {
+			deps = append(deps, s.ID)
+		}
+		stories = append(stories, buildScribeStory(prefix, requirement, deps))
+	}
+
 	// Build dependency graph
 	dag := graph.New()
 	for _, s := range stories {
@@ -601,4 +628,69 @@ func (p *Planner) emitAndProject(eventType state.EventType, agentID, storyID str
 		return err
 	}
 	return p.projStore.Project(evt)
+}
+
+// scribeStorySuffix is the stable, un-prefixed id of the documentation story.
+const scribeStorySuffix = "scribe-readme"
+
+// buildIntegrationStory constructs the final integration story. It runs after
+// every code story (depends on all of them) and is responsible for making the
+// independently-built components actually compose into a working application.
+func buildIntegrationStory(prefix, requirement string, deps []string) PlannedStory {
+	desc := fmt.Sprintf(`Integrate everything the other stories built into ONE working application for this requirement: %s
+
+The other stories each built and unit-tested a component in isolation (often against mocks). Your job is to make the WHOLE thing actually run end-to-end. This is the most important story — a build that passes unit tests but does not run is a failure.
+
+Do ALL of the following:
+- Wire every component into the application entry point (e.g. main.go / app.py / server / index.ts / CLI root). Every handler, route, command, page, and middleware that a story built MUST be reachable from the real entry point. Audit for dangling wires: a feature whose unit test passes but that is never registered in the entry point is a bug.
+- Apply cross-cutting middleware that stories built but could not wire themselves (authentication, logging, CORS, rate limiting) at the entry point. If an auth/API-key middleware exists, it MUST actually guard the documented protected routes.
+- Reconcile interface mismatches between components with thin adapters. Independently-built stories often declare slightly different interfaces; add the adapter so the real implementation — not a mock — is wired in. Do NOT leave a production path depending on a test-only mock.
+- Add a SMOKE TEST that boots the application and exercises the documented surface end-to-end: for a server, start it and assert each documented endpoint responds with the expected status (NOT 404) and that protected routes reject missing credentials; for a CLI, run the documented commands and assert real output; for a UI, render the primary flow. The smoke test must FAIL if a feature is unreachable or unwired.
+- Fix any wiring/compile/type errors this integration surfaces so the full app builds and all tests (including your smoke test) pass.
+
+Make reasonable, conventional choices for any route paths or wiring details the requirement leaves unspecified, and note them briefly in code comments.`, requirement)
+
+	return PlannedStory{
+		ID:                 prefix + "-integrate",
+		Title:              "Integrate all components into a working app + end-to-end smoke test",
+		Description:        desc,
+		AcceptanceCriteria: FlexibleString("Every documented feature is reachable from the real application entry point (no dangling/unwired handlers, commands, or pages); cross-cutting middleware (auth etc.) actually guards the documented routes; interface mismatches between components are bridged with adapters so the production path uses real implementations, not mocks; a smoke test boots the app and asserts the documented surface responds end-to-end (protected routes reject missing credentials, documented endpoints do not 404) and that smoke test passes along with the full build/test suite."),
+		Complexity:         5,
+		DependsOn:          deps,
+		// No declared owned_files: integration legitimately touches the entry
+		// point (owned by the skeleton story) and adds adapter/smoke-test files.
+		// It depends on every story, so it runs last with no parallel conflict.
+		OwnedFiles: []string{},
+		WaveHint:   "sequential",
+	}
+}
+
+// buildScribeStory constructs the final documentation story. It depends on
+// every other story (deps are already prefixed), owns README.md + docs/, and
+// instructs the agent to be greenfield-aware: author a full README on a stub,
+// but confine edits on an existing README to the nxd:scribe markers so
+// hand-written prose is never clobbered.
+func buildScribeStory(prefix, requirement string, deps []string) PlannedStory {
+	desc := fmt.Sprintf(`Document the project to software-factory standard for what this requirement delivered: %s
+
+Write for a reader who is new to the project. Deliver the COMPLETE software-factory documentation set:
+- README.md: explain what it is, how to install/run it, and how to use it — accurate to what was actually built and merged (do not invent features). It is the entry point: link to docs/ (the docs index), the training guide, and the Architecture Decision Records.
+- docs/training.md: a "Getting Started" step-by-step hands-on walkthrough that takes a new user from zero to a working result, with copy-pasteable commands and expected output.
+- docs/architecture.svg: an architecture diagram authored as a real rendered SVG file (valid <svg>…</svg> XML). NOT Mermaid, NOT a code fence, NOT a .mmd file — an actual .svg.
+- docs/sequence.svg: a sequence diagram of the primary user flow, also as a real rendered SVG file (valid <svg>…</svg> XML). NOT Mermaid.
+- docs/adr/0001-*.md … : Architecture Decision Records for the significant, hard-to-reverse decisions (persistence, layering, offline-vs-network, auth, a key algorithm, an error-handling contract, etc.), each grounded in the real code with Status/Context/Decision/Consequences. Add docs/adr/README.md as an index.
+- docs/README.md: a documentation index linking the README, training guide, both SVGs, and the ADRs.
+- Reference both SVGs from the README (e.g. via ![Architecture](docs/architecture.svg)) and link docs/ + docs/adr/.
+- Greenfield-aware: if README.md is empty or a bare stub, author a complete README. If it already has substantial hand-written content, edit ONLY inside the markers `+"`<!-- nxd:scribe:start -->`"+` ... `+"`<!-- nxd:scribe:end -->`"+` (create that block at the end if absent) — never rewrite or delete existing prose outside the markers. The docs/ files are new and may be authored freely.`, requirement)
+
+	return PlannedStory{
+		ID:                 prefix + "-" + scribeStorySuffix,
+		Title:              "Document the project: README + training + SVG diagrams + ADRs + docs index",
+		Description:        desc,
+		AcceptanceCriteria: FlexibleString("README.md accurately documents the delivered functionality with install/run/usage instructions and links docs/, the training guide, and the ADRs; docs/training.md is a step-by-step Getting-Started tutorial with copy-pasteable commands; docs/architecture.svg and docs/sequence.svg exist as valid rendered SVG (<svg> XML, NOT Mermaid/code-fence/.mmd) and are referenced from the README; docs/adr/ contains Architecture Decision Records (Status/Context/Decision/Consequences) plus an index, grounded in the real code; docs/README.md is a documentation index; on a pre-existing README, edits are confined to the nxd:scribe markers and existing content outside them is unchanged."),
+		Complexity:         5,
+		DependsOn:          deps,
+		OwnedFiles:         []string{"README.md", "docs/architecture.svg", "docs/sequence.svg", "docs/training.md", "docs/adr", "docs/README.md"},
+		WaveHint:           "sequential",
+	}
 }

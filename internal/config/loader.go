@@ -73,6 +73,8 @@ func DefaultConfig() Config {
 		Planning: PlanningConfig{
 			SequentialFilePatterns: []string{"package.json", "*.config.*", "src/core/*"},
 			MaxStoryComplexity:     5,
+			EmitIntegrationStory:   true,
+			EmitScribeStory:        true,
 		},
 		Billing: BillingConfig{
 			DefaultRate: 150.0,

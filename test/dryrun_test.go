@@ -38,6 +38,8 @@ func TestDryRun_PlannerPipeline(t *testing.T) {
 
 	client := llm.NewDryRunClient(0)
 	cfg := config.DefaultConfig()
+	cfg.Planning.EmitScribeStory = false
+	cfg.Planning.EmitIntegrationStory = false
 	reqID := "r-dryrun-001"
 
 	planner := engine.NewPlanner(client, cfg, es, ps)

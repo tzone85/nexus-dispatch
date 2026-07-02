@@ -191,6 +191,9 @@ func (s *SQLiteStore) Project(evt Event) error {
 	case EventReqCompleted:
 		return s.updateReqStatus(payload, "completed")
 
+	case EventReqBlocked:
+		return s.updateReqStatus(payload, "blocked")
+
 	case EventReqClassified:
 		reqID, _ := payload["req_id"].(string)
 		reqType, _ := payload["req_type"].(string)

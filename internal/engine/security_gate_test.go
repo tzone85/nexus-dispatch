@@ -36,14 +36,14 @@ func countEvents(t *testing.T, es state.EventStore, typ state.EventType) int {
 	return len(evts)
 }
 
-// fakeScan returns a seam that yields canned findings.
-func fakeScan(findings ...security.Finding) func(context.Context, string) ([]security.Finding, []security.ScannerKind, []security.ScannerKind) {
-	return func(context.Context, string) ([]security.Finding, []security.ScannerKind, []security.ScannerKind) {
-		return findings, []security.ScannerKind{security.ScannerGosec}, []security.ScannerKind{security.ScannerSemgrep}
+// fakeScan returns a seam that yields canned findings (no failed scanners).
+func fakeScan(findings ...security.Finding) scanFunc {
+	return func(context.Context, string) ([]security.Finding, []security.ScannerKind, []security.ScannerKind, []security.ScannerKind) {
+		return findings, []security.ScannerKind{security.ScannerGosec}, []security.ScannerKind{security.ScannerSemgrep}, nil
 	}
 }
 
-func newTestSecurityGate(t *testing.T, client llm.Client, kbPath string, gateSev security.Severity, autoLearn bool, scan func(context.Context, string) ([]security.Finding, []security.ScannerKind, []security.ScannerKind)) *SecurityGate {
+func newTestSecurityGate(t *testing.T, client llm.Client, kbPath string, gateSev security.Severity, autoLearn bool, scan scanFunc) *SecurityGate {
 	es, ps := newSecurityTestStores(t)
 	g := NewSecurityGate(client, "test-model", 1000, kbPath, gateSev, autoLearn, es, ps)
 	g.scan = scan
@@ -64,6 +64,35 @@ func TestSecurityGate_ScanRepo_AggregatesAndEmits(t *testing.T) {
 	}
 	if countEvents(t, g.eventStore, state.EventSecurityScanCompleted) != 1 {
 		t.Error("expected SECURITY_SCAN_COMPLETED event")
+	}
+}
+
+// A scanner that ran but FAILED (timeout / crash / parse error) must be
+// surfaced in the report's Failed list, never silently dropped or counted as a
+// clean run. Otherwise a build whose scan partly failed looks scanned-clean.
+func TestSecurityGate_ScanRepo_SurfacesFailedScanners(t *testing.T) {
+	kbPath := filepath.Join(t.TempDir(), "kb.json")
+	// Seam: gosec ran clean, semgrep was not installed, gitleaks ran but errored.
+	scan := func(context.Context, string) ([]security.Finding, []security.ScannerKind, []security.ScannerKind, []security.ScannerKind) {
+		return nil,
+			[]security.ScannerKind{security.ScannerGosec},
+			[]security.ScannerKind{security.ScannerSemgrep},
+			[]security.ScannerKind{security.ScannerGitleaks}
+	}
+	g := newTestSecurityGate(t, nil, kbPath, security.SeverityHigh, false, scan)
+
+	report, err := g.ScanRepo(context.Background(), t.TempDir())
+	if err != nil {
+		t.Fatalf("ScanRepo: %v", err)
+	}
+	if len(report.Failed) != 1 || report.Failed[0] != security.ScannerGitleaks {
+		t.Errorf("expected gitleaks in report.Failed, got %v", report.Failed)
+	}
+	// A failed scanner must NOT be mislabeled as a clean run.
+	for _, k := range report.ScannersRun {
+		if k == security.ScannerGitleaks {
+			t.Errorf("failed scanner gitleaks must not appear in ScannersRun: %v", report.ScannersRun)
+		}
 	}
 }
 
