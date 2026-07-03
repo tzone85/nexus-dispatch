@@ -8,6 +8,7 @@ import (
 	"log"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -210,7 +211,7 @@ func parseGitleaks(out []byte, repoDir string) ([]Finding, error) {
 		StartLine   int    `json:"StartLine"`
 		RuleID      string `json:"RuleID"`
 	}
-	if err := json.Unmarshal(out, &rows); err != nil {
+	if err := json.Unmarshal(extractJSONArray(out), &rows); err != nil {
 		return nil, err
 	}
 	findings := make([]Finding, 0, len(rows))
@@ -228,6 +229,25 @@ func parseGitleaks(out []byte, repoDir string) ([]Finding, error) {
 		})
 	}
 	return findings, nil
+}
+
+// ansiEscape matches ANSI SGR/CSI escape sequences (e.g. "\x1b[90m").
+var ansiEscape = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
+
+// extractJSONArray returns the outermost JSON array in out. Gitleaks (and
+// other colourising tools) interleave ANSI-coloured log lines with the JSON
+// report on the same stream; escape sequences are stripped first (they
+// contain '[' themselves), then the payload is sliced from the first '[' to
+// the last ']'. Returns the stripped output unchanged when no array brackets
+// exist so the caller still surfaces a parse error with the real content.
+func extractJSONArray(out []byte) []byte {
+	clean := ansiEscape.ReplaceAll(out, nil)
+	start := bytes.IndexByte(clean, '[')
+	end := bytes.LastIndexByte(clean, ']')
+	if start == -1 || end == -1 || end < start {
+		return clean
+	}
+	return clean[start : end+1]
 }
 
 func parseSemgrep(out []byte, repoDir string) ([]Finding, error) {
@@ -365,7 +385,15 @@ func (s Scanner) Run(ctx context.Context, repoDir string) ([]Finding, error) {
 		return nil, nil
 	}
 	cmd.Dir = repoDir
-	out, _ := cmd.CombinedOutput() // exit code intentionally ignored; parse output
+	// Capture stdout only: scanners emit their machine-readable report on
+	// stdout and human log lines (often ANSI-coloured) on stderr. Combining
+	// the streams corrupted the JSON payload. Exit code intentionally
+	// ignored; most scanners exit non-zero when they find issues.
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	_ = cmd.Run()
+	out := stdout.Bytes()
 
 	switch s.Kind {
 	case ScannerGosec:

@@ -120,6 +120,20 @@ func TestParseGitleaks(t *testing.T) {
 	}
 }
 
+func TestParseGitleaks_ToleratesANSIAndLogNoise(t *testing.T) {
+	// Observed live: gitleaks writes ANSI-coloured log lines around the JSON
+	// report; the parser must locate the JSON payload instead of failing on
+	// the escape byte ("invalid character '\x1b'").
+	out := []byte("\x1b[90m4:24AM\x1b[0m \x1b[32mINF\x1b[0m scanning\n[\n  {\"Description\":\"AWS Access Key\",\"File\":\"a.env\",\"StartLine\":1,\"RuleID\":\"aws-access-token\",\"Secret\":\"AKIA\",\"Match\":\"AKIA\"}\n]\n\x1b[90m4:24AM\x1b[0m \x1b[31mWRN\x1b[0m leaks found: 1\n")
+	got, err := parseGitleaks(out, "/repo")
+	if err != nil {
+		t.Fatalf("parseGitleaks with ANSI noise: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 finding, got %d", len(got))
+	}
+}
+
 func TestParseSemgrep(t *testing.T) {
 	out := []byte(`{
 	  "results": [
