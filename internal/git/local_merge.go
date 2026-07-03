@@ -14,6 +14,11 @@ type MergeResult struct {
 	BaseBranch string
 	MergedSHA  string
 	Conflicts  []string
+
+	// Empty reports that the merge was a no-op ("Already up to date"): the
+	// feature branch had no commits beyond the base, so nothing landed. A
+	// caller treating merged=true as "code shipped" must check this.
+	Empty bool
 }
 
 // LocalMerger performs git merge operations locally without network access.
@@ -43,9 +48,14 @@ func (m *LocalMerger) Merge(featureBranch, baseBranch string) (MergeResult, erro
 		return result, fmt.Errorf("checkout %s: %w", baseBranch, err)
 	}
 
+	preMergeSHA, err := m.MergedSHA()
+	if err != nil {
+		return result, fmt.Errorf("read pre-merge SHA: %w", err)
+	}
+
 	// Attempt merge with --no-ff for explicit merge commit
 	mergeMsg := fmt.Sprintf("Merge %s into %s", featureBranch, baseBranch)
-	err := m.runGit("merge", "--no-ff", featureBranch, "-m", mergeMsg)
+	err = m.runGit("merge", "--no-ff", featureBranch, "-m", mergeMsg)
 	if err != nil {
 		// Merge failed — check for conflicts
 		conflicts, conflictErr := m.listConflicts()
@@ -71,6 +81,9 @@ func (m *LocalMerger) Merge(featureBranch, baseBranch string) (MergeResult, erro
 		return result, fmt.Errorf("read merged SHA: %w", err)
 	}
 	result.MergedSHA = sha
+	// HEAD unmoved after a successful merge means "Already up to date" —
+	// the branch contributed no commits.
+	result.Empty = sha == preMergeSHA
 
 	return result, nil
 }

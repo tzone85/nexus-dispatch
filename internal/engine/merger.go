@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	"log"
 
 	"github.com/tzone85/nexus-dispatch/internal/config"
 	"github.com/tzone85/nexus-dispatch/internal/git"
@@ -45,9 +46,9 @@ const (
 // and "local" (offline merge via git).
 type Merger struct {
 	config     config.MergeConfig
-	ghOps      GitHubOps      // used in "github" mode
-	localOps   LocalMergeOps  // used in "local" mode
-	mode       string         // "github" or "local"
+	ghOps      GitHubOps     // used in "github" mode
+	localOps   LocalMergeOps // used in "local" mode
+	mode       string        // "github" or "local"
 	eventStore state.EventStore
 	projStore  state.ProjectionStore
 }
@@ -152,14 +153,22 @@ func (m *Merger) mergeLocal(storyID, branch string) (MergeResult, error) {
 	if err != nil {
 		return MergeResult{}, fmt.Errorf("local merge %s into %s: %w", branch, m.config.BaseBranch, err)
 	}
+	if localResult.Empty {
+		// "Already up to date": the branch had no unique commits (e.g. its
+		// work duplicated main and was dropped during rebase). The merge is
+		// still recorded for pipeline consistency, but an operator reading
+		// the log must be able to see that no code landed.
+		log.Printf("[merger] WARNING: story %s merged EMPTY — branch %s contributed no commits to %s",
+			storyID, branch, m.config.BaseBranch)
+	}
 
 	const localPRURL = "local://merged"
 
 	// Emit PR created event (for event-stream consistency)
 	prEvt := state.NewEvent(state.EventStoryPRCreated, "merger", storyID, map[string]any{
-		"pr_number": 0,
-		"pr_url":    localPRURL,
-		"branch":    branch,
+		"pr_number":  0,
+		"pr_url":     localPRURL,
+		"branch":     branch,
 		"merged_sha": localResult.MergedSHA,
 	})
 	if err := m.eventStore.Append(prEvt); err != nil {
