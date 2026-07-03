@@ -417,6 +417,42 @@ func TestInvestigator_NoToolCallsReturnsReport(t *testing.T) {
 	}
 }
 
+func TestInvestigator_NudgesAfterProseResponse(t *testing.T) {
+	// A prose-only response (no tool calls) must be answered with a corrective
+	// user message telling the model to use tools — otherwise small local
+	// models chat until the iteration cap and the investigation dies.
+	reportJSON, _ := json.Marshal(map[string]any{
+		"summary":         "done",
+		"entry_points":    []string{},
+		"build_passes":    true,
+		"test_passes":     true,
+		"recommendations": []string{"none"},
+	})
+
+	client := llm.NewReplayClient(
+		llm.CompletionResponse{Content: "Let me think about this codebase."},
+		llm.CompletionResponse{
+			ToolCalls: []llm.ToolCall{
+				{ID: "call-1", Name: "submit_report", Arguments: reportJSON},
+			},
+		},
+	)
+
+	inv := engine.NewInvestigator(client, "test-model", 4096)
+	if _, err := inv.Investigate(context.Background(), t.TempDir()); err != nil {
+		t.Fatalf("investigate: %v", err)
+	}
+
+	second := client.CallAt(1)
+	last := second.Messages[len(second.Messages)-1]
+	if last.Role != llm.RoleUser {
+		t.Fatalf("expected corrective user nudge after prose response, got role %q", last.Role)
+	}
+	if !strings.Contains(last.Content, "submit_report") {
+		t.Fatalf("nudge should direct the model to tools/submit_report, got: %q", last.Content)
+	}
+}
+
 func TestInvestigator_ConventionsInReport(t *testing.T) {
 	reportJSON := `{
 		"summary": "test project",
