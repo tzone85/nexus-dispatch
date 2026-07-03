@@ -156,6 +156,50 @@ func TestPlanner_InvalidJSON(t *testing.T) {
 	}
 }
 
+func TestPlanner_RetriesEmptyResponse(t *testing.T) {
+	dir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module test"), 0644)
+
+	eventStore, err := state.NewFileStore(filepath.Join(dir, "events.jsonl"))
+	if err != nil {
+		t.Fatalf("create event store: %v", err)
+	}
+	defer eventStore.Close()
+
+	projStore, err := state.NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatalf("create proj store: %v", err)
+	}
+	defer projStore.Close()
+
+	valid := `[
+		{"id": "s-001", "title": "Add thing", "description": "Create thing.go", "acceptance_criteria": "thing exists", "complexity": 2, "depends_on": []}
+	]`
+
+	// First call returns an empty body (observed with local Ollama models under
+	// load); second call succeeds. The planner must retry instead of failing.
+	client := llm.NewReplayClient(
+		llm.CompletionResponse{Content: ""},
+		llm.CompletionResponse{Content: valid},
+	)
+
+	cfg := config.DefaultConfig()
+	cfg.Planning.EmitScribeStory = false
+	cfg.Planning.EmitIntegrationStory = false
+	planner := engine.NewPlanner(client, cfg, eventStore, projStore)
+
+	result, err := planner.Plan(context.Background(), "r-001", "test retry", dir)
+	if err != nil {
+		t.Fatalf("plan should succeed after retry: %v", err)
+	}
+	if len(result.Stories) != 1 {
+		t.Fatalf("expected 1 story, got %d", len(result.Stories))
+	}
+	if client.CallCount() != 2 {
+		t.Fatalf("expected 2 LLM calls (1 failed + 1 retry), got %d", client.CallCount())
+	}
+}
+
 func TestPlanner_LLMError(t *testing.T) {
 	dir := t.TempDir()
 	_ = os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module test"), 0644)
