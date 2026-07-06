@@ -1,11 +1,58 @@
 package security
 
 import (
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"testing"
 )
+
+// exitErr runs `sh -c "exit N"` to obtain a real *exec.ExitError carrying the
+// given code — the same error type os/exec returns for a scanner subprocess.
+func exitErr(t *testing.T, code int) error {
+	t.Helper()
+	err := exec.Command("sh", "-c", fmt.Sprintf("exit %d", code)).Run()
+	if err == nil {
+		t.Fatalf("expected non-nil error for exit %d", code)
+	}
+	return err
+}
+
+// TestGovulncheckCompleted pins the exit-code contract that keeps a govulncheck
+// run which never inspected the code (offline host, no go.mod, load error) from
+// being recorded as a clean scan. Exit 0 (no vulns) and 3 (vulns found) are
+// successful analyses; exit 1/2 and non-exit failures are coverage loss.
+func TestGovulncheckCompleted(t *testing.T) {
+	if !govulncheckCompleted(nil) {
+		t.Error("nil error (exit 0, no vulnerabilities) must count as a completed scan")
+	}
+	if !govulncheckCompleted(exitErr(t, 3)) {
+		t.Error("exit 3 (vulnerabilities found) must count as a completed scan")
+	}
+	if govulncheckCompleted(exitErr(t, 1)) {
+		t.Error("exit 1 (load/network/config error) must NOT count as completed — coverage was lost")
+	}
+	if govulncheckCompleted(exitErr(t, 2)) {
+		t.Error("exit 2 (usage error) must NOT count as completed")
+	}
+	if govulncheckCompleted(fmt.Errorf("context deadline exceeded")) {
+		t.Error("a non-exit failure (e.g. timeout) must NOT count as completed")
+	}
+}
+
+// TestScannerFailureDetail confirms the diagnostic prefers the first non-empty
+// output line (the tool's own error) over the bare exec status.
+func TestScannerFailureDetail(t *testing.T) {
+	out := []byte("\n\ngovulncheck: fetching vulnerabilities: Forbidden\nmore\n")
+	if got := scannerFailureDetail(out, exitErr(t, 1)); got != "govulncheck: fetching vulnerabilities: Forbidden" {
+		t.Errorf("unexpected detail: %q", got)
+	}
+	if got := scannerFailureDetail(nil, fmt.Errorf("boom")); got != "boom" {
+		t.Errorf("empty output should fall back to the error string, got %q", got)
+	}
+}
 
 func TestDetectLanguages(t *testing.T) {
 	dir := t.TempDir()

@@ -197,13 +197,27 @@ func parseGoTestJSON(output string) (passing, failing, total int) {
 			Action string `json:"Action"`
 			Test   string `json:"Test"`
 		}
-		if err := json.Unmarshal([]byte(line), &evt); err != nil || evt.Test == "" {
+		if err := json.Unmarshal([]byte(line), &evt); err != nil {
 			continue
 		}
 		switch evt.Action {
 		case "pass":
-			passing++
+			if evt.Test != "" {
+				passing++
+			}
 		case "fail":
+			if evt.Test != "" {
+				failing++
+			}
+		case "build-fail":
+			// A package whose test binary fails to COMPILE emits a build-fail
+			// event with no Test (and no Package) field. `go build ./...` does
+			// not compile _test.go files, so checkBuild stays green and this is
+			// the only signal that the composed mainline's tests are red — e.g.
+			// when one story removes a symbol another story's test references.
+			// Without counting it, parseGoTestJSON returns 0/0/0, ShouldRunFixCycle
+			// sees no failures, and the completion gate emits REQ_COMPLETED on a
+			// mainline whose tests do not even build.
 			failing++
 		}
 	}
