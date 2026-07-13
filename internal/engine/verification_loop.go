@@ -194,10 +194,25 @@ func parseGoTestJSON(output string) (passing, failing, total int) {
 			continue
 		}
 		var evt struct {
-			Action string `json:"Action"`
-			Test   string `json:"Test"`
+			Action      string `json:"Action"`
+			Test        string `json:"Test"`
+			FailedBuild string `json:"FailedBuild"`
 		}
-		if err := json.Unmarshal([]byte(line), &evt); err != nil || evt.Test == "" {
+		if err := json.Unmarshal([]byte(line), &evt); err != nil {
+			continue
+		}
+		if evt.Test == "" {
+			// Package-level event. A package whose test binary fails to
+			// COMPILE emits a package-level "fail" carrying FailedBuild (and
+			// `go build ./...` never catches it, since it does not compile
+			// _test.go files). Count it as a failing package so the completion
+			// gate cannot score an uncompilable test suite as green — the exact
+			// cross-story drift the gate exists to catch. Ordinary package
+			// summary events (pass, or fail without FailedBuild) are ignored
+			// here; their individual test results are already counted below.
+			if evt.Action == "fail" && evt.FailedBuild != "" {
+				failing++
+			}
 			continue
 		}
 		switch evt.Action {
