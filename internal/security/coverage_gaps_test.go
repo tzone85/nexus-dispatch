@@ -60,12 +60,15 @@ func TestSave_ParentDirCreationFailure(t *testing.T) {
 }
 
 func TestSave_WriteFailure(t *testing.T) {
-	// Path IS a directory — WriteFile fails after MkdirAll succeeds.
+	// Path IS a directory. Save writes a temp file then atomically renames it
+	// into place; the rename onto an existing directory fails, so the error
+	// now surfaces at that step. The contract under test is unchanged: saving
+	// to an unwritable target must fail loudly, never silently succeed.
 	dir := t.TempDir()
 	kb := BaselineKnowledgeBase()
 	err := kb.Save(dir)
-	if err == nil || !strings.Contains(err.Error(), "write knowledge base") {
-		t.Errorf("want write error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "knowledge base") {
+		t.Errorf("want a knowledge-base save error, got %v", err)
 	}
 }
 

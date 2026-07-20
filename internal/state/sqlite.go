@@ -220,6 +220,8 @@ func (s *SQLiteStore) Project(evt Event) error {
 		return s.projectStoryCreated(payload)
 	case EventAgentSpawned:
 		return s.projectAgentSpawned(evt, payload)
+	case EventAgentTerminated:
+		return s.projectAgentTerminated(evt)
 	case EventStoryEstimated:
 		return s.updateStoryStatus(evt.StoryID, "estimated")
 	case EventStoryAssigned:
@@ -770,6 +772,28 @@ func (s *SQLiteStore) projectAgentSpawned(evt Event, payload map[string]any) err
 	)
 	if err != nil {
 		return fmt.Errorf("project agent spawned: %w", err)
+	}
+	return nil
+}
+
+// projectAgentTerminated marks an agent row terminated from an AGENT_TERMINATED
+// event (dashboard "kill agent" and the controller's auto-cancel both emit it
+// and call Project expecting a mutation). Without this the row stayed
+// status='idle' with its session_name/current_story_id still populated forever,
+// so `nxd agents`, the dashboard agents panel, and crash recovery's
+// session→story map (buildSessionStoryMap) all saw a dead agent as a live idle
+// one — recovery could then try to reconcile an already-killed tmux session.
+// The dashboard already renders a "terminated" status (agentStatusStyle); this
+// is the projection wiring it was waiting on. current_story_id is cleared so
+// the recovery map drops the dead session. Keyed by agent id — the controller's
+// event carries AgentID="controller" and simply matches no row, which is fine.
+func (s *SQLiteStore) projectAgentTerminated(evt Event) error {
+	_, err := s.db.Exec(
+		`UPDATE agents SET status = 'terminated', current_story_id = '', updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+		evt.AgentID,
+	)
+	if err != nil {
+		return fmt.Errorf("project agent terminated: %w", err)
 	}
 	return nil
 }

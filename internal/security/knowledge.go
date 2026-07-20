@@ -127,16 +127,42 @@ func (kb *KnowledgeBase) Checklist(langs []string) string {
 }
 
 // Save writes the knowledge base to path as indented JSON, creating parent dirs.
+//
+// The write is atomic (temp file + rename). Concurrent story pipelines can each
+// upskill and Save the same kbPath; a plain truncating os.WriteFile could
+// interleave two writers into invalid JSON, and LoadKnowledgeBase only falls
+// back to the baseline when the file is MISSING — a corrupt file returns an
+// error forever, permanently and silently disabling the security gate. Rename
+// is atomic on POSIX filesystems, so a reader sees either the old or the new
+// file, never a torn one.
 func (kb *KnowledgeBase) Save(path string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create knowledge dir: %w", err)
 	}
 	data, err := json.MarshalIndent(kb, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal knowledge base: %w", err)
 	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		return fmt.Errorf("write knowledge base: %w", err)
+	tmp, err := os.CreateTemp(dir, ".knowledge-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temp knowledge file: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }() // no-op after a successful rename
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return fmt.Errorf("chmod temp knowledge file: %w", err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return fmt.Errorf("write temp knowledge file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp knowledge file: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("rename knowledge base into place: %w", err)
 	}
 	return nil
 }

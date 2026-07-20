@@ -43,7 +43,14 @@ func ReleaseOrphans(ctx context.Context, p Provider, orphans []DB, minAge time.D
 	cutoff := time.Now().Add(-minAge)
 	var firstErr error
 	for _, db := range orphans {
-		if db.CreatedAt.After(cutoff) {
+		// Fail safe on unknown age. The docker provider (the production path)
+		// cannot recover a per-database creation time from Postgres, so its
+		// orphans carry a zero CreatedAt. A zero time is always Before(cutoff),
+		// which would silently defeat the entire retention window — every
+		// orphan deleted regardless of minAge/RetainHours, including another
+		// concurrent requirement's still-in-use databases. Treat unknown age
+		// as "too young to reap; keep for human review" instead.
+		if db.CreatedAt.IsZero() || db.CreatedAt.After(cutoff) {
 			kept = append(kept, db)
 			continue
 		}
