@@ -5,10 +5,11 @@ go 1.26.1
 // toolchain pins the minimum Go toolchain so that builds (local and CI)
 // pull a patch level that clears the 1.26.x stdlib CVEs surfaced by
 // govulncheck (GO-2026-4866, -4870, -4918, -4946, -4947, -4971, -5037,
-// -5039). With GOTOOLCHAIN=auto (default), older local installs will
-// fetch 1.26.4 on first build instead of compiling against a vulnerable
-// stdlib.
-toolchain go1.26.4
+// -5039, and the crypto/tls Encrypted Client Hello leak GO-2026-5856
+// fixed in 1.26.5). With GOTOOLCHAIN=auto (default), older local installs
+// will fetch this toolchain on first build instead of compiling against a
+// vulnerable stdlib.
+toolchain go1.26.5
 
 require (
 	github.com/charmbracelet/bubbletea v1.3.10
@@ -44,5 +45,5 @@ require (
 	github.com/rogpeppe/go-internal v1.15.0 // indirect
 	github.com/spf13/pflag v1.0.9 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
-	golang.org/x/text v0.29.0 // indirect
+	golang.org/x/text v0.40.0 // indirect
 )
