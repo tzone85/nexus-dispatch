@@ -154,11 +154,24 @@ func checkTests(repoDir string) (passing, failing, total int) {
 	}
 
 	cmd.Dir = repoDir
-	out, _ := cmd.CombinedOutput()
+	out, runErr := cmd.CombinedOutput()
 	output := string(out)
 
 	if buildFileExists(filepath.Join(repoDir, "go.mod")) {
-		return parseGoTestJSON(output)
+		passing, failing, total = parseGoTestJSON(output)
+		// Defense-in-depth: `go test` exits non-zero on a failing test (already
+		// counted above) but ALSO on a compile/vet failure that produces no
+		// per-test JSON at all — e.g. a broken _test.go that `go build ./...`
+		// never sees, or a vet error before any test runs. If the command
+		// failed yet the parser found no failing tests, the suite did not
+		// actually pass: count it as a failure so the completion gate fails
+		// closed instead of certifying a red mainline as green.
+		if runErr != nil && failing == 0 {
+			log.Printf("[verify] go test exited non-zero with no parsed test failures (compile/vet error) — counting as failure: %v", runErr)
+			failing = 1
+			total = passing + failing
+		}
+		return passing, failing, total
 	}
 
 	// Parse test results (simplified — count PASS/FAIL lines)
@@ -183,21 +196,51 @@ func checkTests(repoDir string) (passing, failing, total int) {
 	}
 
 	total = passing + failing
+	// Same fail-closed guard as the Go path: the JS runner is invoked with
+	// --passWithNoTests, so a non-zero exit with no parsed failures means the
+	// runner itself crashed (missing dep, bad config) and no tests actually
+	// ran — treat it as a failure rather than a silent green.
+	if runErr != nil && failing == 0 {
+		log.Printf("[verify] test runner exited non-zero with no parsed failures (runner crash) — counting as failure: %v", runErr)
+		failing = 1
+		total = passing + failing
+	}
 	log.Printf("[verify] tests: %d passing, %d failing, %d total", passing, failing, total)
 	return passing, failing, total
 }
 
 func parseGoTestJSON(output string) (passing, failing, total int) {
+	failedPkgs := map[string]bool{}
 	for _, line := range strings.Split(output, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
 		var evt struct {
-			Action string `json:"Action"`
-			Test   string `json:"Test"`
+			Action      string `json:"Action"`
+			Test        string `json:"Test"`
+			Package     string `json:"Package"`
+			FailedBuild string `json:"FailedBuild"`
 		}
-		if err := json.Unmarshal([]byte(line), &evt); err != nil || evt.Test == "" {
+		if err := json.Unmarshal([]byte(line), &evt); err != nil {
+			continue
+		}
+		// Package-level events carry no Test field. A package whose tests fail
+		// to COMPILE surfaces here — as Action "build-fail", or a package-level
+		// "fail" carrying FailedBuild — with no per-test events at all. Because
+		// `go build ./...` never compiles _test.go files, this is the only place
+		// a test-compilation failure (e.g. cross-story symbol drift breaking a
+		// test) becomes visible. Counting it keeps the completion gate failing
+		// closed instead of reading 0-passing/0-failing as "nothing wrong".
+		if evt.Test == "" {
+			if evt.Action == "build-fail" || (evt.Action == "fail" && evt.FailedBuild != "") {
+				if evt.Package == "" {
+					failing++
+				} else if !failedPkgs[evt.Package] {
+					failedPkgs[evt.Package] = true
+					failing++
+				}
+			}
 			continue
 		}
 		switch evt.Action {

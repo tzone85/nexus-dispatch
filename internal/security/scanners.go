@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"os/exec"
 	"path/filepath"
@@ -365,13 +366,29 @@ func (s Scanner) Run(ctx context.Context, repoDir string) ([]Finding, error) {
 		return nil, nil
 	}
 	cmd.Dir = repoDir
-	out, _ := cmd.CombinedOutput() // exit code intentionally ignored; parse output
+	out, runErr := cmd.CombinedOutput() // exit code inspected only where a tool needs it
 
 	switch s.Kind {
 	case ScannerGosec:
 		return parseGosec(out, repoDir)
 	case ScannerGovulncheck:
-		return parseGovulncheck(out)
+		findings, err := parseGovulncheck(out)
+		if err != nil {
+			return nil, err
+		}
+		// Unlike the JSON tools (whose crashes surface as unparseable output ->
+		// a parse error -> `failed`), govulncheck output is plain text, so a
+		// hard failure leaves no parse error behind. It exits 0 when it ran and
+		// found nothing, and non-zero when it either found vulnerabilities OR
+		// could not complete — e.g. it failed to fetch the vulnerability DB,
+		// the common case on the offline-first hosts NXD targets. A non-zero
+		// exit with zero parsed findings means the tool never actually
+		// inspected the code, so report it as a failure (coverage lost) rather
+		// than let it masquerade as a clean run.
+		if runErr != nil && len(findings) == 0 {
+			return nil, fmt.Errorf("govulncheck did not complete (no findings parsed): %w", runErr)
+		}
+		return findings, nil
 	case ScannerGitleaks:
 		return parseGitleaks(out, repoDir)
 	case ScannerSemgrep:

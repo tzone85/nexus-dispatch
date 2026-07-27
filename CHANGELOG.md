@@ -37,7 +37,7 @@ _(no entries yet — open a PR to add a line under the relevant subsection.)_
 - Auto-commit before rebase to prevent unstaged changes failure
 - Graceful failure handling — artifact filter, re-planner guardrails, sub-story validation
 - Command injection, path traversal, and input validation hardening
-- Port 3 VXD fixes — split suffix, gitDiff master, duplicate validation
+- Ported 3 upstream fixes — split suffix, gitDiff master, duplicate validation
 
 ### Improved
 - Engine test coverage: 66% → 72%

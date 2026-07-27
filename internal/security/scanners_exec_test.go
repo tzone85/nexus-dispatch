@@ -226,6 +226,57 @@ func TestScannerRun_PerKindDispatch(t *testing.T) {
 	}
 }
 
+// TestRunScanners_GovulncheckHardFailureNotClean guards the coverage-loss gap:
+// govulncheck output is plain text (not JSON), so a hard failure — e.g. it
+// could not fetch the vulnerability DB, the common case on the offline-first
+// hosts NXD targets — leaves no parse error behind. It exits non-zero with
+// error text that matches no "Vulnerability #" line, so it must be reported in
+// `failed` (coverage lost), never counted as a clean run.
+func TestRunScanners_GovulncheckHardFailureNotClean(t *testing.T) {
+	bin := installAllFakeScanners(t)
+	// govulncheck fails to reach its DB: non-zero exit, no findings, error text.
+	fakeTool(t, bin, "govulncheck", "govulncheck: fetching vulnerabilities: Get \"https://vuln.go.dev/index/modules.json.gz\": Forbidden", 1)
+	repo := seedRepo(t, map[string]string{"go.mod": "module example.com/x\n"})
+
+	_, ran, _, failed := RunScanners(context.Background(), repo)
+
+	failedSet := map[ScannerKind]bool{}
+	for _, k := range failed {
+		failedSet[k] = true
+	}
+	if !failedSet[ScannerGovulncheck] {
+		t.Fatalf("govulncheck that failed to fetch its DB must be in failed, got failed=%v", failed)
+	}
+	for _, k := range ran {
+		if k == ScannerGovulncheck {
+			t.Error("a govulncheck that never inspected the code must not be counted as ran (clean)")
+		}
+	}
+}
+
+// TestRunScanners_GovulncheckCleanExitZero confirms the fix does not mistake a
+// genuine clean run (exit 0, no vulnerabilities) for a failure.
+func TestRunScanners_GovulncheckCleanExitZero(t *testing.T) {
+	bin := installAllFakeScanners(t)
+	fakeTool(t, bin, "govulncheck", "No vulnerabilities found.", 0)
+	repo := seedRepo(t, map[string]string{"go.mod": "module example.com/x\n"})
+
+	_, ran, _, failed := RunScanners(context.Background(), repo)
+
+	for _, k := range failed {
+		if k == ScannerGovulncheck {
+			t.Errorf("a clean govulncheck (exit 0, no vulns) must not be in failed: %v", failed)
+		}
+	}
+	ranSet := map[ScannerKind]bool{}
+	for _, k := range ran {
+		ranSet[k] = true
+	}
+	if !ranSet[ScannerGovulncheck] {
+		t.Errorf("a clean govulncheck must be counted as ran, got ran=%v", ran)
+	}
+}
+
 func TestDetectScanners_CombinesLanguageAndAvailability(t *testing.T) {
 	bin := t.TempDir()
 	fakeTool(t, bin, "gosec", "", 0)
