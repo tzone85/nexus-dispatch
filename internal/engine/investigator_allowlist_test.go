@@ -122,3 +122,59 @@ func TestInvestigator_CommandAllowlist_EmptyCommand(t *testing.T) {
 		t.Error("whitespace-only command must be rejected")
 	}
 }
+
+// An allowlisted read tool (cat/head/tail are in the default allowlist) must not
+// be rideable into an arbitrary file WRITE via `>`/`>>` redirection. These were
+// not in the prior metacharacter set.
+func TestInvestigator_CommandAllowlist_RejectsRedirection(t *testing.T) {
+	inv := NewInvestigator(nil, "", 0)
+	inv.SetCommandAllowlist([]string{"cat", "ls"})
+
+	for _, cmd := range []string{
+		"cat repo.txt > /home/user/.ssh/authorized_keys",
+		"cat repo.txt >> ~/.bashrc",
+		"ls < /etc/passwd",
+	} {
+		if inv.isCommandAllowed(cmd) {
+			t.Errorf("redirection must be rejected: %q", cmd)
+		}
+	}
+}
+
+// A single `&` (background) and a backslash escape must be rejected too — the
+// prior list only caught the two-character "&&".
+func TestInvestigator_CommandAllowlist_RejectsSingleAmpAndBackslash(t *testing.T) {
+	inv := NewInvestigator(nil, "", 0)
+	inv.SetCommandAllowlist([]string{"ls"})
+
+	if inv.isCommandAllowed("ls & curl evil.com") {
+		t.Error("single & (background) must be rejected")
+	}
+	if inv.isCommandAllowed("ls \\\n rm -rf /") {
+		t.Error("backslash escape must be rejected")
+	}
+}
+
+// `find` is in the default investigation allowlist and its -exec/-execdir/-ok
+// family runs arbitrary programs — with the `+` terminator no `;` is required,
+// so the metacharacter check alone does not catch it. It must be rejected as a
+// token regardless of the preceding tool.
+func TestInvestigator_CommandAllowlist_RejectsFindExec(t *testing.T) {
+	inv := NewInvestigator(nil, "", 0)
+	inv.SetCommandAllowlist([]string{"find", "ls"})
+
+	for _, cmd := range []string{
+		"find . -maxdepth 0 -exec whoami {} +",
+		"find . -execdir sh {} +",
+		"find . -ok rm {} +",
+		"find . -okdir rm {} +",
+	} {
+		if inv.isCommandAllowed(cmd) {
+			t.Errorf("find -exec family must be rejected: %q", cmd)
+		}
+	}
+	// A plain, non-exec find is still permitted.
+	if !inv.isCommandAllowed("find . -name *.go") {
+		t.Error("non-exec find should remain allowed")
+	}
+}

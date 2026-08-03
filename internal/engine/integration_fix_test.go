@@ -1,11 +1,55 @@
 package engine
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/tzone85/nexus-dispatch/internal/llm"
 	"github.com/tzone85/nexus-dispatch/internal/state"
 )
+
+// recordingFixClient captures whether Complete ran and whether its context was
+// already cancelled when it did.
+type recordingFixClient struct {
+	called chan struct{}
+	ctxErr error
+}
+
+func (c *recordingFixClient) Complete(ctx context.Context, _ llm.CompletionRequest) (llm.CompletionResponse, error) {
+	c.ctxErr = ctx.Err()
+	close(c.called)
+	return llm.CompletionResponse{Content: "reconcile handler.Handler signature"}, nil
+}
+
+// TestDispatchIntegrationFix_SurvivesCallerContextCancel proves the detached
+// diagnosis goroutine is NOT killed when the caller (postExecutionPipeline)
+// returns and cancels its pipeline context. Before the fix, fixCtx was a child
+// of the caller's context, so the LLM call observed context.Canceled and the
+// fix hint was never produced.
+func TestDispatchIntegrationFix_SurvivesCallerContextCancel(t *testing.T) {
+	es, ps := capacityTestStores(t)
+	seedCapacityStory(t, es, ps, "REQ-INT", "s-int-1")
+
+	client := &recordingFixClient{called: make(chan struct{})}
+	fixer := NewTechLeadFixer(client, "model", 256, es, ps)
+
+	// Mirror the real call site: pass a cancellable context, then cancel it the
+	// instant DispatchIntegrationFix returns (as the deferred pipelineCancel does).
+	ctx, cancel := context.WithCancel(context.Background())
+	fixer.DispatchIntegrationFix(ctx, "s-int-1", t.TempDir(), "build broke")
+	cancel()
+
+	select {
+	case <-client.called:
+		if client.ctxErr != nil {
+			t.Fatalf("LLM call ran with an already-cancelled context: %v", client.ctxErr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("integration-fix LLM call never ran — goroutine was cancelled with the caller context")
+	}
+}
 
 // TestTechLeadFixer_BuildPrompt_ContainsRequiredSections verifies that the
 // prompt produced by buildPrompt contains the build error, a stories section,

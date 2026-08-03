@@ -154,11 +154,23 @@ func checkTests(repoDir string) (passing, failing, total int) {
 	}
 
 	cmd.Dir = repoDir
-	out, _ := cmd.CombinedOutput()
+	out, runErr := cmd.CombinedOutput()
 	output := string(out)
 
 	if buildFileExists(filepath.Join(repoDir, "go.mod")) {
-		return parseGoTestJSON(output)
+		passing, failing, total = parseGoTestJSON(output)
+		// `go test` exits non-zero on a compilation/setup failure that
+		// parseGoTestJSON cannot attribute to a specific test (test files that
+		// no longer compile emit only package-level events with no Test field).
+		// `go build ./...` in checkBuild does NOT compile _test.go files, so
+		// this is the ONLY signal that the composed mainline's tests are red.
+		// Fail closed: a non-zero exit with zero counted failures still means
+		// the suite did not go green.
+		if runErr != nil && failing == 0 {
+			failing = 1
+			total = passing + failing
+		}
+		return passing, failing, total
 	}
 
 	// Parse test results (simplified — count PASS/FAIL lines)
@@ -188,6 +200,7 @@ func checkTests(repoDir string) (passing, failing, total int) {
 }
 
 func parseGoTestJSON(output string) (passing, failing, total int) {
+	buildFailures := 0
 	for _, line := range strings.Split(output, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -196,8 +209,22 @@ func parseGoTestJSON(output string) (passing, failing, total int) {
 		var evt struct {
 			Action string `json:"Action"`
 			Test   string `json:"Test"`
+			Output string `json:"Output"`
 		}
-		if err := json.Unmarshal([]byte(line), &evt); err != nil || evt.Test == "" {
+		if err := json.Unmarshal([]byte(line), &evt); err != nil {
+			continue
+		}
+		if evt.Test == "" {
+			// Package-level events carry no Test field. A package whose test
+			// files fail to compile emits a "[build failed]" (or "[setup
+			// failed]") output line and a package-level fail — but no per-test
+			// fail event. Count these so a test-compilation break (a common
+			// form of cross-story drift) is not silently reported as "0
+			// failing" and waved through the completion gate.
+			if evt.Action == "output" &&
+				(strings.Contains(evt.Output, "[build failed]") || strings.Contains(evt.Output, "[setup failed]")) {
+				buildFailures++
+			}
 			continue
 		}
 		switch evt.Action {
@@ -207,6 +234,7 @@ func parseGoTestJSON(output string) (passing, failing, total int) {
 			failing++
 		}
 	}
+	failing += buildFailures
 	total = passing + failing
 	log.Printf("[verify] tests: %d passing, %d failing, %d total", passing, failing, total)
 	return passing, failing, total

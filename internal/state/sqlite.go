@@ -220,6 +220,8 @@ func (s *SQLiteStore) Project(evt Event) error {
 		return s.projectStoryCreated(payload)
 	case EventAgentSpawned:
 		return s.projectAgentSpawned(evt, payload)
+	case EventAgentTerminated:
+		return s.projectAgentTerminated(evt)
 	case EventStoryEstimated:
 		return s.updateStoryStatus(evt.StoryID, "estimated")
 	case EventStoryAssigned:
@@ -770,6 +772,38 @@ func (s *SQLiteStore) projectAgentSpawned(evt Event, payload map[string]any) err
 	)
 	if err != nil {
 		return fmt.Errorf("project agent spawned: %w", err)
+	}
+	return nil
+}
+
+// projectAgentTerminated transitions a killed/cancelled agent out of its live
+// state so readers (nxd agents, the TUI/web panels) no longer show it as an idle
+// agent still bound to a story. The two emit sites differ in shape: the dashboard
+// kill (web/handlers.go) carries the agent id in AgentID with an empty StoryID,
+// while the controller (engine/controller.go) emits with AgentID="controller" and
+// the story id in StoryID — so match by story when we have one, else by agent id.
+// current_story_id is NOT NULL, so it is cleared to the empty string (which also
+// drops the agent from orphan-recovery's session→story map — a terminated agent
+// must not be reattached).
+func (s *SQLiteStore) projectAgentTerminated(evt Event) error {
+	if evt.StoryID != "" {
+		_, err := s.db.Exec(
+			`UPDATE agents SET status = 'terminated', current_story_id = '', updated_at = CURRENT_TIMESTAMP
+			 WHERE current_story_id = ?`,
+			evt.StoryID,
+		)
+		if err != nil {
+			return fmt.Errorf("project agent terminated (by story): %w", err)
+		}
+		return nil
+	}
+	_, err := s.db.Exec(
+		`UPDATE agents SET status = 'terminated', current_story_id = '', updated_at = CURRENT_TIMESTAMP
+		 WHERE id = ?`,
+		evt.AgentID,
+	)
+	if err != nil {
+		return fmt.Errorf("project agent terminated (by agent): %w", err)
 	}
 	return nil
 }

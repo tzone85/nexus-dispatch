@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"os/exec"
 	"path/filepath"
@@ -308,6 +309,20 @@ func parseNpmAudit(out []byte) ([]Finding, error) {
 	return findings, nil
 }
 
+// firstLine returns the first non-empty line of out (trimmed, capped) for use in
+// a failure message — enough to see the tool's error without dumping its output.
+func firstLine(out []byte) string {
+	for _, line := range strings.Split(string(out), "\n") {
+		if t := strings.TrimSpace(line); t != "" {
+			if len(t) > 200 {
+				t = t[:200] + "…"
+			}
+			return t
+		}
+	}
+	return "(no output)"
+}
+
 func parseGovulncheck(out []byte) ([]Finding, error) {
 	var findings []Finding
 	sc := bufio.NewScanner(bytes.NewReader(out))
@@ -365,13 +380,31 @@ func (s Scanner) Run(ctx context.Context, repoDir string) ([]Finding, error) {
 		return nil, nil
 	}
 	cmd.Dir = repoDir
-	out, _ := cmd.CombinedOutput() // exit code intentionally ignored; parse output
+	// Exit code is a findings signal for most tools (non-zero == findings), so
+	// it is not by itself a failure. govulncheck is the exception (below): it
+	// uses non-zero for BOTH "found vulns" and "failed to run", and its text
+	// output has no findings to parse in either the clean OR the errored case,
+	// so a run failure would otherwise masquerade as a clean scan.
+	out, runErr := cmd.CombinedOutput()
 
 	switch s.Kind {
 	case ScannerGosec:
 		return parseGosec(out, repoDir)
 	case ScannerGovulncheck:
-		return parseGovulncheck(out)
+		fs, err := parseGovulncheck(out)
+		if err != nil {
+			return nil, err
+		}
+		// A completed govulncheck run either prints "Vulnerability #" blocks
+		// (findings) or "No vulnerabilities found". Neither of those plus a
+		// non-zero exit means the scan errored — DB fetch blocked, module load
+		// failure, or timeout — rather than finding nothing. Surface it as a
+		// failed scan so RunScanners records the coverage loss instead of
+		// reporting a clean dependency-CVE scan that never actually ran.
+		if len(fs) == 0 && runErr != nil && !bytes.Contains(out, []byte("No vulnerabilities found")) {
+			return nil, fmt.Errorf("govulncheck did not complete cleanly (%v): %s", runErr, firstLine(out))
+		}
+		return fs, nil
 	case ScannerGitleaks:
 		return parseGitleaks(out, repoDir)
 	case ScannerSemgrep:

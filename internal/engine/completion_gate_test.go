@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -219,5 +220,59 @@ func TestReqBlockedEvent_ProjectsBlockedStatus(t *testing.T) {
 	}
 	if req.Status != "blocked" {
 		t.Errorf("expected status 'blocked' after REQ_BLOCKED, got %q", req.Status)
+	}
+}
+
+// TestParseGoTestJSON_CountsPackageBuildFailures proves the gate is not blind to
+// a package whose _test.go files no longer compile. `go test -json` emits only
+// package-level events (no Test field) with a "[build failed]" output line — the
+// prior parser skipped every Test=="" event and reported 0 failing, so the
+// completion gate would wave a red mainline through. The parser must now count
+// the build failure.
+func TestParseGoTestJSON_CountsPackageBuildFailures(t *testing.T) {
+	// Real shape of `go test -json ./...` when a test file fails to compile.
+	output := strings.Join([]string{
+		`{"Action":"start","Package":"gatecheck"}`,
+		`{"Action":"output","Package":"gatecheck","Output":"# gatecheck [gatecheck.test]\n"}`,
+		`{"Action":"output","Package":"gatecheck","Output":"./x_test.go:5:2: undefined: Missing\n"}`,
+		`{"Action":"output","Package":"gatecheck","Output":"FAIL\tgatecheck [build failed]\n"}`,
+		`{"Action":"fail","Package":"gatecheck","Elapsed":0}`,
+	}, "\n")
+
+	passing, failing, total := parseGoTestJSON(output)
+	if failing == 0 {
+		t.Fatalf("a package that fails to compile its tests must count as failing, got passing=%d failing=%d total=%d", passing, failing, total)
+	}
+	if !ShouldRunFixCycle(VerificationResult{BuildPasses: true, TestsFailing: failing}) {
+		t.Fatal("ShouldRunFixCycle must return true when test compilation fails")
+	}
+}
+
+// TestCheckTests_NonZeroExitWithNoFailuresIsRed guards the fail-closed net in
+// checkTests: `go test` exiting non-zero while parseGoTestJSON attributes no
+// per-test failures (compilation/setup failure, panic in init) must still be
+// reported as failing so the completion gate does not report green on a mainline
+// whose tests do not pass. Uses a real go module that builds but whose test file
+// does not compile.
+func TestCheckTests_NonZeroExitWithNoFailuresIsRed(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping real go test invocation in -short mode")
+	}
+	repoDir := t.TempDir()
+	// main.go compiles cleanly (so `go build ./...` passes) ...
+	writeGoModule(t, repoDir, "package main\n\nfunc main() {\n\tprintln(\"ok\")\n}\n")
+	// ... but the test file references an undefined symbol, so `go test` fails
+	// to build the test binary and exits non-zero with no per-test fail events.
+	if err := os.WriteFile(filepath.Join(repoDir, "main_test.go"),
+		[]byte("package main\n\nimport \"testing\"\n\nfunc TestX(t *testing.T) {\n\tUndefinedSymbol()\n}\n"), 0o600); err != nil {
+		t.Fatalf("write main_test.go: %v", err)
+	}
+
+	if !checkBuild(repoDir) {
+		t.Fatal("precondition: `go build ./...` must PASS — the bug is that build passes while tests are red")
+	}
+	_, failing, _ := checkTests(repoDir)
+	if failing == 0 {
+		t.Fatal("checkTests must report failing>0 when `go test` cannot compile the test binary")
 	}
 }
