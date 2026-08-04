@@ -119,9 +119,16 @@ func (fs *FileStore) readAndFilter(filter EventFilter) ([]Event, error) {
 			continue
 		}
 		events = append(events, evt)
-		if filter.Limit > 0 && len(events) >= filter.Limit {
-			break
-		}
 	}
-	return events, scanner.Err()
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	// Limit returns the most recent N matching events (the tail of the log),
+	// preserving chronological order. Every caller — the web "Last 50 events"
+	// snapshot, the dashboard activity feed, the Hub delta push — wants recent
+	// activity, so we must keep the LAST N, not truncate from the front.
+	if filter.Limit > 0 && len(events) > filter.Limit {
+		events = events[len(events)-filter.Limit:]
+	}
+	return events, nil
 }
