@@ -67,6 +67,14 @@ func runArchive(cmd *cobra.Command, args []string) error {
 	if err := s.Events.Append(evt); err != nil {
 		return fmt.Errorf("emit archive event: %w", err)
 	}
+	// Archive reconciles the projection by direct write (ArchiveRequirement /
+	// ArchiveStoriesByReq) rather than by projecting the event above, so tell
+	// the projection its watermark has advanced. Otherwise loadStores would see
+	// the projection as one event behind the log and rebuild on the very next
+	// command, replaying REQ_COMPLETED to "completed" and undoing the archive.
+	if err := s.Proj.AckDirectWrite(1); err != nil {
+		return fmt.Errorf("advance projection watermark: %w", err)
+	}
 
 	fmt.Fprintf(out, "Archived requirement %s (%s) and all its stories.\n", reqID, req.Title)
 	return nil
