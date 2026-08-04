@@ -99,7 +99,7 @@ nxd init && nxd doctor
 | `nxd req --background` | Same, but self-daemonize; tail with `nxd req-logs` |
 | `nxd status` | Requirements + stories overview |
 | `nxd dashboard [--web]` | Live TUI / browser dashboard |
-| `nxd doctor` | Preflight checks (Go, git, tmux, Ollama, config) |
+| `nxd doctor` | Preflight checks (Go, git, tmux, Ollama, config, projection drift) |
 
 Full CLI reference: [`docs/reference/cli-reference.md`](docs/reference/cli-reference.md).
 
