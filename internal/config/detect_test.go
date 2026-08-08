@@ -122,3 +122,20 @@ func TestRuntimeConfig_MaxCriteriaRetriesParsed(t *testing.T) {
 		t.Fatalf("want MaxCriteriaRetries=5 from yaml, got %d", rc.MaxCriteriaRetries)
 	}
 }
+
+func TestQAConfig_CriteriaAuthoritativeParsed(t *testing.T) {
+	// The flag makes objective success_criteria the final word over a small
+	// local reviewer model that invents out-of-scope requirements. It must
+	// round-trip through YAML and default to false (reviewer keeps its veto).
+	var withFlag config.Config
+	if err := yaml.Unmarshal([]byte("qa:\n  criteria_authoritative: true\n"), &withFlag); err != nil {
+		t.Fatal(err)
+	}
+	if !withFlag.QA.CriteriaAuthoritative {
+		t.Fatal("expected criteria_authoritative=true from yaml")
+	}
+	def := config.DefaultConfig()
+	if def.QA.CriteriaAuthoritative {
+		t.Fatal("criteria_authoritative must default to false (reviewer veto preserved)")
+	}
+}

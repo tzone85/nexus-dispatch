@@ -150,6 +150,7 @@ qa:
           value: go test ./...
     disable_completion_gate: false
     completion_fix_cycles: 0
+    criteria_authoritative: false
 security:
     gate_severity: critical
     auto_learn: true

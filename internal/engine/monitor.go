@@ -652,12 +652,25 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 		}
 
 		if !result.Passed {
-			EmitStageCompleted(m.eventStore, m.projStore, "monitor", storyID, "review", "failure", reviewStart)
-			m.resetStoryToDraft(storyID, "reviewer", fmt.Sprintf("review rejected: %s", result.Summary))
-			return
+			// Criteria-authoritative mode: when the operator has defined
+			// objective success_criteria and the story reached post-execution
+			// (meaning they all passed), the LLM reviewer is advisory. A small
+			// local reviewer model routinely invents requirements outside the
+			// acceptance criteria and vetoes objectively-complete work, which
+			// stops the pipeline from ever finishing. Record the feedback and
+			// proceed rather than discarding buildable code back to draft.
+			if m.config.QA.CriteriaAuthoritative && len(m.config.QA.SuccessCriteria) > 0 {
+				EmitStageCompleted(m.eventStore, m.projStore, "monitor", storyID, "review", "success", reviewStart)
+				log.Printf("[pipeline] review advisory-only for %s (criteria authoritative): %s", storyID, result.Summary)
+			} else {
+				EmitStageCompleted(m.eventStore, m.projStore, "monitor", storyID, "review", "failure", reviewStart)
+				m.resetStoryToDraft(storyID, "reviewer", fmt.Sprintf("review rejected: %s", result.Summary))
+				return
+			}
+		} else {
+			EmitStageCompleted(m.eventStore, m.projStore, "monitor", storyID, "review", "success", reviewStart)
+			log.Printf("[pipeline] review passed for %s", storyID)
 		}
-		EmitStageCompleted(m.eventStore, m.projStore, "monitor", storyID, "review", "success", reviewStart)
-		log.Printf("[pipeline] review passed for %s", storyID)
 	}
 
 	// 2. QA

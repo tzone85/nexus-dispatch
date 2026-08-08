@@ -283,6 +283,15 @@ type QAConfig struct {
 	// mainline before the requirement is blocked (REQ_BLOCKED). 0 means the
 	// default (2); a negative value forces a hard gate (verify once, no fixes).
 	CompletionFixCycles int `yaml:"completion_fix_cycles"`
+	// CriteriaAuthoritative makes the operator's success_criteria the final
+	// word: when at least one criterion is configured and all pass, the LLM
+	// code reviewer becomes advisory — its comments are still recorded, but a
+	// "not passed" verdict no longer resets a criteria-passing story to draft.
+	// This exists because a small local reviewer model routinely invents
+	// requirements outside the acceptance criteria (missing tests, versioning,
+	// style) and vetoes objectively-complete work, which prevents the pipeline
+	// from ever finishing. Default false preserves the reviewer's veto.
+	CriteriaAuthoritative bool `yaml:"criteria_authoritative"`
 }
 
 // SecurityConfig controls the security agent: the per-story pre-merge security
