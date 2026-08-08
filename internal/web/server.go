@@ -95,11 +95,30 @@ func (s *Server) BindAddr() string {
 	return s.bindAddr
 }
 
-// checkAuth verifies the request carries the expected ?token=<hex>. Uses
-// constant-time comparison to avoid token-length / equality timing leaks.
+// authCookieName is the cookie the document root seeds so that relative
+// asset requests (styles.css, app.js) and the /ws upgrade authenticate
+// without carrying ?token= in every URL. A browser fetches styles.css and
+// app.js as relative URLs with no query string, so a query-only auth check
+// 401s both — leaving the dashboard unstyled with app.js never running
+// ("Connecting..." forever). The cookie is what makes those follow-up
+// requests carry the token, exactly as the "/" handler comment intends.
+const authCookieName = "nxd_token"
+
+// checkAuth verifies the request carries the expected token, either as the
+// ?token=<hex> query parameter (the pasted dashboard URL) or as the nxd_token
+// cookie seeded when the document root was served (all follow-up asset and
+// WebSocket requests). Uses constant-time comparison to avoid token-length /
+// equality timing leaks.
 func (s *Server) checkAuth(r *http.Request) bool {
-	got := r.URL.Query().Get("token")
-	return subtle.ConstantTimeCompare([]byte(got), []byte(s.authToken)) == 1
+	if got := r.URL.Query().Get("token"); got != "" &&
+		subtle.ConstantTimeCompare([]byte(got), []byte(s.authToken)) == 1 {
+		return true
+	}
+	if c, err := r.Cookie(authCookieName); err == nil &&
+		subtle.ConstantTimeCompare([]byte(c.Value), []byte(s.authToken)) == 1 {
+		return true
+	}
+	return false
 }
 
 // SetDAG sets the DAG export for inclusion in state snapshots.
@@ -133,6 +152,21 @@ func (s *Server) Start(ctx context.Context) error {
 		if !s.checkAuth(r) {
 			http.Error(w, "invalid token", http.StatusUnauthorized)
 			return
+		}
+		// Seed the token as an HttpOnly cookie so the browser's relative
+		// asset requests (styles.css, app.js) and the /ws upgrade — none of
+		// which carry ?token= — authenticate on their own. Without this the
+		// assets 401 and the page renders unstyled with the socket never
+		// opening. Set only when the token arrived via the query (the initial
+		// document load) to avoid rewriting it on every asset hit.
+		if r.URL.Query().Get("token") != "" {
+			http.SetCookie(w, &http.Cookie{
+				Name:     authCookieName,
+				Value:    s.authToken,
+				Path:     "/",
+				HttpOnly: true,
+				SameSite: http.SameSiteStrictMode,
+			})
 		}
 		// M8: defense-in-depth headers.
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws://localhost:* ws://127.0.0.1:*")

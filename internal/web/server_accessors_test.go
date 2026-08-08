@@ -85,6 +85,31 @@ func buildAuthRequest(t *testing.T, target string) *http.Request {
 	return &http.Request{URL: u, Header: http.Header{}}
 }
 
+// TestCheckAuth_AcceptsTokenCookie proves a request with NO ?token= query but
+// the nxd_token cookie authenticates. This is the exact shape of the browser's
+// relative asset requests (GET /styles.css, GET /app.js) and the /ws upgrade —
+// which previously 401'd, leaving the dashboard unstyled with the socket never
+// opening ("Connecting..." forever).
+func TestCheckAuth_AcceptsTokenCookie(t *testing.T) {
+	s := newTestServer(t)
+	r := buildAuthRequest(t, "/styles.css") // no query token, like the browser
+	r.AddCookie(&http.Cookie{Name: authCookieName, Value: s.AuthToken()})
+	if !s.checkAuth(r) {
+		t.Error("checkAuth rejected a valid nxd_token cookie on a no-query asset request")
+	}
+}
+
+// TestCheckAuth_RejectsWrongCookie locks the cookie negative path: a bogus
+// cookie value must not slip past just because it arrived as a cookie.
+func TestCheckAuth_RejectsWrongCookie(t *testing.T) {
+	s := newTestServer(t)
+	r := buildAuthRequest(t, "/app.js")
+	r.AddCookie(&http.Cookie{Name: authCookieName, Value: "deadbeefdeadbeefdeadbeefdeadbeef"})
+	if s.checkAuth(r) {
+		t.Error("checkAuth accepted a bogus nxd_token cookie")
+	}
+}
+
 // TestAuthToken_StableAcrossCalls makes sure consecutive AuthToken
 // reads do not refresh the value. The dashboard relies on a stable
 // session token until the process exits.
