@@ -22,8 +22,10 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Merge.AutoMerge != true {
 		t.Fatal("expected auto_merge true")
 	}
-	if cfg.Merge.BaseBranch != "main" {
-		t.Fatalf("expected base_branch 'main', got %s", cfg.Merge.BaseBranch)
+	// BaseBranch defaults to empty so the merge path detects the repo's real
+	// default branch (master vs main) rather than assuming main.
+	if cfg.Merge.BaseBranch != "" {
+		t.Fatalf("expected base_branch '' (auto-detect), got %s", cfg.Merge.BaseBranch)
 	}
 	if cfg.Merge.Mode != "local" {
 		t.Fatalf("expected merge mode 'local', got %s", cfg.Merge.Mode)

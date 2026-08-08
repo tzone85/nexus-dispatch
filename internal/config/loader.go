@@ -26,10 +26,10 @@ func DefaultConfig() Config {
 	return Config{
 		Version: "1.0",
 		Workspace: WorkspaceConfig{
-			StateDir:            "~/.nxd",
-			Backend:             "sqlite",
-			LogLevel:            "info",
-			LogRetentionDays:    30,
+			StateDir:         "~/.nxd",
+			Backend:          "sqlite",
+			LogLevel:         "info",
+			LogRetentionDays: 30,
 			// Off by default: NXD promises that a default run makes zero
 			// outbound calls. Background model-update checks (Ollama
 			// registry / Google AI) are opt-in via update_check: true;
@@ -70,9 +70,13 @@ func DefaultConfig() Config {
 		Merge: MergeConfig{
 			AutoMerge:         true,
 			ReviewBeforeMerge: false,
-			BaseBranch:        "main",
-			Mode:              "local",
-			PRTemplate:        "## Story: {story_id}\n{description}\n### Acceptance Criteria\n{acceptance_criteria}\n",
+			// Empty by default so the merge path detects the repo's real
+			// default branch (master vs main) instead of assuming main —
+			// a hardcoded main fails every merge on older, master-based repos.
+			// Set explicitly to pin a specific integration branch.
+			BaseBranch: "",
+			Mode:       "local",
+			PRTemplate: "## Story: {story_id}\n{description}\n### Acceptance Criteria\n{acceptance_criteria}\n",
 		},
 		Planning: PlanningConfig{
 			SequentialFilePatterns: []string{"package.json", "*.config.*", "src/core/*"},

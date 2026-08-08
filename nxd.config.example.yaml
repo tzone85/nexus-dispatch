@@ -62,7 +62,7 @@ cleanup:
 merge:
     auto_merge: true
     review_before_merge: false
-    base_branch: main
+    base_branch: ""
     mode: local
     pr_template: |
         ## Story: {story_id}
