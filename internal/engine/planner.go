@@ -230,31 +230,24 @@ architecture and conventions when planning stories.`, profileContext)
 		_ = p.projStore.Project(planningStarted)
 	}
 
-	// Call Tech Lead
-	resp, err := p.llmClient.Complete(ctx, req)
-	if err != nil {
-		return PlanResult{}, fmt.Errorf("tech lead planning: %w", err)
-	}
-
-	// Parse stories from the response. Prefer structured tool calls when
-	// available; fall back to JSON text parsing otherwise.
+	// Call Tech Lead. Local models (Ollama under memory pressure) sometimes
+	// return an empty or truncated body; a single bad response must not kill
+	// the whole requirement, so retry the call before giving up.
 	var stories []PlannedStory
-	if useTools && len(resp.ToolCalls) > 0 {
-		toolResult, toolErr := ProcessPlannerToolCalls(resp.ToolCalls)
-		if toolErr == nil && len(toolResult.Stories) > 0 {
-			stories = mapToolStories(toolResult.Stories)
-		} else {
-			// Tool processing failed — fall back to text parsing
-			stories, err = parseStoriesFromText(resp.Content)
-			if err != nil {
-				return PlanResult{}, err
-			}
-		}
-	} else {
-		stories, err = parseStoriesFromText(resp.Content)
+	for attempt := 1; ; attempt++ {
+		resp, err := p.llmClient.Complete(ctx, req)
 		if err != nil {
-			return PlanResult{}, err
+			return PlanResult{}, fmt.Errorf("tech lead planning: %w", err)
 		}
+
+		stories, err = storiesFromResponse(useTools, resp)
+		if err == nil {
+			break
+		}
+		if attempt >= maxPlanAttempts {
+			return PlanResult{}, fmt.Errorf("tech lead planning failed after %d attempts: %w", maxPlanAttempts, err)
+		}
+		log.Printf("[planner] story parse failed (attempt %d/%d): %v — retrying Tech Lead call", attempt, maxPlanAttempts, err)
 	}
 
 	// Reject a degenerate plan before any event is emitted. An empty story
@@ -545,6 +538,24 @@ Respond ONLY with the JSON array, no other text.`, reqTitle, storyID, storyTitle
 	}
 
 	return valid, nil
+}
+
+// maxPlanAttempts bounds Tech Lead retries when a response is empty or
+// unparseable. Kept small: each attempt is a full (slow) planning call.
+const maxPlanAttempts = 3
+
+// storiesFromResponse extracts stories from a Tech Lead response. Prefers
+// structured tool calls when the model supports them; falls back to JSON
+// text parsing otherwise.
+func storiesFromResponse(useTools bool, resp llm.CompletionResponse) ([]PlannedStory, error) {
+	if useTools && len(resp.ToolCalls) > 0 {
+		toolResult, toolErr := ProcessPlannerToolCalls(resp.ToolCalls)
+		if toolErr == nil && len(toolResult.Stories) > 0 {
+			return mapToolStories(toolResult.Stories), nil
+		}
+		// Tool processing failed — fall back to text parsing.
+	}
+	return parseStoriesFromText(resp.Content)
 }
 
 // parseStoriesFromText extracts PlannedStory values from a plain-text JSON

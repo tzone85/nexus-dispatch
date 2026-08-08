@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/tzone85/nexus-dispatch/internal/config"
 	"github.com/tzone85/nexus-dispatch/internal/memory"
+	"github.com/tzone85/nexus-dispatch/internal/state"
 )
 
 func newDoctorCmd() *cobra.Command {
@@ -63,6 +64,9 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 
 	// 7. State directory
 	checks = append(checks, checkStateDir(cfg))
+
+	// 7b. Projection drift — is the SQLite projection watermark behind the log?
+	checks = append(checks, checkProjectionDrift(cfg))
 
 	// 8. MemPalace
 	checks = append(checks, checkMemPalace())
@@ -280,6 +284,60 @@ func resolveStateDir(cfg config.Config) string {
 		return ""
 	}
 	return filepath.Join(home, ".nxd")
+}
+
+// checkProjectionDrift reports whether the SQLite projection's reconciliation
+// watermark has fallen behind the event-log length — the durable desync
+// signature that loadStores rebuilds from on the next command. It reads both
+// stores without mutating them: it opens nothing that does not already exist
+// (so it never materialises empty stores as a side effect) and never triggers
+// a rebuild, so the number it reports is the drift a user would hit before any
+// command auto-heals it.
+func checkProjectionDrift(cfg config.Config) checkResult {
+	const name = "Projection drift"
+
+	stateDir := resolveStateDir(cfg)
+	if stateDir == "" {
+		return checkResult{name, "ok", "no state directory configured (nothing to check)"}
+	}
+
+	eventsPath := filepath.Join(stateDir, "events.jsonl")
+	dbPath := filepath.Join(stateDir, "nxd.db")
+	// Step aside when the stores are not initialised — the State-directory
+	// check already owns the "run nxd init" guidance, and opening the stores
+	// here would create empty ones as a side effect.
+	if !fileExistsAt(eventsPath) || !fileExistsAt(dbPath) {
+		return checkResult{name, "ok", "no projection yet (stores not initialised)"}
+	}
+
+	es, err := state.NewFileStore(eventsPath)
+	if err != nil {
+		return checkResult{name, "warn", fmt.Sprintf("could not open event log: %v", err)}
+	}
+	defer es.Close()
+
+	ps, err := state.NewSQLiteStore(dbPath)
+	if err != nil {
+		return checkResult{name, "warn", fmt.Sprintf("could not open projection store: %v", err)}
+	}
+	defer ps.Close()
+
+	logCount, err := es.Count(state.EventFilter{})
+	if err != nil {
+		return checkResult{name, "warn", fmt.Sprintf("could not count events: %v", err)}
+	}
+	applied, err := ps.AppliedEventCount()
+	if err != nil {
+		return checkResult{name, "warn", fmt.Sprintf("could not read projection watermark: %v", err)}
+	}
+
+	if applied < logCount {
+		return checkResult{name, "warn", fmt.Sprintf(
+			"projection is %d event(s) behind the log (applied %d of %d); it rebuilds automatically on the next command",
+			logCount-applied, applied, logCount,
+		)}
+	}
+	return checkResult{name, "ok", fmt.Sprintf("in sync with the event log (%d events)", logCount)}
 }
 
 // checkDevDB reports the configured devdb provider's reachability.

@@ -456,6 +456,8 @@ Run preflight checks on every NXD dependency and configuration value. Use before
 nxd doctor
 ```
 
+Checks cover Go, git, tmux, Ollama, the Gemma model, config validity, the state directory, disk/permissions, and optional integrations (MemPalace, Google AI, plugins, devdb). One check, **Projection drift**, compares the SQLite projection's reconciliation watermark against the event-log length: it warns when the projection is behind the log (the desync that a normal command auto-rebuilds on its next open) and reports "in sync" otherwise. The check is read-only — it never rebuilds the projection or creates stores as a side effect.
+
 ---
 
 ### nxd estimate

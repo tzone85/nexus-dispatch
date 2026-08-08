@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -396,6 +397,19 @@ func (e *Executor) runtimeForRole(role agent.Role) string {
 		}
 	}
 
+	// runtimeUsable reports whether a CLI runtime's binary is actually on
+	// PATH. A runtime with a missing binary would spawn, die instantly, and
+	// loop as "agent produced no code changes" — skip it here instead.
+	// Native runtimes and runtimes without an explicit command (tests,
+	// name-as-command setups) are assumed usable.
+	runtimeUsable := func(rc config.RuntimeConfig) bool {
+		if rc.Native || rc.Command == "" {
+			return true
+		}
+		_, err := exec.LookPath(rc.Command)
+		return err == nil
+	}
+
 	// Well-known provider → runtime mappings
 	providerRuntimes := map[string][]string{
 		"ollama":    {"aider", "ollama"},
@@ -407,15 +421,23 @@ func (e *Executor) runtimeForRole(role agent.Role) string {
 
 	if candidates, ok := providerRuntimes[provider]; ok {
 		for _, name := range candidates {
-			if _, exists := e.config.Runtimes[name]; exists {
+			if rtCfg, exists := e.config.Runtimes[name]; exists && runtimeUsable(rtCfg) {
 				return name
 			}
 		}
 	}
 
-	// Fallback: first available runtime
-	for name := range e.config.Runtimes {
-		return name
+	// Fallback: prefer a native runtime (always executable — no external CLI),
+	// then any runtime whose binary exists.
+	for name, rtCfg := range e.config.Runtimes {
+		if rtCfg.Native {
+			return name
+		}
+	}
+	for name, rtCfg := range e.config.Runtimes {
+		if runtimeUsable(rtCfg) {
+			return name
+		}
 	}
 	return "aider"
 }

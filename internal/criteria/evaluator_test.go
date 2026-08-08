@@ -2,10 +2,23 @@ package criteria
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+// mustWriteFile writes body to path, creating parent directories.
+func mustWriteFile(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
 
 func TestFileExists_Pass(t *testing.T) {
 	dir := t.TempDir()
@@ -287,6 +300,43 @@ func TestCoverageAbove_Fail(t *testing.T) {
 	r := Evaluate(context.Background(), dir, Criterion{Type: TypeCoverageAbove, Expected: "99.0"})
 	if r.Passed {
 		t.Errorf("expected coverage below 99%%, got: %s", r.Actual)
+	}
+}
+
+// TestCoverageAbove_MultiPackage_AggregatesNotFirstPackage locks in the fix for
+// the false-green: against the default "./..." target, `go test -cover` prints
+// one coverage line per package. Package "aaa" is fully covered (100%); package
+// "zzz" is almost entirely uncovered. Reading only the first (alphabetical)
+// coverage line — as the old bare regex did — would report ~100% and PASS a
+// threshold the repo as a whole does not meet. The statement-weighted total
+// must reflect zzz's uncovered mass and FAIL.
+func TestCoverageAbove_MultiPackage_AggregatesNotFirstPackage(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping real go toolchain coverage test in -short mode")
+	}
+	dir := t.TempDir()
+	mustWriteFile(t, filepath.Join(dir, "go.mod"), "module multicov\n\ngo 1.21\n")
+
+	// Package aaa: one tiny fully-covered function → sorts first.
+	mustWriteFile(t, filepath.Join(dir, "aaa", "a.go"), "package aaa\n\nfunc A() int { return 1 }\n")
+	mustWriteFile(t, filepath.Join(dir, "aaa", "a_test.go"),
+		"package aaa\n\nimport \"testing\"\n\nfunc TestA(t *testing.T) {\n\tif A() != 1 {\n\t\tt.Fatal(\"x\")\n\t}\n}\n")
+
+	// Package zzz: many statements, essentially none covered → sorts last and
+	// dominates the statement-weighted total.
+	var big strings.Builder
+	big.WriteString("package zzz\n\n")
+	for i := 0; i < 40; i++ {
+		fmt.Fprintf(&big, "func F%d(n int) int {\n\tx := n + %d\n\tx = x * 2\n\tx = x - 1\n\treturn x\n}\n\n", i, i)
+	}
+	mustWriteFile(t, filepath.Join(dir, "zzz", "z.go"), big.String())
+	// A test file that runs NO functions, so zzz coverage ≈ 0%.
+	mustWriteFile(t, filepath.Join(dir, "zzz", "z_test.go"),
+		"package zzz\n\nimport \"testing\"\n\nfunc TestNothing(t *testing.T) {}\n")
+
+	r := Evaluate(context.Background(), dir, Criterion{Type: TypeCoverageAbove, Expected: "80.0"})
+	if r.Passed {
+		t.Errorf("BUG: coverage gate passed on the first package's number; aggregate is far below 80%% (actual=%s)", r.Actual)
 	}
 }
 

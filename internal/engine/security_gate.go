@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/tzone85/nexus-dispatch/internal/llm"
@@ -36,6 +37,13 @@ type SecurityGate struct {
 	autoLearn    bool
 	eventStore   state.EventStore
 	projStore    state.ProjectionStore
+
+	// upskillMu serializes the load→merge→save of the knowledge base. The
+	// pipeline runs one postExecutionPipeline goroutine per completed story
+	// (monitor.go), all sharing this one SecurityGate; without this lock two
+	// stories in the same wave race their KB writes and lose each other's
+	// learned rules.
+	upskillMu sync.Mutex
 
 	// seams
 	scan scanFunc
@@ -178,7 +186,31 @@ func (g *SecurityGate) blockSummary(report security.Report) string {
 // class (CWE if present, else tool rule id) is not already in the knowledge
 // base, persists the grown KB, and emits SECURITY_RULE_LEARNED per new class.
 func (g *SecurityGate) upskill(kb *security.KnowledgeBase, findings []security.Finding) {
+	// Fast pre-check: if nothing here is a learnable class, skip the lock and
+	// the disk reload entirely (the common case).
+	hasCandidate := false
+	for _, f := range findings {
+		if f.Severity.AtLeast(security.SeverityHigh) && vulnClassID(f) != "" {
+			hasCandidate = true
+			break
+		}
+	}
+	if !hasCandidate {
+		return
+	}
+
+	// Serialize the load→merge→save so concurrent story pipelines don't clobber
+	// each other's learned rules.
+	g.upskillMu.Lock()
+	defer g.upskillMu.Unlock()
+
+	// Re-load the persisted KB under the lock so we merge onto the freshest
+	// saved state (another story in this wave may have just learned a rule).
+	// Fall back to the caller's snapshot if the reload fails.
 	grown := kb
+	if reloaded, err := security.LoadKnowledgeBase(g.kbPath); err == nil {
+		grown = reloaded
+	}
 	learned := 0
 	for _, f := range findings {
 		if !f.Severity.AtLeast(security.SeverityHigh) {

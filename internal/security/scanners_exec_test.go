@@ -62,7 +62,10 @@ func installAllFakeScanners(t *testing.T) string {
 	fakeTool(t, bin, "gosec", fakeGosecOut, 1)
 	fakeTool(t, bin, "gitleaks", fakeGitleaksOut, 1)
 	fakeTool(t, bin, "semgrep", fakeSemgrepOut, 0)
-	fakeTool(t, bin, "govulncheck", fakeGovulncheckOut, 1)
+	// govulncheck exits 3 when the analysis completed and found
+	// vulnerabilities (exit 1 means the scan never ran — load/network error —
+	// and is routed to the failed list).
+	fakeTool(t, bin, "govulncheck", fakeGovulncheckOut, 3)
 	fakeTool(t, bin, "npm", fakeNpmAuditOut, 1)
 	// Keep /bin:/usr/bin so the fake scripts can find cat; no real security
 	// scanner is ever installed there, so LookPath still resolves only fakes.

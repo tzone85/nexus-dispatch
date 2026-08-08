@@ -65,3 +65,32 @@ func TestReleaseOrphans_HonorsMinAge(t *testing.T) {
 		t.Errorf("provider delete calls = %v", p.deleted)
 	}
 }
+
+// TestReleaseOrphans_ZeroCreatedAtKeptNotDeleted locks in the fail-safe for
+// orphans whose age is unknown. The docker provider never populates CreatedAt
+// (Postgres exposes no reliable per-database creation time), so its orphans
+// carry a zero timestamp. A zero time is always Before(cutoff); without the
+// guard the retention window (minAge/RetainHours) is silently defeated and
+// every docker orphan — including another concurrent requirement's in-use
+// databases — is deleted regardless of the configured retention.
+func TestReleaseOrphans_ZeroCreatedAtKeptNotDeleted(t *testing.T) {
+	p := &listProvider{
+		Provider: null.New(),
+		dbs: []devdb.DB{
+			{ID: "unknown-age", Name: "nxd-x-story-1"}, // zero CreatedAt (docker path)
+		},
+	}
+	deleted, kept, err := devdb.ReleaseOrphans(context.Background(), p, p.dbs, 24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deleted) != 0 {
+		t.Errorf("an orphan with unknown (zero) CreatedAt must NOT be deleted; deleted = %+v", deleted)
+	}
+	if len(kept) != 1 || kept[0].ID != "unknown-age" {
+		t.Errorf("kept = %+v, want [unknown-age]", kept)
+	}
+	if len(p.deleted) != 0 {
+		t.Errorf("provider Delete must not be called for unknown-age orphans; got %v", p.deleted)
+	}
+}

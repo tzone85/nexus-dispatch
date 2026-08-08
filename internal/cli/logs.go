@@ -100,29 +100,69 @@ func tailLog(path string, n int, raw bool, out io.Writer) error {
 }
 
 func followLog(path string, raw bool, out io.Writer) error {
+	return followLogPoll(path, raw, out, 500*time.Millisecond, nil, nil)
+}
+
+// followLogPoll tails path (tail -f style), emitting only lines appended after
+// the call begins. It stops when stop is closed; a nil stop channel follows
+// forever (the production behaviour — until the process is killed). If ready is
+// non-nil it is closed once the initial seek-to-end completes, so callers can
+// order subsequent appends deterministically (used by tests).
+//
+// It uses a persisted bufio.Reader rather than a bufio.Scanner: a Scanner
+// latches done permanently once its reader returns io.EOF, so a single Scanner
+// reused across poll iterations (as this function previously did) would seek to
+// end, hit EOF immediately, and then never observe any appended line. A
+// bufio.Reader re-reads from the file's current offset on each ReadString, so it
+// resumes cleanly. Partial (not yet newline-terminated) trailing writes are
+// rewound so they are re-read whole once the writer completes the line.
+func followLogPoll(path string, raw bool, out io.Writer, interval time.Duration, stop <-chan struct{}, ready chan<- struct{}) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("open trace: %w", err)
 	}
 	defer f.Close()
 
-	// Seek to end.
-	f.Seek(0, 2) //nolint:errcheck
+	// Follow shows only content appended after we start.
+	if _, err := f.Seek(0, io.SeekEnd); err != nil {
+		return fmt.Errorf("seek trace: %w", err)
+	}
+	if ready != nil {
+		close(ready)
+	}
 
-	scanner := bufio.NewScanner(f)
+	reader := bufio.NewReader(f)
 	for {
-		for scanner.Scan() {
-			line := scanner.Text()
-			if line == "" {
+		for {
+			line, rerr := reader.ReadString('\n')
+			if strings.HasSuffix(line, "\n") {
+				if text := strings.TrimRight(line, "\n"); text != "" {
+					if raw {
+						fmt.Fprintln(out, text)
+					} else {
+						formatEntry(out, text)
+					}
+				}
 				continue
 			}
-			if raw {
-				fmt.Fprintln(out, line)
-			} else {
-				formatEntry(out, line)
+			// No complete line available. Rewind past any partial bytes so the
+			// next poll re-reads the record once its newline is written.
+			if len(line) > 0 {
+				if _, serr := f.Seek(int64(-len(line)), io.SeekCurrent); serr != nil {
+					return fmt.Errorf("seek trace: %w", serr)
+				}
+				reader.Reset(f)
 			}
+			if rerr != nil && rerr != io.EOF {
+				return fmt.Errorf("read trace: %w", rerr)
+			}
+			break
 		}
-		time.Sleep(500 * time.Millisecond)
+		select {
+		case <-stop:
+			return nil
+		case <-time.After(interval):
+		}
 	}
 }
 

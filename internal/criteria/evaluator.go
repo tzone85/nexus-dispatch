@@ -159,7 +159,21 @@ func evalCoverageAbove(ctx context.Context, workDir string, c Criterion) Result 
 		return Result{Criterion: c, Passed: false, Message: fmt.Sprintf("invalid threshold: %s", c.Expected)}
 	}
 
-	cmd := exec.CommandContext(ctx, "go", "test", "-cover", target)
+	// Write a merged coverage profile so we can measure the AGGREGATE coverage
+	// of the whole target. `go test -cover ./...` prints one "coverage: X%"
+	// line PER package; reading just the first (as a bare regex does) lets the
+	// gate pass on the alphabetically-first package while every other package
+	// is far below threshold — a false green on a gating check. `go tool cover
+	// -func` collapses the profile into one statement-weighted "total:" line.
+	profile, err := os.CreateTemp("", "nxd-cover-*.out")
+	if err != nil {
+		return Result{Criterion: c, Passed: false, Message: fmt.Sprintf("create coverage profile: %v", err)}
+	}
+	profilePath := profile.Name()
+	_ = profile.Close()
+	defer func() { _ = os.Remove(profilePath) }()
+
+	cmd := exec.CommandContext(ctx, "go", "test", "-coverprofile", profilePath, target)
 	cmd.Dir = workDir
 	out, err := cmd.CombinedOutput()
 	output := string(out)
@@ -167,7 +181,13 @@ func evalCoverageAbove(ctx context.Context, workDir string, c Criterion) Result 
 		return Result{Criterion: c, Passed: false, Actual: output, Message: fmt.Sprintf("test+cover failed: %v", err)}
 	}
 
-	coverage := parseCoverage(output)
+	// Prefer the statement-weighted aggregate from the profile; fall back to the
+	// per-run summary line only if the profile can't be reduced (e.g. a target
+	// with no statements at all).
+	coverage := coverageTotal(ctx, workDir, profilePath)
+	if coverage < 0 {
+		coverage = parseCoverage(output)
+	}
 	if coverage < 0 {
 		return Result{Criterion: c, Passed: false, Actual: output, Message: "could not parse coverage from output"}
 	}
@@ -316,9 +336,39 @@ func untrackedFiles(workDir string) map[string]struct{} {
 }
 
 // parseCoverage extracts the coverage percentage from go test -cover output.
-// Returns -1 if not found.
+// Returns -1 if not found. NOTE: this reads only the FIRST "coverage:" line;
+// for a multi-package target use coverageTotal, which is statement-weighted
+// across the whole profile. parseCoverage remains as a single-package fallback.
 func parseCoverage(output string) float64 {
 	re := regexp.MustCompile(`coverage:\s+([\d.]+)%`)
+	match := re.FindStringSubmatch(output)
+	if len(match) < 2 {
+		return -1
+	}
+	v, err := strconv.ParseFloat(match[1], 64)
+	if err != nil {
+		return -1
+	}
+	return v
+}
+
+// coverageTotal reduces a coverage profile to a single statement-weighted total
+// percentage via `go tool cover -func`. Returns -1 if it cannot be determined.
+func coverageTotal(ctx context.Context, workDir, profilePath string) float64 {
+	cmd := exec.CommandContext(ctx, "go", "tool", "cover", "-func", profilePath)
+	cmd.Dir = workDir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return -1
+	}
+	return parseFuncTotal(string(out))
+}
+
+// parseFuncTotal extracts the percentage from the "total:" line of
+// `go tool cover -func` output (e.g. "total:\t(statements)\t81.6%"). Returns -1
+// if not found.
+func parseFuncTotal(output string) float64 {
+	re := regexp.MustCompile(`total:\s+\(statements\)\s+([\d.]+)%`)
 	match := re.FindStringSubmatch(output)
 	if len(match) < 2 {
 		return -1

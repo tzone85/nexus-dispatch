@@ -2,7 +2,9 @@ package engine
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/tzone85/nexus-dispatch/internal/llm"
@@ -160,6 +162,43 @@ func TestSecurityGate_SelfUpskills_OnNewVulnClass(t *testing.T) {
 	}
 	if countEvents(t, g.eventStore, state.EventSecurityRuleLearned) < 1 {
 		t.Error("expected SECURITY_RULE_LEARNED event")
+	}
+}
+
+// TestSecurityGate_ConcurrentUpskill_NoLostRules guards the KB read-modify-write
+// race. A single SecurityGate is shared across the wave's per-story pipeline
+// goroutines; each learns a distinct novel vuln class at the same time. Without
+// the reload-under-lock + atomic Save, concurrent load→add→save calls lose rules
+// (last-writer-wins) and can leave a torn KB file. Every learned class must
+// survive. Run under -race to also catch data races on the shared gate.
+func TestSecurityGate_ConcurrentUpskill_NoLostRules(t *testing.T) {
+	kbPath := filepath.Join(t.TempDir(), "kb.json")
+	g := newTestSecurityGate(t, nil, kbPath, security.SeverityHigh, true, fakeScan())
+
+	const n = 12
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			cwe := fmt.Sprintf("CWE-90%02d", i) // distinct novel classes not in the baseline
+			g.upskill(security.BaselineKnowledgeBase(), []security.Finding{{
+				Tool: "semgrep", RuleID: cwe, Severity: security.SeverityHigh,
+				File: "x.py", Line: 1, Title: "novel-" + cwe, Detail: cwe, Source: "scanner",
+			}})
+		}(i)
+	}
+	wg.Wait()
+
+	kb, err := security.LoadKnowledgeBase(kbPath)
+	if err != nil {
+		t.Fatalf("load KB after concurrent upskill: %v", err)
+	}
+	for i := 0; i < n; i++ {
+		cwe := fmt.Sprintf("CWE-90%02d", i)
+		if !kb.Has(cwe) {
+			t.Errorf("lost learned rule %s under concurrent upskill (last-writer-wins)", cwe)
+		}
 	}
 }
 
