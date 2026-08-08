@@ -74,15 +74,68 @@ func AllPassed(results []Result) bool {
 	return true
 }
 
-// FailureSummary returns a human-readable summary of failed criteria.
+// maxActualInSummary bounds how much captured command output FailureSummary
+// echoes back. The actionable diagnostic (compiler error, failed assertion) is
+// almost always at the END of the output, so we keep the tail.
+const maxActualInSummary = 2000
+
+// FailureSummary returns a human-readable summary of failed criteria. For
+// command_succeeds / test_passes it appends the captured command output (the
+// Result.Actual field) — without it a self-correcting agent is told only
+// "command failed: exit status 1" and retries blind, unable to see WHAT broke
+// (e.g. a Swift manifest error "type 'String?' has no member
+// 'relativeToThisFile'"). Surfacing the real error is what lets the agent fix
+// the root cause instead of guessing.
 func FailureSummary(results []Result) string {
 	var sb strings.Builder
 	for _, r := range results {
-		if !r.Passed {
-			fmt.Fprintf(&sb, "- [%s] %s: %s\n", r.Criterion.Type, r.Criterion.Target, r.Message)
+		if r.Passed {
+			continue
+		}
+		fmt.Fprintf(&sb, "- [%s] %s: %s\n", r.Criterion.Type, r.Criterion.Target, r.Message)
+		// Echo the command's own output, unless it is empty or merely repeats
+		// the command target (the allowlist-reject case, where Actual == Target).
+		if out := strings.TrimSpace(r.Actual); out != "" && out != strings.TrimSpace(r.Criterion.Target) {
+			fmt.Fprintf(&sb, "  output:\n%s\n", indentSalient(out, maxActualInSummary))
 		}
 	}
 	return sb.String()
+}
+
+// errorLineRe matches the lines that carry the actionable diagnostic. A blind
+// tail is wrong for tools like `swift build`, whose manifest errors print the
+// real "error:" line first and then dump a multi-KB swiftc invocation — the
+// tail would keep the noise and drop the error.
+var errorLineRe = regexp.MustCompile(`(?i)\b(error|fatal|fail(ed|ure)?|cannot|undefined|expected|no member|not found|panic|exception|assert)\b`)
+
+// indentSalient extracts the most useful slice of command output within n
+// bytes: the error-bearing lines when any exist (that is where the fix lives),
+// otherwise the tail. Every line is indented so the block reads as sub-content.
+func indentSalient(s string, n int) string {
+	lines := strings.Split(s, "\n")
+	var picked []string
+	for _, ln := range lines {
+		if errorLineRe.MatchString(ln) {
+			picked = append(picked, ln)
+		}
+	}
+	var body string
+	switch {
+	case len(picked) > 0:
+		body = strings.Join(picked, "\n")
+		if len(body) > n {
+			body = body[:n] + "\n…(truncated)"
+		}
+	case len(s) > n:
+		body = "…(truncated)\n" + s[len(s)-n:] // no error lines: keep the tail
+	default:
+		body = s
+	}
+	out := strings.Split(body, "\n")
+	for i, ln := range out {
+		out[i] = "    " + ln
+	}
+	return strings.Join(out, "\n")
 }
 
 func evalFileExists(workDir string, c Criterion) Result {

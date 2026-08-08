@@ -375,3 +375,84 @@ func TestParseCoverage(t *testing.T) {
 		}
 	}
 }
+
+// TestFailureSummary_IncludesCommandOutput locks fix #10: the captured command
+// output (Result.Actual) must reach the agent, not just "command failed". The
+// gauntlet's Swift run failed on a hallucinated manifest API and the agent
+// retried blind because only "exit status 1" was fed back.
+func TestFailureSummary_IncludesCommandOutput(t *testing.T) {
+	results := []Result{{
+		Criterion: Criterion{Type: TypeCommandSucceeds, Target: "swift build"},
+		Passed:    false,
+		Actual:    "Package.swift:16:20: error: type 'String?' has no member 'relativeToThisFile'",
+		Message:   "command failed: exit status 1",
+	}}
+	got := FailureSummary(results)
+	if !strings.Contains(got, "relativeToThisFile") {
+		t.Fatalf("summary must surface the real compiler error, got:\n%s", got)
+	}
+	if !strings.Contains(got, "command failed") {
+		t.Errorf("summary must still carry the message line, got:\n%s", got)
+	}
+}
+
+// TestFailureSummary_SkipsRedundantActual proves the allowlist-reject case
+// (Actual == Target) does not echo the command twice.
+func TestFailureSummary_SkipsRedundantActual(t *testing.T) {
+	results := []Result{{
+		Criterion: Criterion{Type: TypeCommandSucceeds, Target: "rm -rf /"},
+		Passed:    false,
+		Actual:    "rm -rf /",
+		Message:   `command rejected by allowlist: "rm -rf /"`,
+	}}
+	got := FailureSummary(results)
+	if strings.Contains(got, "output:") {
+		t.Errorf("must not echo an output block when Actual just repeats the target, got:\n%s", got)
+	}
+}
+
+// TestFailureSummary_TruncatesLongOutput keeps the tail (where errors live) and
+// bounds the prompt size.
+func TestFailureSummary_TruncatesLongOutput(t *testing.T) {
+	long := strings.Repeat("noise\n", 1000) + "FINAL_ERROR_MARKER"
+	results := []Result{{
+		Criterion: Criterion{Type: TypeTestPasses, Target: "go test ./..."},
+		Passed:    false,
+		Actual:    long,
+		Message:   "tests failed",
+	}}
+	got := FailureSummary(results)
+	if !strings.Contains(got, "FINAL_ERROR_MARKER") {
+		t.Error("tail (with the real error) must be kept")
+	}
+	if !strings.Contains(got, "truncated") {
+		t.Error("long output must be marked truncated")
+	}
+	// Bounded well under the ~6KB raw input; per-line indentation adds overhead
+	// on top of the 2KB tail, so allow 2x the cap plus the message line.
+	if len(got) > 2*maxActualInSummary+300 {
+		t.Errorf("summary not bounded: %d bytes", len(got))
+	}
+}
+
+// TestFailureSummary_PrefersErrorLineOverTail is the refinement caught in the
+// gauntlet's Swift run: `swift build` prints the real "error:" line FIRST, then
+// dumps a multi-KB swiftc invocation. A blind tail keeps the noise and drops
+// the error — the summary must surface the error line instead.
+func TestFailureSummary_PrefersErrorLineOverTail(t *testing.T) {
+	out := "error: type 'String?' has no member 'relativeToThisFile'\n" +
+		strings.Repeat("/Library/Developer/CommandLineTools/usr/bin/swiftc -vfsoverlay noise\n", 200)
+	results := []Result{{
+		Criterion: Criterion{Type: TypeCommandSucceeds, Target: "swift build"},
+		Passed:    false,
+		Actual:    out,
+		Message:   "command failed: exit status 1",
+	}}
+	got := FailureSummary(results)
+	if !strings.Contains(got, "has no member 'relativeToThisFile'") {
+		t.Fatalf("must surface the error line even when buried above noise, got:\n%s", got)
+	}
+	if strings.Count(got, "swiftc -vfsoverlay") > 3 {
+		t.Errorf("must not echo the whole invocation dump, got %d noise lines", strings.Count(got, "swiftc -vfsoverlay"))
+	}
+}
