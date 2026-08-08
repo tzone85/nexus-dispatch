@@ -190,6 +190,38 @@ func TestCompletionGate_RealVerify_PassesHealthyGoModule(t *testing.T) {
 	}
 }
 
+// TestCompletionGate_RealVerify_BlocksUncompilableTestSuite guards the
+// false-negative in parseGoTestJSON: a module whose product code builds cleanly
+// (so `go build ./...` is green) but whose *test* file does not compile. Go
+// reports this only via a package-level `go test -json` event with FailedBuild
+// set and an empty Test field. The gate must BLOCK — an uncompilable test suite
+// is not a green mainline. Before the fix, parseGoTestJSON skipped that event
+// and scored the suite as 0 failing tests, letting the gate pass.
+func TestCompletionGate_RealVerify_BlocksUncompilableTestSuite(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping real-build verification in -short mode")
+	}
+	repoDir := t.TempDir()
+	// Product code compiles: `go build ./...` will be green.
+	writeGoModule(t, repoDir, "package main\n\nfunc main() {\n\tprintln(\"ok\")\n}\n")
+	if err := os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("# gatecheck\n"), 0o600); err != nil {
+		t.Fatalf("write README: %v", err)
+	}
+	// Test file references an undefined symbol → the test binary fails to
+	// compile, but the non-test build stays green.
+	brokenTest := "package main\n\nimport \"testing\"\n\nfunc TestBroken(t *testing.T) {\n\tif Nonexistent() != 0 {\n\t\tt.Fail()\n\t}\n}\n"
+	if err := os.WriteFile(filepath.Join(repoDir, "main_test.go"), []byte(brokenTest), 0o600); err != nil {
+		t.Fatalf("write main_test.go: %v", err)
+	}
+
+	g := NewCompletionGate(nil, "", 0, 0, "main", nil, nil)
+	g.pull = func(_, _ string) {}
+
+	if g.Run(context.Background(), "REQ-REAL-TESTBUILD", repoDir) {
+		t.Fatal("expected gate to BLOCK a composed mainline whose test suite does not compile")
+	}
+}
+
 // TestEmitRequirementOutcome_Blocked proves the monitor's terminal-event helper
 // drives a real event + projection store: emitting REQ_BLOCKED transitions the
 // requirement to "blocked" status (the gate's negative outcome), not "completed".
