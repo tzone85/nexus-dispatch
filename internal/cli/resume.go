@@ -538,10 +538,14 @@ func runResume(cmd *cobra.Command, args []string) error {
 	// Skipped in dry-run and when qa.disable_completion_gate is set.
 	if !dryRun && !s.Config.QA.DisableCompletionGate {
 		senior := s.Config.Models.Senior
+		gateBase := s.Config.Merge.BaseBranch
+		if gateBase == "" {
+			gateBase = nxdgit.DetectDefaultBranch(repoDir)
+		}
 		monitor.SetCompletionGate(engine.NewCompletionGate(
 			llmClient, senior.Model, senior.MaxTokens,
 			completionFixCycles(s.Config.QA.CompletionFixCycles),
-			s.Config.Merge.BaseBranch, s.Events, s.Proj,
+			gateBase, s.Events, s.Proj,
 		))
 	}
 

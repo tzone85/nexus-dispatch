@@ -859,7 +859,9 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 func (m *Monitor) rebaseAndMerge(ctx context.Context, storyID, branch, repoDir, worktreePath string) (MergeResult, error) {
 	baseBranch := m.config.Merge.BaseBranch
 	if baseBranch == "" {
-		baseBranch = "main"
+		// Detect the repo's real default branch (master vs main) rather than
+		// assuming main — a hardcoded main fails every merge on older repos.
+		baseBranch = nxdgit.DetectDefaultBranch(repoDir)
 	}
 
 	log.Printf("[pipeline] fetching %s and rebasing %s for %s", baseBranch, branch, storyID)
