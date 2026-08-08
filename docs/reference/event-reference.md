@@ -1,6 +1,6 @@
 # NXD Event Reference
 
-Every action in NXD produces an immutable event. NXD currently emits **58 event types**. The first 32 (described in detail below) cover the core requirement → planning → dispatch → review → QA → merge pipeline. The remaining types — added across 2026-04 → 2026-06 for the controller, devdb lifecycle, conflict resolver, integration build, and stage timing — are summarised in the *Additional events* section at the bottom of this page. The canonical list of strings lives in `internal/state/events.go`; the test `internal/config/example_gen_test.go` guards the generated example config from drifting, and a future generator can do the same for this page.
+Every action in NXD produces an immutable event. NXD currently emits **65 event types**. The detailed entries below cover the core requirement → planning → dispatch → review → QA → security → merge pipeline. The remaining types — added across 2026-04 → 2026-06 for the controller, devdb lifecycle, conflict resolver, integration build, and stage timing — are summarised in the *Additional events* section at the bottom of this page. The canonical list of strings lives in `internal/state/events.go`; the test `internal/config/example_gen_test.go` guards the generated example config from drifting, and a future generator can do the same for this page.
 
 ## Event Structure
 
@@ -230,21 +230,42 @@ In local mode: `{ "pr_number": 0, "pr_url": "local://merged", "merged_sha": "abc
 
 ## Escalation Events
 
-### ESCALATION_CREATED
-**When:** Agent exceeds retry limit or gets stuck
+### STORY_ESCALATED
+**When:** A story is bumped to a higher tier — the monitor after repeated failures, the dispatcher on wave assignment, or the active controller on a stuck agent
+**Producer:** Monitor / Dispatcher / Controller
 **Payload:**
 ```json
 {
-  "story_id": "story-01",
-  "from_role": "junior",
-  "to_role": "senior",
+  "from_tier": "junior",
+  "to_tier": "intermediate",
   "reason": "Agent stuck after 2 retries"
 }
 ```
+**Projection:** Story reassigned at the higher tier; resolution is observable through the story's subsequent lifecycle events (`STORY_ASSIGNED` → … → `STORY_MERGED`)
 
-### ESCALATION_RESOLVED
-**When:** Escalation target successfully handles the issue
-**Payload:** `{ "resolved_by": "senior-req01-1", "action": "completed" }`
+## Security Gate Events
+
+### SECURITY_SCAN_COMPLETED
+**When:** The security gate finishes scanning a repository (per story, or via `nxd security scan`)
+**Producer:** Security gate
+**Payload:** `{ "repo": "/path/to/repo", "findings": 3, "max": "medium" }`
+
+### STORY_SECURITY_PASSED
+**When:** No finding at or above the configured gate severity for the story's diff
+**Producer:** Security gate
+**Payload:** `{ "findings": 0 }`
+**Projection:** Story may proceed to merge
+
+### STORY_SECURITY_FAILED
+**When:** A finding at or above the gate severity blocks the story
+**Producer:** Security gate
+**Payload:** `{ "reason": "1 critical: hardcoded credential", "findings": 4, "max": "critical" }`
+**Projection:** Story blocked pending a human decision
+
+### SECURITY_RULE_LEARNED
+**When:** Auto-learn distils a confirmed finding into a new knowledge-base rule
+**Producer:** Security gate
+**Payload:** `{ "rule": "kb-014", "title": "Unparameterised SQL in repository layer" }`
 
 ## Supervisor Events
 
@@ -347,6 +368,7 @@ shape, grep `internal/engine/` or `internal/state/events.go`.
 - **REQ_RESUMED** — paused requirement resumed
 - **REQ_REJECTED** — requirement rejected (planner declined, prompt-injection detected, or budget exceeded)
 - **REQ_PENDING_REVIEW** — requirement awaiting human approval before dispatch
+- **REQ_BLOCKED** — monitor marked the requirement blocked: it cannot reach green without intervention (payload: `{ "id": "req-01" }`)
 
 ### Investigation
 - **INVESTIGATION_COMPLETED** — investigator produced an InvestigationReport for an existing-codebase requirement

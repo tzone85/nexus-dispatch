@@ -7,7 +7,7 @@ workspace:
     backend: sqlite
     log_level: info
     log_retention_days: 30
-    update_check: true
+    update_check: false
     update_interval_hours: 48
 models:
     tech_lead:

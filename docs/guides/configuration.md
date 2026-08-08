@@ -233,14 +233,14 @@ cleanup:
 
 ### updates
 
-Controls automatic model update checks.
+Controls background model update checks. **Disabled by default** — NXD's offline-first promise is that a default run makes zero outbound calls, so the periodic registry check is strictly opt-in.
 
 ```yaml
-update_check: true                # Enable/disable model update checks on startup
-update_interval_hours: 168        # Hours between checks (default: 168 = weekly)
+update_check: false               # Default. Set true to opt in to background checks
+update_interval_hours: 48         # Hours between checks once opted in (<= 0 also disables)
 ```
 
-When enabled, NXD runs `nxd models check` on startup to see if newer versions of your configured models are available in Ollama. Disable with `update_check: false` for fully offline environments.
+When you opt in, NXD periodically compares your configured models against the Ollama registry (and Google AI, if an API key is set) and prints a notice when newer versions exist. `NXD_UPDATE_CHECK=false` in the environment force-disables it regardless of config, and the user-initiated `nxd models check` always works either way.
 
 ### merge
 
@@ -343,8 +343,8 @@ models:
   junior:       { provider: ollama, model: gemma4:e4b,      max_tokens: 4000 }
   qa:           { provider: ollama, model: qwen3-coder:30b, max_tokens: 8000 }
   supervisor:   { provider: ollama, model: gemma4:e4b,      max_tokens: 4000 }
-update_check: true                # Check for model updates on startup
-update_interval_hours: 168        # Weekly check
+update_check: false               # Background update checks are opt-in (offline-first)
+update_interval_hours: 48         # Used only once update_check is true
 ```
 
 > [!NOTE]

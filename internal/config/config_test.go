@@ -309,8 +309,10 @@ func TestValidation_NativeRuntime(t *testing.T) {
 
 func TestDefaultConfig_UpdateCheckDefaults(t *testing.T) {
 	cfg := config.DefaultConfig()
-	if !cfg.Workspace.UpdateCheck {
-		t.Error("expected UpdateCheck=true by default")
+	// Offline-first contract: a default run makes zero outbound calls, so
+	// background update checks must be opt-in.
+	if cfg.Workspace.UpdateCheck {
+		t.Error("expected UpdateCheck=false by default (offline-first: zero outbound calls)")
 	}
 	if cfg.Workspace.UpdateIntervalHours != 48 {
 		t.Errorf("UpdateIntervalHours = %d, want 48", cfg.Workspace.UpdateIntervalHours)

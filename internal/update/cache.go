@@ -52,8 +52,16 @@ func ReadCache(path string) (CheckResult, error) {
 	return result, nil
 }
 
-// IsStale returns true if the cache is older than intervalHours or has never been checked.
+// IsStale returns true if the cache is older than intervalHours or has never
+// been checked. An interval of zero or below means background update checks
+// are disabled entirely — NXD's offline-first promise is that a default run
+// makes zero outbound calls, so the periodic registry check is strictly
+// opt-in via workspace.update_interval_hours. Explicit, user-initiated
+// checks (`nxd models check`) are unaffected.
 func IsStale(result CheckResult, intervalHours int) bool {
+	if intervalHours <= 0 {
+		return false
+	}
 	if result.CheckedAt.IsZero() {
 		return true
 	}

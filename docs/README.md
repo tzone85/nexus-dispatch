@@ -17,7 +17,7 @@ Welcome to the NXD (Nexus Dispatch) training guides. Whether you're a first-time
 | Guide | Description |
 |-------|-------------|
 | [CLI Reference](reference/cli-reference.md) | Complete command, flag, and option reference |
-| [Event Reference](reference/event-reference.md) | All 31 event types with payloads and state transitions |
+| [Event Reference](reference/event-reference.md) | All 65 event types with payloads and state transitions |
 
 ## Demo
 

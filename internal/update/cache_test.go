@@ -78,6 +78,23 @@ func TestIsStale_ZeroTime(t *testing.T) {
 	}
 }
 
+func TestIsStale_DisabledInterval(t *testing.T) {
+	// Zero or negative interval = background checks disabled: never stale,
+	// even with an empty cache. Guards the offline-first default — a run
+	// without workspace.update_interval_hours set must make no outbound
+	// registry calls.
+	if IsStale(CheckResult{}, 0) {
+		t.Error("interval 0 must disable background checks (empty cache)")
+	}
+	old := CheckResult{CheckedAt: time.Now().Add(-9000 * time.Hour)}
+	if IsStale(old, 0) {
+		t.Error("interval 0 must disable background checks (old cache)")
+	}
+	if IsStale(old, -1) {
+		t.Error("negative interval must disable background checks")
+	}
+}
+
 func TestUpdatesAvailable(t *testing.T) {
 	result := CheckResult{
 		Models: []ModelStatus{

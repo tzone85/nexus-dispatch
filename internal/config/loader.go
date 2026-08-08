@@ -30,7 +30,11 @@ func DefaultConfig() Config {
 			Backend:             "sqlite",
 			LogLevel:            "info",
 			LogRetentionDays:    30,
-			UpdateCheck:         true,
+			// Off by default: NXD promises that a default run makes zero
+			// outbound calls. Background model-update checks (Ollama
+			// registry / Google AI) are opt-in via update_check: true;
+			// `nxd models check` remains available on demand.
+			UpdateCheck:         false,
 			UpdateIntervalHours: 48,
 		},
 		Models: ModelsConfig{
