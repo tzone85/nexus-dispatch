@@ -414,6 +414,71 @@ func TestSQLiteStore_ListAgents_StatusFilter(t *testing.T) {
 	}
 }
 
+// AGENT_TERMINATED must transition the agent's projected status off "idle" and
+// clear its story binding — otherwise a killed/cancelled agent keeps showing as a
+// live idle agent in `nxd agents`, the TUI, and the web snapshot. Covers the two
+// emit shapes: the dashboard kill (agent id in AgentID) and the controller cancel
+// (agent id absent; story id in StoryID).
+func TestSQLiteStore_ProjectAgentTerminated(t *testing.T) {
+	t.Run("by agent id (dashboard kill)", func(t *testing.T) {
+		db, _ := state.NewSQLiteStore(":memory:")
+		defer db.Close()
+
+		spawn := state.NewEvent(state.EventAgentSpawned, "a-kill", "s-1", map[string]any{
+			"role": "senior", "session_name": "nxd-s-1",
+		})
+		if err := db.Project(spawn); err != nil {
+			t.Fatalf("project spawn: %v", err)
+		}
+
+		term := state.NewEvent(state.EventAgentTerminated, "a-kill", "", map[string]any{"reason": "killed"})
+		if err := db.Project(term); err != nil {
+			t.Fatalf("project terminate: %v", err)
+		}
+
+		agents, _ := db.ListAgents(state.AgentFilter{})
+		if len(agents) != 1 {
+			t.Fatalf("expected 1 agent, got %d", len(agents))
+		}
+		if agents[0].Status != "terminated" {
+			t.Errorf("expected status 'terminated', got %q", agents[0].Status)
+		}
+		if agents[0].CurrentStoryID != "" {
+			t.Errorf("expected cleared story binding, got %q", agents[0].CurrentStoryID)
+		}
+		// A terminated agent must no longer be counted as idle.
+		idle, _ := db.ListAgents(state.AgentFilter{Status: "idle"})
+		if len(idle) != 0 {
+			t.Errorf("terminated agent must not remain idle, got %d idle", len(idle))
+		}
+	})
+
+	t.Run("by story id (controller cancel)", func(t *testing.T) {
+		db, _ := state.NewSQLiteStore(":memory:")
+		defer db.Close()
+
+		spawn := state.NewEvent(state.EventAgentSpawned, "a-stuck", "s-2", map[string]any{
+			"role": "junior", "session_name": "nxd-s-2",
+		})
+		if err := db.Project(spawn); err != nil {
+			t.Fatalf("project spawn: %v", err)
+		}
+
+		// Controller emits AgentID="controller", story id in StoryID.
+		term := state.NewEvent(state.EventAgentTerminated, "controller", "s-2", map[string]any{
+			"reason": "controller cancelled stuck agent",
+		})
+		if err := db.Project(term); err != nil {
+			t.Fatalf("project terminate: %v", err)
+		}
+
+		agents, _ := db.ListAgents(state.AgentFilter{})
+		if len(agents) != 1 || agents[0].Status != "terminated" {
+			t.Fatalf("expected the story's agent to be terminated, got %+v", agents)
+		}
+	})
+}
+
 func TestSQLiteStore_ArchiveRequirement(t *testing.T) {
 	db, _ := state.NewSQLiteStore(":memory:")
 	defer db.Close()

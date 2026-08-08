@@ -145,6 +145,62 @@ func TestRunScanners_FailedToolIsReportedNotSwallowed(t *testing.T) {
 	}
 }
 
+// A govulncheck run that completes cleanly (prints "No vulnerabilities found"
+// and exits 0) must be counted as ran, not failed — it genuinely scanned and
+// found nothing.
+func TestRunScanners_GovulncheckCleanRunIsRan(t *testing.T) {
+	bin := installAllFakeScanners(t)
+	fakeTool(t, bin, "govulncheck",
+		"Scanning your code and 42 packages for known vulnerabilities...\n\nNo vulnerabilities found.\n", 0)
+	repo := seedRepo(t, map[string]string{"go.mod": "module example.com/x\n"})
+
+	findings, ran, _, failed := RunScanners(context.Background(), repo)
+
+	ranSet := map[ScannerKind]bool{}
+	for _, k := range ran {
+		ranSet[k] = true
+	}
+	if !ranSet[ScannerGovulncheck] {
+		t.Errorf("clean govulncheck must be counted as ran, got ran=%v failed=%v", ran, failed)
+	}
+	for _, k := range failed {
+		if k == ScannerGovulncheck {
+			t.Error("a clean govulncheck run must not be reported as failed")
+		}
+	}
+	for _, f := range findings {
+		if f.Tool == "govulncheck" {
+			t.Errorf("clean run must yield no govulncheck findings, got %+v", f)
+		}
+	}
+}
+
+// A govulncheck run that fails to execute (e.g. the vuln DB is unreachable) emits
+// no "Vulnerability #" line AND no "No vulnerabilities found" marker, and exits
+// non-zero. It must be reported as failed (coverage lost), never as a clean run —
+// otherwise a dependency-CVE scan that never happened masquerades as passing.
+func TestRunScanners_GovulncheckRunFailureIsReportedNotSwallowed(t *testing.T) {
+	bin := installAllFakeScanners(t)
+	fakeTool(t, bin, "govulncheck",
+		"govulncheck: fetching vulnerabilities: Get \"https://vuln.go.dev/index/modules.json.gz\": Forbidden\n", 1)
+	repo := seedRepo(t, map[string]string{"go.mod": "module example.com/x\n"})
+
+	_, ran, _, failed := RunScanners(context.Background(), repo)
+
+	failedSet := map[ScannerKind]bool{}
+	for _, k := range failed {
+		failedSet[k] = true
+	}
+	if !failedSet[ScannerGovulncheck] {
+		t.Fatalf("a govulncheck execution failure must be reported as failed, got ran=%v failed=%v", ran, failed)
+	}
+	for _, k := range ran {
+		if k == ScannerGovulncheck {
+			t.Error("a failed govulncheck must not be counted as ran (clean)")
+		}
+	}
+}
+
 func TestRunScanners_MissingToolsSkippedVisibly(t *testing.T) {
 	bin := t.TempDir()
 	fakeTool(t, bin, "gitleaks", fakeGitleaksOut, 1) // only gitleaks installed
