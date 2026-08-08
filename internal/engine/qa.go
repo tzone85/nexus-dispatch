@@ -119,7 +119,10 @@ func (q *QA) Run(ctx context.Context, storyID, worktreePath string) (QAResult, e
 			result.Checks = append(result.Checks, QACheckResult{
 				Name:   fmt.Sprintf("criteria:%s(%s)", cr.Criterion.Type, cr.Criterion.Target),
 				Passed: cr.Passed,
-				Output: cr.Message,
+				// Include the captured command output so the tier-escalation
+				// feedback (monitor.go) shows the agent the real error, not a
+				// bare "exit status 1". Mirrors the native runtime's fix #10.
+				Output: criteria.FailureDetail(cr),
 			})
 			if !cr.Passed {
 				result.Passed = false
@@ -170,7 +173,7 @@ func (q *QA) RunCriteria(ctx context.Context, storyID, worktreePath string, crit
 		qaResult.Checks = append(qaResult.Checks, QACheckResult{
 			Name:   fmt.Sprintf("criteria:%s(%s)", r.Criterion.Type, r.Criterion.Target),
 			Passed: r.Passed,
-			Output: r.Message,
+			Output: criteria.FailureDetail(r),
 		})
 	}
 

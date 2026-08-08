@@ -456,3 +456,24 @@ func TestFailureSummary_PrefersErrorLineOverTail(t *testing.T) {
 		t.Errorf("must not echo the whole invocation dump, got %d noise lines", strings.Count(got, "swiftc -vfsoverlay"))
 	}
 }
+
+// TestFailureDetail_SharedByBothFeedbackPaths locks fix #11: FailureDetail is
+// what both the native runtime (FailureSummary) and the QA pipeline (qa.go)
+// render, so both show the agent the real command output, not "exit status 1".
+func TestFailureDetail_SharedByBothFeedbackPaths(t *testing.T) {
+	fail := Result{
+		Criterion: Criterion{Type: TypeCommandSucceeds, Target: "swift build"},
+		Passed:    false,
+		Actual:    "error: no such module 'Foundation'",
+		Message:   "command failed: exit status 1",
+	}
+	got := FailureDetail(fail)
+	if !strings.Contains(got, "no such module") {
+		t.Fatalf("FailureDetail must carry the command output, got:\n%s", got)
+	}
+	// A passing result stays terse — no output block.
+	pass := Result{Criterion: Criterion{Type: TypeCommandSucceeds, Target: "swift build"}, Passed: true, Actual: "exit 0", Message: "command succeeded"}
+	if strings.Contains(FailureDetail(pass), "output:") {
+		t.Errorf("passing result must not carry an output block, got: %q", FailureDetail(pass))
+	}
+}

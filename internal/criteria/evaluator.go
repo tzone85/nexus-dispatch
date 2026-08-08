@@ -92,14 +92,26 @@ func FailureSummary(results []Result) string {
 		if r.Passed {
 			continue
 		}
-		fmt.Fprintf(&sb, "- [%s] %s: %s\n", r.Criterion.Type, r.Criterion.Target, r.Message)
-		// Echo the command's own output, unless it is empty or merely repeats
-		// the command target (the allowlist-reject case, where Actual == Target).
-		if out := strings.TrimSpace(r.Actual); out != "" && out != strings.TrimSpace(r.Criterion.Target) {
-			fmt.Fprintf(&sb, "  output:\n%s\n", indentSalient(out, maxActualInSummary))
-		}
+		fmt.Fprintf(&sb, "- [%s] %s: %s\n", r.Criterion.Type, r.Criterion.Target, FailureDetail(r))
 	}
 	return sb.String()
+}
+
+// FailureDetail renders one result's message plus, for a failed command/test
+// criterion, the salient command output. Shared by FailureSummary (the native
+// runtime's in-agent retry feedback) and the QA pipeline (tier-escalation
+// feedback), so both paths show the agent the real compiler/test error instead
+// of a bare "exit status 1". A passing result returns just its message.
+func FailureDetail(r Result) string {
+	if r.Passed {
+		return r.Message
+	}
+	// Echo the command's own output, unless it is empty or merely repeats the
+	// command target (the allowlist-reject case, where Actual == Target).
+	if out := strings.TrimSpace(r.Actual); out != "" && out != strings.TrimSpace(r.Criterion.Target) {
+		return r.Message + "\n  output:\n" + indentSalient(out, maxActualInSummary)
+	}
+	return r.Message
 }
 
 // errorLineRe matches the lines that carry the actionable diagnostic. A blind
