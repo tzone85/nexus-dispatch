@@ -3,6 +3,8 @@ package security
 import (
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -148,6 +150,59 @@ func TestKnowledgeBase_SaveLoad_RoundTrip(t *testing.T) {
 	}
 	if !loaded.Has("CWE-1234") {
 		t.Error("learned rule lost in round trip")
+	}
+}
+
+// TestKnowledgeBase_Save_AtomicUnderConcurrency exercises the atomic-write fix:
+// many goroutines Save distinct knowledge bases to the same path while another
+// set repeatedly Loads it. A non-atomic truncating write (the previous
+// os.WriteFile) can be observed mid-write, so a concurrent Load would parse a
+// torn file and error — and because LoadKnowledgeBase only falls back to the
+// baseline on a MISSING file, that corruption would permanently disable the
+// gate. With temp-file + rename, every Load must see a complete, valid KB.
+func TestKnowledgeBase_Save_AtomicUnderConcurrency(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "knowledge.json")
+	if err := BaselineKnowledgeBase().Save(path); err != nil {
+		t.Fatalf("seed save: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	var loadErr atomic.Pointer[error]
+
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			kb := BaselineKnowledgeBase().Add(VulnRule{
+				ID: "CWE-90" + string(rune('0'+n%10)), Title: "concurrent",
+				Detection: "d", Remediation: "r", Severity: SeverityHigh,
+				Source: RuleLearned, AddedAt: "2026-07-20T00:00:00Z",
+			})
+			if err := kb.Save(path); err != nil {
+				e := err
+				loadErr.CompareAndSwap(nil, &e)
+			}
+		}(i)
+	}
+	for i := 0; i < 40; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := LoadKnowledgeBase(path); err != nil {
+				e := err
+				loadErr.CompareAndSwap(nil, &e)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if e := loadErr.Load(); e != nil {
+		t.Fatalf("observed a torn read/write during concurrent Save/Load: %v", *e)
+	}
+	// The file must still be a valid, loadable KB afterward.
+	if _, err := LoadKnowledgeBase(path); err != nil {
+		t.Fatalf("final knowledge base is corrupt: %v", err)
 	}
 }
 

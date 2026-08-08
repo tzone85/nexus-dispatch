@@ -38,11 +38,12 @@ type SecurityGate struct {
 	eventStore   state.EventStore
 	projStore    state.ProjectionStore
 
-	// kbMu serializes the knowledge-base read-modify-write (load → upskill →
-	// save) so concurrent per-story pipeline goroutines cannot lose a learned
-	// rule via last-writer-wins. The atomic Save prevents torn reads on its own;
-	// this closes the remaining lost-update window.
-	kbMu sync.Mutex
+	// upskillMu serializes the load→merge→save of the knowledge base. The
+	// pipeline runs one postExecutionPipeline goroutine per completed story
+	// (monitor.go), all sharing this one SecurityGate; without this lock two
+	// stories in the same wave race their KB writes and lose each other's
+	// learned rules.
+	upskillMu sync.Mutex
 
 	// seams
 	scan scanFunc
@@ -115,7 +116,7 @@ func (g *SecurityGate) ScanRepo(ctx context.Context, repoDir string) (security.R
 	})
 
 	if g.autoLearn {
-		g.upskill(findings)
+		g.upskill(kb, findings)
 	}
 	return report, nil
 }
@@ -146,7 +147,7 @@ func (g *SecurityGate) ReviewStory(ctx context.Context, storyID, title, diff, re
 	blocked := report.HasAtLeast(g.gateSeverity)
 
 	if g.autoLearn {
-		g.upskill(findings)
+		g.upskill(kb, findings)
 	}
 
 	if blocked {
@@ -184,24 +185,32 @@ func (g *SecurityGate) blockSummary(report security.Report) string {
 // upskill adds learned rules for confirmed high+ findings whose vulnerability
 // class (CWE if present, else tool rule id) is not already in the knowledge
 // base, persists the grown KB, and emits SECURITY_RULE_LEARNED per new class.
-//
-// It reloads the KB from disk under kbMu rather than trusting the caller's
-// snapshot: concurrent per-story pipeline goroutines each carry their own KB
-// copy, so applying learned rules on top of a stale snapshot and saving would
-// drop a rule another goroutine just persisted (last-writer-wins). Reloading
-// the freshest on-disk state inside the critical section makes upskilling
-// serial and lossless. The lock spans only the local KB read-modify-write, not
-// the earlier scan/LLM review.
-func (g *SecurityGate) upskill(findings []security.Finding) {
-	g.kbMu.Lock()
-	defer g.kbMu.Unlock()
-
-	kb, err := security.LoadKnowledgeBase(g.kbPath)
-	if err != nil {
-		log.Printf("[security] upskill: failed to reload knowledge base: %v", err)
+func (g *SecurityGate) upskill(kb *security.KnowledgeBase, findings []security.Finding) {
+	// Fast pre-check: if nothing here is a learnable class, skip the lock and
+	// the disk reload entirely (the common case).
+	hasCandidate := false
+	for _, f := range findings {
+		if f.Severity.AtLeast(security.SeverityHigh) && vulnClassID(f) != "" {
+			hasCandidate = true
+			break
+		}
+	}
+	if !hasCandidate {
 		return
 	}
+
+	// Serialize the load→merge→save so concurrent story pipelines don't clobber
+	// each other's learned rules.
+	g.upskillMu.Lock()
+	defer g.upskillMu.Unlock()
+
+	// Re-load the persisted KB under the lock so we merge onto the freshest
+	// saved state (another story in this wave may have just learned a rule).
+	// Fall back to the caller's snapshot if the reload fails.
 	grown := kb
+	if reloaded, err := security.LoadKnowledgeBase(g.kbPath); err == nil {
+		grown = reloaded
+	}
 	learned := 0
 	for _, f := range findings {
 		if !f.Severity.AtLeast(security.SeverityHigh) {
