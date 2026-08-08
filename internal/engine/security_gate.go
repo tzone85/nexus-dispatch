@@ -42,7 +42,13 @@ type SecurityGate struct {
 	// scanning belongs to `nxd security scan` — a per-story gate that blocks
 	// on pre-existing vulnerabilities in untouched files (e.g. a legacy
 	// package.json the story never opened) is unusable on real codebases.
-	gateScope  string
+	gateScope string
+	// llmBlocks decides whether an LLM-only threat-model finding can block a
+	// story by itself. Default false makes LLM findings advisory (scanner
+	// findings, or LLM findings a scanner corroborates on the same file, are the
+	// only blockers). The local model hallucinates criticals — see
+	// blockingFindings — and a hallucinated critical must never pause a merge.
+	llmBlocks  bool
 	eventStore state.EventStore
 	projStore  state.ProjectionStore
 
@@ -90,6 +96,42 @@ func NewSecurityGate(
 // ("changed", the default) or the whole worktree ("repo"). Empty ⇒ "changed".
 func (g *SecurityGate) SetGateScope(scope string) {
 	g.gateScope = scope
+}
+
+// SetLLMFindingsBlock toggles whether LLM-only findings can block a story.
+// Default (false) keeps them advisory; see blockingFindings.
+func (g *SecurityGate) SetLLMFindingsBlock(block bool) {
+	g.llmBlocks = block
+}
+
+// blockingFindings returns the findings that may actually trip the gate.
+// Deterministic scanner findings at/above the gate severity always count. An
+// LLM threat-model finding counts only when the operator opted into llmBlocks
+// or a scanner independently flagged the SAME file — because the local model
+// hallucinates criticals (the gauntlet caught a "[CRITICAL] path traversal" on
+// app/Support/.gitkeep/file.txt, a path the agent never created). Advisory
+// LLM findings still ride along in the report and feed KB learning; they just
+// cannot, alone, pause a real merge.
+func (g *SecurityGate) blockingFindings(findings []security.Finding) []security.Finding {
+	scannerFiles := make(map[string]bool)
+	for _, f := range findings {
+		if f.Source == "scanner" {
+			scannerFiles[strings.ToLower(f.File)] = true
+		}
+	}
+	out := make([]security.Finding, 0, len(findings))
+	for _, f := range findings {
+		if !f.Severity.AtLeast(g.gateSeverity) {
+			continue
+		}
+		if f.Source == "llm" && !g.llmBlocks && !scannerFiles[strings.ToLower(f.File)] {
+			log.Printf("[security-gate] advisory (LLM-only, uncorroborated): [%s] %s (%s)",
+				strings.ToUpper(f.Severity.String()), f.Title, f.File)
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
 }
 
 // changedFilesFromDiff extracts the set of file paths touched by a unified
@@ -205,14 +247,18 @@ func (g *SecurityGate) ReviewStory(ctx context.Context, storyID, title, diff, re
 	findings = security.DedupeFindings(findings)
 
 	report := security.Report{RepoDir: repoDir, Languages: langs, Failed: failed, Findings: findings, KBVersion: kb.Version}
-	blocked := report.HasAtLeast(g.gateSeverity)
+	// LLM-only findings are advisory by default (see blockingFindings): a
+	// deterministic scanner finding, or an LLM finding a scanner corroborates,
+	// is what pauses a merge. This keeps a hallucinated critical from blocking.
+	blockers := g.blockingFindings(findings)
+	blocked := len(blockers) > 0
 
 	if g.autoLearn {
 		g.upskill(kb, findings)
 	}
 
 	if blocked {
-		summary = g.blockSummary(report)
+		summary = g.blockSummary(blockers)
 		g.emit(state.EventStorySecurityFailed, "security-gate", storyID, map[string]any{
 			"reason":   summary,
 			"findings": report.Total(),
@@ -226,19 +272,27 @@ func (g *SecurityGate) ReviewStory(ctx context.Context, storyID, title, diff, re
 	return true, "", nil
 }
 
-// blockSummary describes the worst findings for the operator.
-func (g *SecurityGate) blockSummary(report security.Report) string {
-	c := report.Counts()
-	var b strings.Builder
-	fmt.Fprintf(&b, "%d critical / %d high security finding(s)", c[security.SeverityCritical], c[security.SeverityHigh])
-	for _, f := range report.Findings {
-		if f.Severity.AtLeast(g.gateSeverity) {
-			loc := f.File
-			if f.Line > 0 {
-				loc = fmt.Sprintf("%s:%d", f.File, f.Line)
-			}
-			fmt.Fprintf(&b, "; [%s] %s (%s %s)", strings.ToUpper(f.Severity.String()), f.Title, f.Tool, loc)
+// blockSummary describes the blocking findings for the operator. It is handed
+// the already-filtered blockers (scanner + corroborated/opted-in LLM findings),
+// so advisory LLM-only findings never inflate the count or the reason string.
+func (g *SecurityGate) blockSummary(blockers []security.Finding) string {
+	var crit, high int
+	for _, f := range blockers {
+		switch f.Severity {
+		case security.SeverityCritical:
+			crit++
+		case security.SeverityHigh:
+			high++
 		}
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d critical / %d high security finding(s)", crit, high)
+	for _, f := range blockers {
+		loc := f.File
+		if f.Line > 0 {
+			loc = fmt.Sprintf("%s:%d", f.File, f.Line)
+		}
+		fmt.Fprintf(&b, "; [%s] %s (%s %s)", strings.ToUpper(f.Severity.String()), f.Title, f.Tool, loc)
 	}
 	return b.String()
 }

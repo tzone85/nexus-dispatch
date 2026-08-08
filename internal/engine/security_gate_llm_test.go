@@ -43,26 +43,45 @@ func TestSecurityGate_ScanRepo_MergesLLMFindings(t *testing.T) {
 	}
 }
 
-// The LLM reviewing a story diff can block the story on its own — no scanner
-// finding needed. Drives llmReviewDiff end-to-end through the block path.
-func TestSecurityGate_ReviewStory_LLMDiffFindingBlocks(t *testing.T) {
+// Fix #9: an LLM-only story-diff finding is ADVISORY by default — the local
+// threat-model model hallucinates criticals (the gauntlet saw a fabricated
+// "path traversal" on a nonexistent .gitkeep path), so an uncorroborated LLM
+// finding must not block a merge on its own.
+func TestSecurityGate_ReviewStory_LLMOnlyIsAdvisory(t *testing.T) {
 	kbPath := filepath.Join(t.TempDir(), "kb.json")
 	client := llm.NewReplayClient(llm.CompletionResponse{Content: llmCriticalFinding})
 	g := newTestSecurityGate(t, client, kbPath, security.SeverityCritical, false, fakeScan())
+
+	passed, _, err := g.ReviewStory(context.Background(), "s-1", "add user filter", "+ query := \"SELECT * FROM users WHERE name='\" + name + \"'\"", t.TempDir())
+	if err != nil {
+		t.Fatalf("ReviewStory: %v", err)
+	}
+	if !passed {
+		t.Fatal("uncorroborated LLM-only finding must be advisory (story passes), not blocking")
+	}
+	// The diff must still have been sent to the model as data (advisory, not skipped).
+	if client.CallCount() != 1 || !strings.Contains(client.CallAt(0).Messages[0].Content, "<diff>") {
+		t.Error("diff review prompt must wrap the diff in <diff> data tags")
+	}
+}
+
+// With the strict opt-in (llm_findings_block=true) restored, the same LLM-only
+// critical blocks again — the operator can trade false positives for coverage.
+func TestSecurityGate_ReviewStory_LLMBlocksWhenOptedIn(t *testing.T) {
+	kbPath := filepath.Join(t.TempDir(), "kb.json")
+	client := llm.NewReplayClient(llm.CompletionResponse{Content: llmCriticalFinding})
+	g := newTestSecurityGate(t, client, kbPath, security.SeverityCritical, false, fakeScan())
+	g.SetLLMFindingsBlock(true)
 
 	passed, summary, err := g.ReviewStory(context.Background(), "s-1", "add user filter", "+ query := \"SELECT * FROM users WHERE name='\" + name + \"'\"", t.TempDir())
 	if err != nil {
 		t.Fatalf("ReviewStory: %v", err)
 	}
 	if passed {
-		t.Fatal("critical LLM finding must block the story")
+		t.Fatal("with llm_findings_block=true, a critical LLM finding must block the story")
 	}
 	if !strings.Contains(summary, "SQL injection") {
 		t.Errorf("block summary must name the finding: %q", summary)
-	}
-	// The diff must have been sent to the model as data.
-	if client.CallCount() != 1 || !strings.Contains(client.CallAt(0).Messages[0].Content, "<diff>") {
-		t.Error("diff review prompt must wrap the diff in <diff> data tags")
 	}
 }
 

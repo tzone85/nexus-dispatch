@@ -48,3 +48,58 @@ func TestScopeToChanged_EmptyChangedKeepsAll(t *testing.T) {
 		t.Fatalf("empty changed set must keep all findings, got %d", len(got))
 	}
 }
+
+// TestBlockingFindings_LLMAdvisoryByDefault locks fix #9: an LLM-only critical
+// with no scanner corroboration is advisory (does not block). The gauntlet
+// caught the local model hallucinating "[CRITICAL] path traversal in
+// app/Support/.gitkeep/file.txt" — a path that never existed — pausing a merge
+// on a nonexistent vuln.
+func TestBlockingFindings_LLMAdvisoryByDefault(t *testing.T) {
+	g := &SecurityGate{gateSeverity: security.SeverityCritical, llmBlocks: false}
+	findings := []security.Finding{
+		{Source: "llm", Tool: "llm", File: "app/Support/.gitkeep/file.txt", Severity: security.SeverityCritical, Title: "path traversal"},
+	}
+	if b := g.blockingFindings(findings); len(b) != 0 {
+		t.Fatalf("LLM-only critical must be advisory (0 blockers), got %d: %+v", len(b), b)
+	}
+}
+
+// TestBlockingFindings_ScannerAlwaysBlocks proves a deterministic scanner
+// finding at/above severity always blocks, regardless of the LLM policy.
+func TestBlockingFindings_ScannerAlwaysBlocks(t *testing.T) {
+	g := &SecurityGate{gateSeverity: security.SeverityCritical, llmBlocks: false}
+	findings := []security.Finding{
+		{Source: "scanner", Tool: "gitleaks", File: "config.env", Severity: security.SeverityCritical, Title: "AWS key"},
+	}
+	if b := g.blockingFindings(findings); len(b) != 1 {
+		t.Fatalf("scanner critical must block, got %d blockers", len(b))
+	}
+}
+
+// TestBlockingFindings_LLMCorroboratedBlocks proves an LLM finding on a file a
+// scanner also flagged is NOT advisory — corroboration restores blocking.
+func TestBlockingFindings_LLMCorroboratedBlocks(t *testing.T) {
+	g := &SecurityGate{gateSeverity: security.SeverityCritical, llmBlocks: false}
+	findings := []security.Finding{
+		{Source: "scanner", Tool: "semgrep", File: "db.go", Severity: security.SeverityHigh, Title: "sqli"},
+		{Source: "llm", Tool: "llm", File: "db.go", Severity: security.SeverityCritical, Title: "sqli exploit"},
+	}
+	b := g.blockingFindings(findings)
+	// scanner high (below critical gate) is filtered by severity; the LLM
+	// critical is corroborated by the scanner's same-file finding, so it blocks.
+	if len(b) != 1 || b[0].Source != "llm" {
+		t.Fatalf("corroborated LLM critical must block, got %+v", b)
+	}
+}
+
+// TestBlockingFindings_LLMBlocksWhenOptedIn proves the strict-mode switch:
+// llmBlocks=true lets an LLM-only critical block again.
+func TestBlockingFindings_LLMBlocksWhenOptedIn(t *testing.T) {
+	g := &SecurityGate{gateSeverity: security.SeverityCritical, llmBlocks: true}
+	findings := []security.Finding{
+		{Source: "llm", Tool: "llm", File: "x.go", Severity: security.SeverityCritical, Title: "hmm"},
+	}
+	if b := g.blockingFindings(findings); len(b) != 1 {
+		t.Fatalf("llmBlocks=true must let LLM-only critical block, got %d", len(b))
+	}
+}

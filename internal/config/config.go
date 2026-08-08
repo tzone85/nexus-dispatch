@@ -315,6 +315,15 @@ type SecurityConfig struct {
 	// a per-story gate must not block a story on pre-existing vulnerabilities in
 	// files it never touched (e.g. a legacy package.json).
 	GateScope string `yaml:"gate_scope,omitempty"`
+	// LLMFindingsBlock decides whether an LLM threat-model finding can block a
+	// story on its own. Default (false) makes LLM findings ADVISORY: they still
+	// appear in the summary and feed KB learning, but only a deterministic
+	// scanner finding — or an LLM finding a scanner corroborates on the same
+	// file — trips the gate. The local threat-model model hallucinates criticals
+	// (e.g. a "path traversal" on an agent-created .gitkeep path that does not
+	// exist), and a hallucinated critical must not pause a real merge. Set true
+	// to restore strict LLM-blocking.
+	LLMFindingsBlock bool `yaml:"llm_findings_block,omitempty"`
 	// KBPath overrides where the knowledge base persists. Empty ⇒
 	// <state_dir>/security/knowledge.json.
 	KBPath string `yaml:"kb_path,omitempty"`

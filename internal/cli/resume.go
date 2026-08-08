@@ -522,12 +522,17 @@ func runResume(cmd *cobra.Command, args []string) error {
 			gateSev, s.Config.Security.AutoLearn, s.Events, s.Proj,
 		)
 		secGate.SetGateScope(s.Config.Security.GateScope)
+		secGate.SetLLMFindingsBlock(s.Config.Security.LLMFindingsBlock)
 		monitor.SetSecurityGate(secGate)
 		scope := s.Config.Security.GateScope
 		if scope == "" {
 			scope = "changed"
 		}
-		log.Printf("[resume] security gate enabled (block at %s+, scope=%s, auto-learn=%v)", gateSev, scope, s.Config.Security.AutoLearn)
+		llmMode := "advisory"
+		if s.Config.Security.LLMFindingsBlock {
+			llmMode = "blocking"
+		}
+		log.Printf("[resume] security gate enabled (block at %s+, scope=%s, llm-findings=%s, auto-learn=%v)", gateSev, scope, llmMode, s.Config.Security.AutoLearn)
 	}
 
 	// Enable auto-documentation: when all stories merge, the monitor
