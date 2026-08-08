@@ -134,6 +134,36 @@ func TestInvestigator_CommandAllowlist_RejectsDoubleAmpersand(t *testing.T) {
 	}
 }
 
+// Redirection metacharacters must be rejected even when the command starts
+// with an allowlisted prefix. The command is handed to `sh -c` with cwd set to
+// the repo, so "cat go.mod > /abs/path" would otherwise write to an absolute
+// path OUTSIDE the repo (arbitrary out-of-repo file overwrite). This mirrors
+// the gemma runtime / criteria evaluator forbidden set.
+func TestInvestigator_CommandAllowlist_RejectsRedirection(t *testing.T) {
+	inv := NewInvestigator(nil, "", 0)
+	inv.SetCommandAllowlist([]string{"cat", "git log", "ls"})
+
+	for _, cmd := range []string{
+		"cat go.mod > /home/user/.ssh/authorized_keys",
+		"git log >> /home/user/.bashrc",
+		"cat < /etc/passwd",
+		"ls & rm -rf /", // bare ampersand (background) also rejected
+	} {
+		if inv.isCommandAllowed(cmd) {
+			t.Errorf("redirection/background command must be rejected: %q", cmd)
+		}
+	}
+}
+
+// The empty-allowlist backward-compat path must also reject redirection, since
+// the metacharacter check runs before the short-circuit.
+func TestInvestigator_CommandAllowlist_EmptyStillRejectsRedirection(t *testing.T) {
+	inv := NewInvestigator(nil, "", 0)
+	if inv.isCommandAllowed("cat secrets > /tmp/out") {
+		t.Error("empty allowlist must still reject redirection")
+	}
+}
+
 func TestInvestigator_CommandAllowlist_CaseInsensitive(t *testing.T) {
 	inv := NewInvestigator(nil, "", 0)
 	inv.SetCommandAllowlist([]string{"Git Log"})

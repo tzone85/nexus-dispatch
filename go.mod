@@ -5,11 +5,10 @@ go 1.26.1
 // toolchain pins the minimum Go toolchain so that builds (local and CI)
 // pull a patch level that clears the 1.26.x stdlib CVEs surfaced by
 // govulncheck (GO-2026-4866, -4870, -4918, -4946, -4947, -4971, -5037,
-// -5039, and GO-2026-5856 — the Encrypted Client Hello privacy leak in
-// crypto/tls, CALLED via web.Server.Start / docker.Client.Ping /
-// metrics.Recorder.Record / update.Checker, fixed in 1.26.5). With
-// GOTOOLCHAIN=auto (default), older local installs will fetch this patch
-// level on first build instead of compiling against a vulnerable stdlib.
+// -5039, and -5856 — the crypto/tls Encrypted Client Hello privacy leak,
+// fixed in go1.26.5). With GOTOOLCHAIN=auto (default), older local installs
+// will fetch 1.26.5 on first build instead of compiling against a vulnerable
+// stdlib.
 toolchain go1.26.5
 
 require (

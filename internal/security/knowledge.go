@@ -128,13 +128,14 @@ func (kb *KnowledgeBase) Checklist(langs []string) string {
 
 // Save writes the knowledge base to path as indented JSON, creating parent dirs.
 //
-// The write is atomic (temp file + rename). Concurrent story pipelines can each
-// upskill and Save the same kbPath; a plain truncating os.WriteFile could
-// interleave two writers into invalid JSON, and LoadKnowledgeBase only falls
-// back to the baseline when the file is MISSING — a corrupt file returns an
-// error forever, permanently and silently disabling the security gate. Rename
-// is atomic on POSIX filesystems, so a reader sees either the old or the new
-// file, never a torn one.
+// The write is atomic (temp file in the same directory + rename). os.WriteFile
+// truncates in place, so a crash — or a concurrent reader — mid-write would see
+// a partial/corrupt file. That matters here because the KB is loaded and saved
+// from concurrent per-story pipeline goroutines (SecurityGate.ReviewStory): a
+// torn read makes LoadKnowledgeBase fail, which the monitor treats as a
+// scanner error and skips the story's security gate. Rename is atomic on POSIX
+// filesystems, so a reader always observes either the old or the new file
+// whole. Mirrors routing.BayesianRouter.Save.
 func (kb *KnowledgeBase) Save(path string) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -162,7 +163,7 @@ func (kb *KnowledgeBase) Save(path string) error {
 		return fmt.Errorf("close temp knowledge file: %w", err)
 	}
 	if err := os.Rename(tmpName, path); err != nil {
-		return fmt.Errorf("rename knowledge base into place: %w", err)
+		return fmt.Errorf("rename knowledge file into place: %w", err)
 	}
 	return nil
 }

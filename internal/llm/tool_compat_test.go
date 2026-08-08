@@ -19,6 +19,8 @@ func TestHasToolSupport_Gemma4(t *testing.T) {
 		{"google+ollama", "gemma4:26b", true},
 		{"anthropic", "claude-opus-4-20250514", true},
 		{"openai", "gpt-4o", true},
+		{"ollama", "qwen3-coder:30b", true},
+		{"ollama", "qwen3:8b", true},
 		{"ollama", "deepseek-coder-v2:latest", false},
 		{"ollama", "qwen2.5-coder:14b", false},
 		{"ollama", "codellama:13b", false},
