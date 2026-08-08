@@ -157,6 +157,13 @@ func WithMonCompletionGate(g *CompletionGate) MonitorOption {
 	return func(m *Monitor) { m.completionGate = g }
 }
 
+// WithMonBudgetGuard wires billing.budget_usd enforcement: the monitor checks
+// actual LLM spend per requirement before each story's post-execution
+// pipeline, warns once at the threshold, and pauses on an exceeded budget.
+func WithMonBudgetGuard(g *BudgetGuard) MonitorOption {
+	return func(m *Monitor) { m.budgetGuard = g }
+}
+
 // Configure applies the given options to an already-constructed Monitor.
 func (m *Monitor) Configure(opts ...MonitorOption) {
 	for _, opt := range opts {

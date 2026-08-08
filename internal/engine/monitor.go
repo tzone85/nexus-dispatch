@@ -89,6 +89,11 @@ type Monitor struct {
 	// back to the legacy advisory verification (gaps logged, never blocking).
 	completionGate *CompletionGate
 
+	// budgetGuard enforces billing.budget_usd: warns once at the threshold
+	// and pauses the requirement when actual LLM spend reaches the cap. Nil
+	// disables budget enforcement.
+	budgetGuard *BudgetGuard
+
 	// dryRun causes the post-execution pipeline to simulate a successful
 	// agent diff instead of checking the real worktree.
 	dryRun bool
@@ -205,6 +210,12 @@ func (m *Monitor) SetCompletionGate(g *CompletionGate) {
 // threat-model review). A finding at or above the configured gate severity
 // pauses the requirement for a human decision rather than escalating. Nil
 // disables it.
+// SetBudgetGuard enables billing.budget_usd enforcement: warn once at the
+// threshold, pause the requirement when actual LLM spend reaches the cap.
+func (m *Monitor) SetBudgetGuard(g *BudgetGuard) {
+	m.Configure(WithMonBudgetGuard(g))
+}
+
 func (m *Monitor) SetSecurityGate(g *SecurityGate) {
 	m.Configure(WithMonSecurityGate(g))
 }
@@ -454,6 +465,14 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 	}
 
 	log.Printf("[pipeline] starting post-execution for %s", storyID)
+
+	// Budget guard: price the requirement's actual spend BEFORE burning more
+	// tokens on review / conflict resolution / re-plans. An exceeded budget
+	// pauses the requirement (operator decides whether to raise the cap and
+	// resume); a crossed warning threshold notifies once and continues.
+	if m.enforceBudget(storyID) {
+		return
+	}
 
 	// Auto-commit any uncommitted work left by the agent.
 	// Agents frequently exit without committing their changes,
@@ -892,6 +911,43 @@ func (m *Monitor) isRequirementPaused(storyID string) bool {
 // diagnosis (failure pattern + suggested operator directives) so the
 // dashboard / CLI can surface actionable next steps instead of just
 // "paused, please resume".
+// enforceBudget checks the story's requirement against the budget guard.
+// Returns true when the budget is exhausted and the requirement was paused —
+// the caller should stop its pipeline for this story. A first crossing of the
+// warning threshold emits REQ_BUDGET_WARNING and continues.
+func (m *Monitor) enforceBudget(storyID string) bool {
+	if m.budgetGuard == nil {
+		return false
+	}
+	story, err := m.projStore.GetStory(storyID)
+	if err != nil || story.ReqID == "" {
+		return false
+	}
+	status := m.budgetGuard.Check(story.ReqID)
+	payload := map[string]any{
+		"id":         story.ReqID,
+		"spent_usd":  status.SpentUSD,
+		"budget_usd": status.BudgetUSD,
+	}
+	switch status.State {
+	case BudgetExceeded:
+		emitEventOrLog(m.eventStore, m.projStore,
+			state.NewEvent(state.EventReqBudgetExceeded, "monitor", storyID, payload))
+		m.pauseRequirement(storyID, fmt.Sprintf(
+			"LLM budget exceeded: spent $%.2f of $%.2f (billing.budget_usd). Raise the budget or review spend, then `nxd resume %s`.",
+			status.SpentUSD, status.BudgetUSD, story.ReqID))
+		return true
+	case BudgetWarn:
+		if m.budgetGuard.MarkWarned(story.ReqID) {
+			emitEventOrLog(m.eventStore, m.projStore,
+				state.NewEvent(state.EventReqBudgetWarning, "monitor", storyID, payload))
+			log.Printf("[pipeline] budget warning for %s: spent $%.2f of $%.2f",
+				story.ReqID, status.SpentUSD, status.BudgetUSD)
+		}
+	}
+	return false
+}
+
 func (m *Monitor) pauseRequirement(storyID, reason string) {
 	story, err := m.projStore.GetStory(storyID)
 	if err != nil {
