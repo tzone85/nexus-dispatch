@@ -57,6 +57,7 @@ func init() {
 	rootCmd.AddCommand(newDirectCmd())
 	rootCmd.AddCommand(newImproveCmd())
 	rootCmd.AddCommand(newDBCmd())
+	rootCmd.AddCommand(newTimelineCmd())
 }
 
 func Execute() error {
