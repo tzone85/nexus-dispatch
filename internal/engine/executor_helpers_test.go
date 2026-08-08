@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -113,8 +114,19 @@ func TestRuntimeForRole_PrefersNativeMatchingModel(t *testing.T) {
 }
 
 // TestRuntimeForRole_FallsBackToProvider covers the well-known
-// provider → runtime mapping for non-native models.
+// provider → runtime mapping for non-native models. runtimeForRole also
+// LookPaths the runtime's command, so provision a fake `claude` binary on a
+// controlled PATH — on a host without Claude Code installed the mapping would
+// otherwise be skipped as unusable and the test would flake (this is exactly
+// what made CI red while dev machines stayed green).
 func TestRuntimeForRole_FallsBackToProvider(t *testing.T) {
+	bin := t.TempDir()
+	fake := filepath.Join(bin, "claude")
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake claude: %v", err)
+	}
+	t.Setenv("PATH", bin)
+
 	cfg := map[string]config.RuntimeConfig{
 		"claude-code": {Command: "claude", Args: []string{}, Models: []string{"claude-3-5-sonnet"}},
 	}
