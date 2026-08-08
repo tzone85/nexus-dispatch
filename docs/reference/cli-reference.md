@@ -198,6 +198,28 @@ nxd config validate   # Validate config file
 
 ---
 
+### nxd timeline
+
+Reconstruct a requirement's chronological history from the event log: planning, waves, per-story lifecycle with durations, review/QA/security outcomes, escalations, pauses, budget events, and completion.
+
+```bash
+nxd timeline               # auto-selects when only one requirement exists
+nxd timeline <req-id>
+nxd timeline <req-id> --json
+```
+
+**Flags:**
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--json` | false | Emit the timeline as structured JSON |
+
+**Output includes:**
+- Chronological event lines with timestamps (noise like per-iteration progress is filtered out)
+- Per-story rollup: status, wall-clock duration (started → merged), wave
+- Requirement span and merged/total summary
+
+---
+
 ### nxd events
 
 Query the event store.

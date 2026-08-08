@@ -99,7 +99,10 @@ nxd init && nxd doctor
 | `nxd req --background` | Same, but self-daemonize; tail with `nxd req-logs` |
 | `nxd status` | Requirements + stories overview |
 | `nxd dashboard [--web]` | Live TUI / browser dashboard |
+| `nxd timeline [req-id]` | Chronological requirement history with per-story durations |
 | `nxd doctor` | Preflight checks (Go, git, tmux, Ollama, config, projection drift) |
+
+Long runs can also push **notifications** (Slack-compatible webhook + macOS desktop) on completion/blocks/pauses, and a **budget guard** pauses a requirement before metered LLM spend exceeds `billing.budget_usd` — see [Configuration](docs/guides/configuration.md).
 
 Full CLI reference: [`docs/reference/cli-reference.md`](docs/reference/cli-reference.md).
 

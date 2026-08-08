@@ -267,6 +267,36 @@ merge:
 
 In `local` mode, stories still emit `STORY_PR_CREATED` and `STORY_MERGED` events for consistent tracking (with `pr_url: "local://merged"`).
 
+### billing — LLM budget guard
+
+```yaml
+billing:
+  llm_costs:
+    mode: per_token          # budget enforcement needs metered costs
+    rates:
+      claude-sonnet:
+        input_per_1k: 0.003
+        output_per_1k: 0.015
+  budget_usd: 25             # hard cap on actual LLM spend per requirement (0 = off)
+  budget_warn_pct: 80        # emit REQ_BUDGET_WARNING at this % of the cap (default 80)
+```
+
+The guard prices the requirement's **actual** token usage (`metrics.jsonl`) with your configured rates before each story's post-execution pipeline. Crossing the warning threshold emits `REQ_BUDGET_WARNING` once; reaching the cap emits `REQ_BUDGET_EXCEEDED` and pauses the requirement so no further tokens burn. Raise the budget (or accept the spend) and `nxd resume` to continue. In `mode: subscription` spend is always $0 and the guard never trips — it exists for metered API keys, not local Ollama.
+
+### notifications
+
+```yaml
+notifications:
+  enabled: true
+  webhook_url: https://hooks.slack.com/services/T000/B000/XXXX
+  format: slack              # "json" (default, structured envelope) or "slack" ({"text": ...})
+  desktop: true              # native macOS notification (no-op on other platforms)
+  timeout_s: 5               # per-delivery bound (default 5s)
+  # events: [REQ_COMPLETED, REQ_BLOCKED]   # optional override of the default set
+```
+
+NXD runs unattended for long stretches; notifications tell you the moment a run finishes or needs you. By default it fires on `REQ_COMPLETED`, `REQ_BLOCKED`, `REQ_PAUSED`, `HUMAN_REVIEW_NEEDED`, `STORY_SECURITY_FAILED`, `REQ_BUDGET_WARNING`, and `REQ_BUDGET_EXCEEDED`. Delivery is asynchronous and best-effort: a slow or failing endpoint is logged and dropped, never blocking the pipeline. The `slack` format also works with Discord's `/slack` webhook endpoint.
+
 ### runtimes
 
 Defines CLI tools that agents use to write code. NXD spawns each in a tmux session.

@@ -56,6 +56,14 @@ make mempalace-check              # smoke the MemPalace bridge end-to-end
 - Native Windows: all read-only commands work (`status`, `dashboard`, `doctor`, `config`, `events`, `metrics`, `report`, `projects`). Full agent pipeline (`req`/`resume`) needs tmux → run inside WSL2.
 - Platform-specific code lives in `_unix.go` / `_windows.go` build-tagged pairs: `internal/cli/req_*.go` (daemon detach), `internal/engine/lockfile_*.go` (advisory lock + process liveness), `internal/devdb/docker/host_*.go` (docker default host). Shell command exec goes through `internal/shellexec` (`sh -c` on Unix, `cmd.exe /C` on Windows, override with `NXD_SHELL`).
 
+## Current State (2026-08-08) — operator visibility: notifications, budget guard, timeline
+
+Three operator-facing features (each TDD'd, wired in `resume.go` with source-scan wiring tests in `resume_wiring_test.go`):
+
+- **Notifications** (`internal/notify/`): pushes watched pipeline events to a webhook (generic JSON envelope or Slack-compatible `{"text"}`; the latter also works with Discord `/slack` endpoints) and/or a native macOS desktop notification (osascript; no-op elsewhere). Hangs off `FileStore.OnAppend` in `runResume`; delivery is async + best-effort (goroutine per event, `Close()` drains before exit) so a dead endpoint can never stall the pipeline. Default watched set: REQ_COMPLETED, REQ_BLOCKED, REQ_PAUSED, HUMAN_REVIEW_NEEDED, STORY_SECURITY_FAILED, REQ_BUDGET_WARNING/EXCEEDED. Config: `notifications.{enabled, webhook_url, format (json|slack), desktop, events, timeout_s}` (validated: enabled requires a channel). Renderer (`Render`) is pure and unit-tested.
+- **LLM budget guard** (`engine/budget_guard.go`): `billing.budget_usd` caps ACTUAL spend per requirement — prices metrics.jsonl token counts with `billing.llm_costs.rates` (per_token mode only; subscription = $0, never trips). `Monitor.enforceBudget` runs at the top of `postExecutionPipeline`: crossing `billing.budget_warn_pct` (default 80) emits REQ_BUDGET_WARNING once (in-memory dedupe per run); reaching the cap emits REQ_BUDGET_EXCEEDED + `pauseRequirement`. `NewBudgetGuard` returns nil when no budget is set → wired unconditionally, nil disables. Wired via `SetBudgetGuard`/`WithMonBudgetGuard`.
+- **`nxd timeline [req-id] [--json]`** (`engine/timeline.go` + `cli/timeline.go`): reconstructs a requirement's chronology from the event log — planning, per-story lifecycle with wall-clock durations (STORY_STARTED → STORY_MERGED), review/QA/security outcomes, pauses, budget events, completion. `BuildTimeline` is pure (filters noise: STORY_PROGRESS, AGENT_CHECKPOINT, controller/supervisor ticks; excludes foreign requirements by story ownership + payload req id). Auto-selects when exactly one requirement exists. Documented in cli-reference.md (enforced by `TestDocs_CLIReferenceCoversAllCommands`).
+
 ## Current State (2026-07-02) — factory completeness: docs subsystem, completion gate, frontend skill
 
 - **Requirement-completion gate** (`engine/completion_gate.go` + `engine/verification_loop.go`): REQ_COMPLETED is only emitted after the composed mainline verifies green (deps install, build, tests, hallucination/conflict-marker scan). A red mainline gets up to `qa.completion_fix_cycles` (default 2) auto-fix agent cycles; still red → **REQ_BLOCKED** (requirement status `blocked`), gaps written to `.nxd-fix-gaps.md`, resume with `--godmode` after addressing. Nil LLM client ⇒ hard gate (verify once, block on red — completing on a red build is impossible regardless of wiring). Config: `qa.disable_completion_gate` (default false = ON), `qa.completion_fix_cycles` (0→2, negative→hard gate). Wired in `resume.go`; the local checkout is pulled to the composed mainline (`pullBaseAfterMerge`, `engine/monitor_pull.go`) before the gate verifies.
@@ -259,6 +267,10 @@ Architectural ceilings (cannot reach 95% without major refactor):
 - `test/dryrun_test.go` — 2 tests: full planner pipeline with DryRunClient, dispatch wave ordering
 
 ## Event Types
+
+Budget-guard events (added 2026-08-08):
+- `REQ_BUDGET_WARNING` — actual LLM spend crossed `billing.budget_warn_pct` of `billing.budget_usd` (once per run)
+- `REQ_BUDGET_EXCEEDED` — spend reached the cap; paired with REQ_PAUSED to stop further spend
 
 Completion-gate event (added 2026-07-02):
 - `REQ_BLOCKED` — the completion gate could not get the composed mainline green after its auto-fix budget; requirement status → `blocked` instead of `completed` (resume with `--godmode` after addressing `.nxd-fix-gaps.md`)

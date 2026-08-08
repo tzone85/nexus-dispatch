@@ -62,6 +62,24 @@ Every action in NXD produces an immutable event. NXD currently emits **58 event 
 ```
 **Projection:** Updates requirement status to "completed"
 
+### REQ_BUDGET_WARNING
+**When:** The requirement's actual LLM spend crosses `billing.budget_warn_pct` (default 80%) of `billing.budget_usd`. Fires once per run.
+**Producer:** Monitor (budget guard)
+**Payload:**
+```json
+{ "id": "req-...", "spent_usd": 8.10, "budget_usd": 10.0 }
+```
+**Projection:** None (informational; also a default notification trigger)
+
+### REQ_BUDGET_EXCEEDED
+**When:** Spend reaches `billing.budget_usd`. Emitted alongside a `REQ_PAUSED` that halts the pipeline so no further tokens burn.
+**Producer:** Monitor (budget guard)
+**Payload:**
+```json
+{ "id": "req-...", "spent_usd": 10.42, "budget_usd": 10.0 }
+```
+**Projection:** None directly (the paired REQ_PAUSED sets status "paused")
+
 ## Story Events
 
 ### STORY_CREATED
