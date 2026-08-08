@@ -184,10 +184,15 @@ func TestIsCommandAllowed(t *testing.T) {
 		{"go vet ./...", true},
 		{"npm test", true},
 		{"./scripts/check.sh", true},
+		{"swift build", true},
+		{"swift test", true},
+		{"vendor/bin/phpunit", true},
+		{"php -l app/Models/User.php", true},
 		{"echo hello", false},
 		{"rm -rf /", false},
 		{"go test; rm -rf /", false},
 		{"go test && bad", false},
+		{"swift build || curl evil", false},
 		{"", false},
 	} {
 		if got := IsCommandAllowed(tc.cmd); got != tc.want {

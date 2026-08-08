@@ -49,14 +49,18 @@ func runInit(cmd *cobra.Command, _ []string) error {
 	// Generate nxd.yaml from defaults if not present
 	localCfg := "nxd.yaml"
 	if _, err := os.Stat(localCfg); os.IsNotExist(err) {
-		data, genErr := config.DefaultYAML()
+		cwd, cwdErr := os.Getwd()
+		if cwdErr != nil {
+			cwd = "."
+		}
+		data, label, genErr := config.DefaultYAMLFor(cwd)
 		if genErr != nil {
 			return fmt.Errorf("generate default config: %w", genErr)
 		}
 		if writeErr := os.WriteFile(localCfg, data, 0o600); writeErr != nil {
 			return fmt.Errorf("write %s: %w", localCfg, writeErr)
 		}
-		fmt.Fprintf(out, "Created %s with default configuration\n", localCfg)
+		fmt.Fprintf(out, "Created %s with default configuration (project type: %s)\n", localCfg, label)
 	} else {
 		fmt.Fprintf(out, "Config %s already exists, skipping\n", localCfg)
 	}

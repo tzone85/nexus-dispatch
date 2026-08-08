@@ -1,0 +1,110 @@
+package config_test
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"gopkg.in/yaml.v3"
+
+	"github.com/tzone85/nexus-dispatch/internal/config"
+)
+
+func touch(t *testing.T, dir string, name string) {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func criteriaValues(p config.ProjectProfile) []string {
+	var out []string
+	for _, c := range p.Criteria {
+		out = append(out, c.Value)
+	}
+	return out
+}
+
+func TestDetectProject_Go(t *testing.T) {
+	dir := t.TempDir()
+	touch(t, dir, "go.mod")
+	p := config.DetectProject(dir)
+	if p.Label != "go" {
+		t.Fatalf("want go, got %s", p.Label)
+	}
+	if got := criteriaValues(p); len(got) != 3 || got[0] != "go build ./..." {
+		t.Fatalf("unexpected go criteria: %v", got)
+	}
+}
+
+func TestDetectProject_SwiftPackage(t *testing.T) {
+	dir := t.TempDir()
+	touch(t, dir, "Package.swift")
+	p := config.DetectProject(dir)
+	if p.Label != "swift" {
+		t.Fatalf("want swift, got %s", p.Label)
+	}
+	if got := criteriaValues(p); len(got) != 2 || got[0] != "swift build" {
+		t.Fatalf("unexpected swift criteria: %v", got)
+	}
+}
+
+func TestDetectProject_XcodeWithoutSwiftPM(t *testing.T) {
+	dir := t.TempDir()
+	touch(t, dir, "Memory.xcodeproj/project.pbxproj")
+	p := config.DetectProject(dir)
+	if p.Label != "swift-xcode" {
+		t.Fatalf("want swift-xcode, got %s", p.Label)
+	}
+	// Building needs full Xcode, which cannot be assumed: no criteria is
+	// honest; `go build` criteria would fail every story unconditionally.
+	if len(p.Criteria) != 0 {
+		t.Fatalf("xcode-only project must have no default criteria, got %v", criteriaValues(p))
+	}
+}
+
+func TestDetectProject_PHPWithoutVendoredPhpunit(t *testing.T) {
+	dir := t.TempDir()
+	touch(t, dir, "composer.json")
+	p := config.DetectProject(dir)
+	if p.Label != "php" {
+		t.Fatalf("want php, got %s", p.Label)
+	}
+	if len(p.Criteria) != 0 {
+		t.Fatalf("php without vendor/bin/phpunit must have no criteria, got %v", criteriaValues(p))
+	}
+}
+
+func TestDetectProject_Unknown(t *testing.T) {
+	p := config.DetectProject(t.TempDir())
+	if p.Label != "unknown" || len(p.Criteria) != 0 {
+		t.Fatalf("unknown project must carry no criteria, got %s %v", p.Label, criteriaValues(p))
+	}
+}
+
+func TestDefaultYAMLFor_NonGoNeverGetsGoCriteria(t *testing.T) {
+	// Regression: the 2026-08-08 gauntlet run gated a Swift repo on
+	// `go build ./...`, which exhausted every story's rejection budget.
+	dir := t.TempDir()
+	touch(t, dir, "Memory.xcodeproj/project.pbxproj")
+	data, label, err := config.DefaultYAMLFor(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if label != "swift-xcode" {
+		t.Fatalf("want swift-xcode, got %s", label)
+	}
+	// The command allowlist may legitimately mention go tools; the
+	// completion-gating criteria must not.
+	var cfg config.Config
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.QA.SuccessCriteria) != 0 {
+		t.Fatalf("swift-xcode repo must have no default criteria, got %+v", cfg.QA.SuccessCriteria)
+	}
+}

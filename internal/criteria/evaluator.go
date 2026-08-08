@@ -214,6 +214,15 @@ var allowedCommandPrefixes = []string{
 	"python -m", "python3 -m", "pytest",
 	"make ",
 	"cargo build", "cargo test",
+	// Swift: SwiftPM build/test plus the bare compiler for syntax checks.
+	// Without these, a Swift repository cannot be gated at all — the
+	// 2026-08-08 gauntlet run had `swift build` criteria rejected here,
+	// which exhausted every escalation tier.
+	"swift build", "swift test", "swiftc ",
+	// PHP: linting and script-based test runners (legacy projects rarely
+	// have a runnable vendor/, so `php tests/run.php` style runners are
+	// the practical gate), plus vendored phpunit and composer checks.
+	"php ", "vendor/bin/", "composer validate", "composer install", "composer test",
 	"./scripts/", "scripts/",
 	"git diff", "git status", "git log",
 }
