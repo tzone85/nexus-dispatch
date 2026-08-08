@@ -163,6 +163,16 @@ func runResume(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("get working directory: %w", err)
 	}
 
+	// Resolve the merge base branch once, here, so every downstream consumer
+	// (the local merger, the monitor's rebase, the post-merge pull, and the
+	// completion gate) sees the same real branch. Empty ⇒ detect the repo's
+	// actual default (master vs main); assuming main breaks every merge on
+	// older, master-based repos, and an empty value makes `git checkout ""`
+	// fail outright.
+	if s.Config.Merge.BaseBranch == "" {
+		s.Config.Merge.BaseBranch = nxdgit.DetectDefaultBranch(repoDir)
+	}
+
 	// Run crash recovery before dispatching.
 	recoveryActions := engine.RunRecovery(repoDir, s.Events, s.Proj)
 	if len(recoveryActions) > 0 {
