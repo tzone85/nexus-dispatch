@@ -182,7 +182,7 @@ func TestSecurityGate_ConcurrentUpskill_NoLostRules(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			cwe := fmt.Sprintf("CWE-90%02d", i) // distinct novel classes not in the baseline
-			g.upskill([]security.Finding{{
+			g.upskill(security.BaselineKnowledgeBase(), []security.Finding{{
 				Tool: "semgrep", RuleID: cwe, Severity: security.SeverityHigh,
 				File: "x.py", Line: 1, Title: "novel-" + cwe, Detail: cwe, Source: "scanner",
 			}})
