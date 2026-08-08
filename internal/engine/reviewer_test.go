@@ -3,6 +3,7 @@ package engine_test
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/tzone85/nexus-dispatch/internal/engine"
@@ -51,6 +52,36 @@ func TestReviewer_Review_Passed(t *testing.T) {
 	}
 	if len(events) != 1 {
 		t.Fatalf("expected 1 STORY_REVIEW_PASSED event, got %d", len(events))
+	}
+}
+
+func TestReviewer_Review_PromptCarriesVerdictPolicy(t *testing.T) {
+	// Without an explicit verdict policy, small local models reject stories
+	// for minor nits ("meets the acceptance criteria, however...") until the
+	// escalation tiers exhaust. The prompt must calibrate pass/fail.
+	es, ps, cleanup := newTestStores(t)
+	defer cleanup()
+
+	ps.Project(state.NewEvent(state.EventStoryCreated, "tech-lead", "s-001", map[string]any{
+		"id": "s-001", "req_id": "r-001", "title": "Task", "description": "desc", "complexity": 3,
+	}))
+
+	client := llm.NewReplayClient(llm.CompletionResponse{
+		Content: `{"passed": true, "comments": [], "summary": "ok"}`,
+	})
+
+	reviewer := engine.NewReviewer(client, "ollama", "some-model", 4000, es, ps)
+	if _, err := reviewer.Review(context.Background(), "s-001", "T", "AC", "diff --git a/x b/x"); err != nil {
+		t.Fatalf("review: %v", err)
+	}
+
+	req := client.CallAt(0)
+	prompt := req.Messages[len(req.Messages)-1].Content
+	if !strings.Contains(prompt, "Verdict policy") {
+		t.Fatalf("reviewer prompt missing verdict policy calibration:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "never reject solely for minor") {
+		t.Fatalf("reviewer prompt missing minor-findings rule:\n%s", prompt)
 	}
 }
 

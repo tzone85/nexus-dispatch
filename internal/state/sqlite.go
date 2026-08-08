@@ -1,6 +1,7 @@
 package state
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/json"
@@ -95,7 +96,22 @@ CREATE TABLE IF NOT EXISTS story_databases (
     PRIMARY KEY (story_id, db_id)
 );
 CREATE INDEX IF NOT EXISTS idx_story_databases_status ON story_databases(status);
+
+-- projection_meta tracks how far the projection has been reconciled with the
+-- event log. applied_event_count is bumped on every successful Project; on
+-- open, loadStores compares it against the event-log length and rebuilds the
+-- projection when it has fallen behind (the Append-ok / Project-failed desync
+-- that engine.emitEventOrLog documents).
+CREATE TABLE IF NOT EXISTS projection_meta (
+    key   TEXT PRIMARY KEY,
+    value INTEGER NOT NULL
+);
+INSERT OR IGNORE INTO projection_meta (key, value) VALUES ('applied_event_count', 0);
 `
+
+// appliedCountKey is the projection_meta row holding the number of events the
+// projection has successfully applied.
+const appliedCountKey = "applied_event_count"
 
 // SQLiteStore implements ProjectionStore using SQLite.
 //
@@ -167,14 +183,128 @@ func (s *SQLiteStore) Close() error {
 	return s.db.Close()
 }
 
+// projectionTables lists every table materialized purely from the event log.
+// RebuildFrom truncates these before replaying; they must all be reconstructable
+// from Project alone. (projection_meta is excluded — it is the watermark itself
+// and is reset explicitly.)
+var projectionTables = []string{
+	"story_databases",
+	"agent_scores",
+	"escalations",
+	"story_deps",
+	"agents",
+	"stories",
+	"requirements",
+}
+
+// AppliedEventCount returns how many events the projection has successfully
+// applied (the reconciliation watermark). loadStores compares this against the
+// event-log length to decide whether a rebuild is needed.
+func (s *SQLiteStore) AppliedEventCount() (int, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var n int
+	err := s.db.QueryRow(
+		`SELECT value FROM projection_meta WHERE key = ?`, appliedCountKey,
+	).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("read applied_event_count: %w", err)
+	}
+	return n, nil
+}
+
+// AckDirectWrite advances the watermark by n to account for events that were
+// appended to the log and reconciled into the projection by a direct write
+// rather than by Project (the archive command being the sole such path). Without
+// this the projection would look permanently behind the log and rebuild on
+// every open, discarding the direct write.
+func (s *SQLiteStore) AckDirectWrite(n int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(
+		`UPDATE projection_meta SET value = value + ? WHERE key = ?`, n, appliedCountKey,
+	)
+	return err
+}
+
+// RebuildFrom truncates the projection tables and replays every event from the
+// event store back through Project, restoring the materialized state to a
+// faithful function of the durable event log. This is the recovery path
+// engine.emitEventOrLog documents: when a Project fails after its Append
+// succeeded, the projection is left desynced until the next open, when
+// loadStores calls RebuildFrom to rebuild it.
+//
+// Truncate-then-replay (rather than in-place upserts) keeps Project simple:
+// every handler runs against empty tables, so plain INSERTs cannot collide.
+func (s *SQLiteStore) RebuildFrom(ctx context.Context, es EventStore) error {
+	events, err := es.List(EventFilter{})
+	if err != nil {
+		return fmt.Errorf("rebuild: list events: %w", err)
+	}
+	if err := s.truncateProjection(); err != nil {
+		return fmt.Errorf("rebuild: %w", err)
+	}
+	for _, evt := range events {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := s.Project(evt); err != nil {
+			return fmt.Errorf("rebuild: project %s (%s): %w", evt.Type, evt.ID, err)
+		}
+	}
+	return nil
+}
+
+// truncateProjection empties every projection table and resets the watermark to
+// zero so the subsequent replay repopulates both from scratch.
+func (s *SQLiteStore) truncateProjection() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("truncate: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	for _, table := range projectionTables {
+		if _, err := tx.Exec("DELETE FROM " + table); err != nil {
+			return fmt.Errorf("truncate %s: %w", table, err)
+		}
+	}
+	if _, err := tx.Exec(
+		`UPDATE projection_meta SET value = 0 WHERE key = ?`, appliedCountKey,
+	); err != nil {
+		return fmt.Errorf("truncate: reset watermark: %w", err)
+	}
+	return tx.Commit()
+}
+
 // Project applies a domain event to the projection tables, updating the
-// materialized state accordingly.
+// materialized state accordingly. On success it advances the reconciliation
+// watermark (applied_event_count) so an interrupted projection can be detected
+// and rebuilt on the next open.
 func (s *SQLiteStore) Project(evt Event) error {
 	// H6: serialize all writes through a single mutex. SQLite's own locking
 	// produces SQLITE_BUSY under contention; this avoids those errors and
 	// the noisy retry loops they trigger.
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.projectLocked(evt); err != nil {
+		return err
+	}
+	// Advance the watermark only after the projection write succeeded. A
+	// failed Project leaves the watermark behind the event-log length, which
+	// is exactly the signal RebuildFrom keys off on next open.
+	_, err := s.db.Exec(
+		`UPDATE projection_meta SET value = value + 1 WHERE key = ?`,
+		appliedCountKey,
+	)
+	return err
+}
+
+// projectLocked routes a single event to its projection handler. The caller
+// must hold s.mu.
+func (s *SQLiteStore) projectLocked(evt Event) error {
 	payload := s.decodePayload(evt)
 
 	switch evt.Type {
@@ -221,7 +351,11 @@ func (s *SQLiteStore) Project(evt Event) error {
 	case EventAgentSpawned:
 		return s.projectAgentSpawned(evt, payload)
 	case EventAgentTerminated:
-		return s.projectAgentTerminated(evt)
+		return s.projectAgentStatus(evt, payload, "terminated")
+	case EventAgentStuck:
+		return s.projectAgentStatus(evt, payload, "stuck")
+	case EventAgentResumed:
+		return s.projectAgentStatus(evt, payload, "active")
 	case EventStoryEstimated:
 		return s.updateStoryStatus(evt.StoryID, "estimated")
 	case EventStoryAssigned:
@@ -776,37 +910,48 @@ func (s *SQLiteStore) projectAgentSpawned(evt Event, payload map[string]any) err
 	return nil
 }
 
-// projectAgentTerminated transitions a killed/cancelled agent out of its live
-// state so readers (nxd agents, the TUI/web panels) no longer show it as an idle
-// agent still bound to a story. The two emit sites differ in shape: the dashboard
-// kill (web/handlers.go) carries the agent id in AgentID with an empty StoryID,
-// while the controller (engine/controller.go) emits with AgentID="controller" and
-// the story id in StoryID — so match by story when we have one, else by agent id.
-// current_story_id is NOT NULL, so it is cleared to the empty string (which also
-// drops the agent from orphan-recovery's session→story map — a terminated agent
-// must not be reattached).
-func (s *SQLiteStore) projectAgentTerminated(evt Event) error {
-	if evt.StoryID != "" {
-		_, err := s.db.Exec(
-			`UPDATE agents SET status = 'terminated', current_story_id = '', updated_at = CURRENT_TIMESTAMP
-			 WHERE current_story_id = ?`,
-			evt.StoryID,
-		)
-		if err != nil {
-			return fmt.Errorf("project agent terminated (by story): %w", err)
-		}
-		return nil
+// projectAgentStatus reflects an agent lifecycle transition (AGENT_TERMINATED /
+// AGENT_STUCK / AGENT_RESUMED) onto the agents table's status column. Without
+// this the column is frozen at 'idle' from projectAgentSpawned forever, so
+// `nxd agents --status {active,stuck,terminated}` returns nothing and the
+// dashboard shows killed agents as live.
+//
+// The emitting sites disagree on which field identifies the agent, so we key
+// off whatever is present, most specific first:
+//   - StoryID set   → the controller cancelled the agent working a story
+//     (AgentID carries the actor "controller", not the target).
+//   - AgentID set    → the dashboard killed a specific agent by id.
+//   - otherwise      → the watchdog's AGENT_STUCK carries only the tmux
+//     session name in its payload.
+func (s *SQLiteStore) projectAgentStatus(evt Event, payload map[string]any, status string) error {
+	// A terminated agent also clears current_story_id so crash recovery's
+	// session→story map (buildSessionStoryMap) drops the dead session instead
+	// of trying to reconcile an already-killed tmux session.
+	setClause := `status = ?, updated_at = CURRENT_TIMESTAMP`
+	if status == "terminated" {
+		setClause = `status = ?, current_story_id = '', updated_at = CURRENT_TIMESTAMP`
 	}
-	_, err := s.db.Exec(
-		`UPDATE agents SET status = 'terminated', current_story_id = '', updated_at = CURRENT_TIMESTAMP
-		 WHERE id = ?`,
-		evt.AgentID,
-	)
-	if err != nil {
-		return fmt.Errorf("project agent terminated (by agent): %w", err)
+	var query, key string
+	switch {
+	case evt.StoryID != "":
+		query = `UPDATE agents SET ` + setClause + ` WHERE current_story_id = ?`
+		key = evt.StoryID
+	case evt.AgentID != "":
+		query = `UPDATE agents SET ` + setClause + ` WHERE id = ?`
+		key = evt.AgentID
+	default:
+		key = payloadStr(payload, "session_name")
+		if key == "" {
+			return nil // no identifier to key on — nothing to project
+		}
+		query = `UPDATE agents SET ` + setClause + ` WHERE session_name = ?`
+	}
+	if _, err := s.db.Exec(query, status, key); err != nil {
+		return fmt.Errorf("project agent status %q: %w", status, err)
 	}
 	return nil
 }
+
 
 // InsertAgent inserts an agent record directly into the agents table.
 // Convenience for tests and direct seeding; live runs populate the table via

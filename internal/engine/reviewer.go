@@ -99,7 +99,15 @@ Review the code for:
 5. Performance - any obvious issues?
 6. Blast radius - if blast radius analysis is provided above, check whether high-risk callers or dependents might break.
 
-Do NOT claim a file is missing if it appears in the worktree files list above.`, title, acceptanceCriteria, blastRadiusCtx, fileTreeCtx, diff)
+Do NOT claim a file is missing if it appears in the worktree files list above.
+
+Verdict policy: set passed=true when the acceptance criteria are met and
+there are no critical or major defects (bugs, security holes, broken
+builds or tests, unmet criteria). Record minor and info-level findings
+(naming, comments, style, polish, nice-to-haves) as review comments on a
+PASSING review — never reject solely for minor or info findings. A diff
+that is only placeholders or stubs with no real implementation does NOT
+meet acceptance criteria and must be rejected.`, title, acceptanceCriteria, blastRadiusCtx, fileTreeCtx, diff)
 
 	systemPrompt := "You are a Senior code reviewer. Review code changes and provide structured feedback."
 

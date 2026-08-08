@@ -146,87 +146,94 @@ func NewMonitor(
 	}
 }
 
+// The Set* methods below are thin, behaviour-preserving shims over the
+// functional options in options.go. Each optional dependency is assigned in
+// exactly one place — its WithMon* option — so the field-wiring logic has a
+// single owner; these setters exist only for callers and tests that wire one
+// knob imperatively. New code should prefer Configure / WithMon*.
+
 // SetMemPalace enables semantic memory mining during the post-execution
 // pipeline. When set, the monitor mines story diffs, review feedback, and
 // QA failures into MemPalace for future agent context.
 func (m *Monitor) SetMemPalace(mp *memory.MemPalace) {
-	m.mempalace = mp
+	m.Configure(WithMonMemPalace(mp))
 }
 
 // SetArtifactStore enables per-story artifact persistence (diffs, reviews, QA).
 func (m *Monitor) SetArtifactStore(store *artifact.Store) {
-	m.artifactStore = store
+	m.Configure(WithMonArtifactStore(store))
 }
 
 // SetBayesianRouter enables adaptive routing feedback. When set, the monitor
 // records story outcomes (success/failure/partial) to update Beta priors.
 func (m *Monitor) SetBayesianRouter(r *routing.BayesianRouter) {
-	m.bayesian = r
+	m.Configure(WithMonBayesianRouter(r))
 }
 
 // SetCodeGraph enables blast-radius analysis before code review.
 func (m *Monitor) SetCodeGraph(cg *codegraph.Runner) {
-	m.codeGraph = cg
+	m.Configure(WithMonCodeGraph(cg))
 }
 
 // SetConflictResolver enables LLM-based automatic conflict resolution during
 // rebase. Without this, rebase conflicts cause the story to be reset to draft.
 func (m *Monitor) SetConflictResolver(cr *ConflictResolver) {
-	m.conflictResolver = cr
+	m.Configure(WithMonConflictResolver(cr))
 }
 
 // SetAutoResume enables automatic dispatch of the next wave when stories
 // complete. Without this, the monitor exits after one wave and the user
 // must manually run "nxd resume".
 func (m *Monitor) SetAutoResume(d *Dispatcher, e *Executor) {
-	m.dispatcher = d
-	m.executor = e
+	m.Configure(WithMonAutoResume(d, e))
 }
 
-// SetManager enables tier-2 (manager) escalation handling. When set, the
-// monitor intercepts tier-2 stories before dispatch and routes them through
-// the Manager for LLM-powered failure diagnosis and corrective actions.
-// SetSecurityGate wires the per-story security agent (scanners + LLM threat-model
-// review). A finding at or above the configured gate severity pauses the
-// requirement for a human decision rather than escalating. Nil disables it.
 // SetDocGenerator enables automatic README/docs generation when all stories
 // in a requirement have merged.
 func (m *Monitor) SetDocGenerator(client llm.Client, model string) {
-	m.docClient = client
-	m.docModel = model
+	m.Configure(WithMonDocGenerator(client, model))
 }
 
 // SetCompletionGate wires the requirement-completion verification gate. When
 // set, REQ_COMPLETED is only emitted after the composed mainline verifies
 // green; a red mainline that survives the auto-fix budget emits REQ_BLOCKED.
 func (m *Monitor) SetCompletionGate(g *CompletionGate) {
-	m.completionGate = g
+	m.Configure(WithMonCompletionGate(g))
 }
 
+// SetSecurityGate wires the per-story security agent (scanners + LLM
+// threat-model review). A finding at or above the configured gate severity
+// pauses the requirement for a human decision rather than escalating. Nil
+// disables it.
 func (m *Monitor) SetSecurityGate(g *SecurityGate) {
-	m.securityGate = g
+	m.Configure(WithMonSecurityGate(g))
 }
 
+// SetManager enables tier-2 (manager) escalation handling. When set, the
+// monitor intercepts tier-2 stories before dispatch and routes them through
+// the Manager for LLM-powered failure diagnosis and corrective actions.
 func (m *Monitor) SetManager(mgr *Manager) {
-	m.manager = mgr
+	m.Configure(WithMonManager(mgr))
 }
 
 // SetPlanner enables tier-3 (tech lead) re-planning. When set, the monitor
 // can decompose failing stories into smaller replacement stories via the
 // Planner's RePlan method.
 func (m *Monitor) SetPlanner(p *Planner) {
-	m.planner = p
+	m.Configure(WithMonPlanner(p))
 }
 
 // SetDryRun enables dry-run mode. In this mode, the post-execution pipeline
 // writes a simulated change to the worktree so the pipeline can exercise
 // the full review->QA->merge flow without real agent output.
 func (m *Monitor) SetDryRun(enabled bool) {
-	m.dryRun = enabled
+	m.Configure(WithMonDryRun(enabled))
 }
 
 // SetDevDBLifecycle wires a devdb Lifecycle for per-story DB release.
-func (m *Monitor) SetDevDBLifecycle(lc *devdb.Lifecycle) { m.lifecycle = lc }
+func (m *Monitor) SetDevDBLifecycle(lc *devdb.Lifecycle) {
+	m.Configure(WithMonDevDBLifecycle(lc))
+}
 
 // HasDevDBLifecycle reports whether a devdb Lifecycle has been configured.
 func (m *Monitor) HasDevDBLifecycle() bool { return m.lifecycle != nil }

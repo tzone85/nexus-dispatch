@@ -9,6 +9,7 @@ import (
 var toolSupportedModels = []string{
 	"gemma4",
 	"gemma-4",
+	"qwen3", // qwen3 / qwen3-coder ship native tool calling in Ollama
 }
 
 var toolSupportedProviders = map[string]bool{

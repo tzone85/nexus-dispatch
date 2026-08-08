@@ -87,6 +87,33 @@ func TestLocalMerger_Merge_Success(t *testing.T) {
 	}
 }
 
+func TestLocalMerger_Merge_FlagsEmptyMerge(t *testing.T) {
+	// A branch with no unique commits (e.g. its work was dropped as duplicate
+	// during rebase) merges as "Already up to date". That must be visible to
+	// the caller — a silent merged=true hides that no code actually landed.
+	repo := setupMergeRepo(t)
+	runCmd(t, repo, "git", "branch", "feature/empty") // same SHA as main
+
+	merger := nxdgit.NewLocalMerger(repo)
+	result, err := merger.Merge("feature/empty", "main")
+	if err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	if !result.Empty {
+		t.Fatal("expected Empty=true for a branch with no unique commits")
+	}
+
+	// A real merge is not flagged.
+	addFeatureBranch(t, repo, "feature/real", "real.txt", "content")
+	result, err = merger.Merge("feature/real", "main")
+	if err != nil {
+		t.Fatalf("merge real: %v", err)
+	}
+	if result.Empty {
+		t.Fatal("real merge wrongly flagged Empty")
+	}
+}
+
 func TestLocalMerger_Merge_RemovesUntrackedGoBuildArtifact(t *testing.T) {
 	repo := setupMergeRepo(t)
 	if err := os.WriteFile(filepath.Join(repo, "go.mod"), []byte("module smoke.test/health\n\ngo 1.21\n"), 0644); err != nil {

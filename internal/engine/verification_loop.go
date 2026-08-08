@@ -159,14 +159,15 @@ func checkTests(repoDir string) (passing, failing, total int) {
 
 	if buildFileExists(filepath.Join(repoDir, "go.mod")) {
 		passing, failing, total = parseGoTestJSON(output)
-		// `go test` exits non-zero on a compilation/setup failure that
-		// parseGoTestJSON cannot attribute to a specific test (test files that
-		// no longer compile emit only package-level events with no Test field).
-		// `go build ./...` in checkBuild does NOT compile _test.go files, so
-		// this is the ONLY signal that the composed mainline's tests are red.
-		// Fail closed: a non-zero exit with zero counted failures still means
-		// the suite did not go green.
+		// Defense-in-depth: `go test` exits non-zero on a failing test (already
+		// counted above) but ALSO on a compile/vet failure that produces no
+		// per-test JSON at all — e.g. a broken _test.go that `go build ./...`
+		// never sees, or a vet error before any test runs. If the command
+		// failed yet the parser found no failing tests, the suite did not
+		// actually pass: count it as a failure so the completion gate fails
+		// closed instead of certifying a red mainline as green.
 		if runErr != nil && failing == 0 {
+			log.Printf("[verify] go test exited non-zero with no parsed test failures (compile/vet error) — counting as failure: %v", runErr)
 			failing = 1
 			total = passing + failing
 		}
@@ -195,35 +196,59 @@ func checkTests(repoDir string) (passing, failing, total int) {
 	}
 
 	total = passing + failing
+	// Same fail-closed guard as the Go path: the JS runner is invoked with
+	// --passWithNoTests, so a non-zero exit with no parsed failures means the
+	// runner itself crashed (missing dep, bad config) and no tests actually
+	// ran — treat it as a failure rather than a silent green.
+	if runErr != nil && failing == 0 {
+		log.Printf("[verify] test runner exited non-zero with no parsed failures (runner crash) — counting as failure: %v", runErr)
+		failing = 1
+		total = passing + failing
+	}
 	log.Printf("[verify] tests: %d passing, %d failing, %d total", passing, failing, total)
 	return passing, failing, total
 }
 
 func parseGoTestJSON(output string) (passing, failing, total int) {
-	buildFailures := 0
+	failedPkgs := map[string]bool{}
 	for _, line := range strings.Split(output, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
 		var evt struct {
-			Action string `json:"Action"`
-			Test   string `json:"Test"`
-			Output string `json:"Output"`
+			Action      string `json:"Action"`
+			Test        string `json:"Test"`
+			Package     string `json:"Package"`
+			ImportPath  string `json:"ImportPath"`
+			FailedBuild string `json:"FailedBuild"`
 		}
 		if err := json.Unmarshal([]byte(line), &evt); err != nil {
 			continue
 		}
+		// Package-level events carry no Test field. A package whose tests fail
+		// to COMPILE surfaces here — as Action "build-fail", or a package-level
+		// "fail" carrying FailedBuild — with no per-test events at all. Because
+		// `go build ./...` never compiles _test.go files, this is the only place
+		// a test-compilation failure (e.g. cross-story symbol drift breaking a
+		// test) becomes visible. Counting it keeps the completion gate failing
+		// closed instead of reading 0-passing/0-failing as "nothing wrong".
 		if evt.Test == "" {
-			// Package-level events carry no Test field. A package whose test
-			// files fail to compile emits a "[build failed]" (or "[setup
-			// failed]") output line and a package-level fail — but no per-test
-			// fail event. Count these so a test-compilation break (a common
-			// form of cross-story drift) is not silently reported as "0
-			// failing" and waved through the completion gate.
-			if evt.Action == "output" &&
-				(strings.Contains(evt.Output, "[build failed]") || strings.Contains(evt.Output, "[setup failed]")) {
-				buildFailures++
+			if evt.Action == "build-fail" || (evt.Action == "fail" && evt.FailedBuild != "") {
+				// The real toolchain stamps "build-fail" with ImportPath
+				// ("pkg [pkg.test]") and the paired package "fail" with
+				// Package ("pkg"); normalize both to the bare import path so
+				// the two events for one broken package dedupe to one failure.
+				pkg := evt.Package
+				if pkg == "" {
+					pkg = strings.TrimSpace(strings.SplitN(evt.ImportPath, " [", 2)[0])
+				}
+				if pkg == "" {
+					failing++
+				} else if !failedPkgs[pkg] {
+					failedPkgs[pkg] = true
+					failing++
+				}
 			}
 			continue
 		}
@@ -234,7 +259,6 @@ func parseGoTestJSON(output string) (passing, failing, total int) {
 			failing++
 		}
 	}
-	failing += buildFailures
 	total = passing + failing
 	log.Printf("[verify] tests: %d passing, %d failing, %d total", passing, failing, total)
 	return passing, failing, total

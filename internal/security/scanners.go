@@ -5,10 +5,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -211,7 +213,7 @@ func parseGitleaks(out []byte, repoDir string) ([]Finding, error) {
 		StartLine   int    `json:"StartLine"`
 		RuleID      string `json:"RuleID"`
 	}
-	if err := json.Unmarshal(out, &rows); err != nil {
+	if err := json.Unmarshal(extractJSONArray(out), &rows); err != nil {
 		return nil, err
 	}
 	findings := make([]Finding, 0, len(rows))
@@ -229,6 +231,25 @@ func parseGitleaks(out []byte, repoDir string) ([]Finding, error) {
 		})
 	}
 	return findings, nil
+}
+
+// ansiEscape matches ANSI SGR/CSI escape sequences (e.g. "\x1b[90m").
+var ansiEscape = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
+
+// extractJSONArray returns the outermost JSON array in out. Gitleaks (and
+// other colourising tools) interleave ANSI-coloured log lines with the JSON
+// report on the same stream; escape sequences are stripped first (they
+// contain '[' themselves), then the payload is sliced from the first '[' to
+// the last ']'. Returns the stripped output unchanged when no array brackets
+// exist so the caller still surfaces a parse error with the real content.
+func extractJSONArray(out []byte) []byte {
+	clean := ansiEscape.ReplaceAll(out, nil)
+	start := bytes.IndexByte(clean, '[')
+	end := bytes.LastIndexByte(clean, ']')
+	if start == -1 || end == -1 || end < start {
+		return clean
+	}
+	return clean[start : end+1]
 }
 
 func parseSemgrep(out []byte, repoDir string) ([]Finding, error) {
@@ -309,20 +330,6 @@ func parseNpmAudit(out []byte) ([]Finding, error) {
 	return findings, nil
 }
 
-// firstLine returns the first non-empty line of out (trimmed, capped) for use in
-// a failure message — enough to see the tool's error without dumping its output.
-func firstLine(out []byte) string {
-	for _, line := range strings.Split(string(out), "\n") {
-		if t := strings.TrimSpace(line); t != "" {
-			if len(t) > 200 {
-				t = t[:200] + "…"
-			}
-			return t
-		}
-	}
-	return "(no output)"
-}
-
 func parseGovulncheck(out []byte) ([]Finding, error) {
 	var findings []Finding
 	sc := bufio.NewScanner(bytes.NewReader(out))
@@ -380,31 +387,39 @@ func (s Scanner) Run(ctx context.Context, repoDir string) ([]Finding, error) {
 		return nil, nil
 	}
 	cmd.Dir = repoDir
-	// Exit code is a findings signal for most tools (non-zero == findings), so
-	// it is not by itself a failure. govulncheck is the exception (below): it
-	// uses non-zero for BOTH "found vulns" and "failed to run", and its text
-	// output has no findings to parse in either the clean OR the errored case,
-	// so a run failure would otherwise masquerade as a clean scan.
-	out, runErr := cmd.CombinedOutput()
+	// Capture stdout only: scanners emit their machine-readable report on
+	// stdout and human log lines (often ANSI-coloured) on stderr. Combining
+	// the streams corrupted the JSON payload. Exit code is intentionally
+	// ignored for the JSON scanners: they exit non-zero when they find
+	// issues, and a genuine run failure corrupts the JSON so the parser
+	// returns an error (→ recorded as failed). govulncheck is the exception —
+	// its text output is empty both when it finds nothing AND when it never
+	// ran (offline, no go.mod, load error), so a clean parse cannot tell the
+	// two apart; we must inspect its exit code (see below).
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	runErr := cmd.Run()
+	out := stdout.Bytes()
 
 	switch s.Kind {
 	case ScannerGosec:
 		return parseGosec(out, repoDir)
 	case ScannerGovulncheck:
-		fs, err := parseGovulncheck(out)
-		if err != nil {
-			return nil, err
+		// Exit 0 (no vulnerabilities) and exit 3 (vulnerabilities found) are
+		// both successful analyses. Any other outcome — exit 1 (load/network/
+		// config error, e.g. NXD's offline-first host cannot reach vuln.go.dev),
+		// exit 2 (usage), or a non-exit failure such as a timeout — means the
+		// scan never inspected the code. Returning an error here routes it to
+		// RunScanners' `failed` list instead of masquerading as a clean run,
+		// which is the whole point of that list.
+		if !govulncheckCompleted(runErr) {
+			// Diagnostics land on stderr with the split streams, so scan
+			// stdout first (report text) and fall back to stderr.
+			detail := append(append([]byte{}, out...), stderr.Bytes()...)
+			return nil, fmt.Errorf("govulncheck did not complete (dependency-CVE coverage lost): %s", scannerFailureDetail(detail, runErr))
 		}
-		// A completed govulncheck run either prints "Vulnerability #" blocks
-		// (findings) or "No vulnerabilities found". Neither of those plus a
-		// non-zero exit means the scan errored — DB fetch blocked, module load
-		// failure, or timeout — rather than finding nothing. Surface it as a
-		// failed scan so RunScanners records the coverage loss instead of
-		// reporting a clean dependency-CVE scan that never actually ran.
-		if len(fs) == 0 && runErr != nil && !bytes.Contains(out, []byte("No vulnerabilities found")) {
-			return nil, fmt.Errorf("govulncheck did not complete cleanly (%v): %s", runErr, firstLine(out))
-		}
-		return fs, nil
+		return parseGovulncheck(out)
 	case ScannerGitleaks:
 		return parseGitleaks(out, repoDir)
 	case ScannerSemgrep:
@@ -414,4 +429,37 @@ func (s Scanner) Run(ctx context.Context, repoDir string) ([]Finding, error) {
 	default:
 		return nil, nil
 	}
+}
+
+// govulncheckCompleted reports whether a govulncheck invocation actually ran a
+// full analysis. govulncheck exits 0 when it finds no vulnerabilities and 3 when
+// it does (both successful runs, per golang.org/x/vuln internal/scan/errors.go).
+// Every other outcome — exit 1 (package load / network / config error), exit 2
+// (usage), or a non-*exec.ExitError failure such as a context timeout — means it
+// never inspected the code and its empty text output must not be read as clean.
+func govulncheckCompleted(runErr error) bool {
+	if runErr == nil {
+		return true // exit 0: analysis completed, no vulnerabilities
+	}
+	var ee *exec.ExitError
+	if errors.As(runErr, &ee) && ee.ExitCode() == 3 {
+		return true // exit 3: analysis completed, vulnerabilities found
+	}
+	return false
+}
+
+// scannerFailureDetail summarizes why a scanner run failed for logging: the
+// first non-empty line of tool output (usually the diagnostic), falling back to
+// the exec error string.
+func scannerFailureDetail(out []byte, runErr error) string {
+	sc := bufio.NewScanner(bytes.NewReader(out))
+	for sc.Scan() {
+		if line := strings.TrimSpace(sc.Text()); line != "" {
+			return line
+		}
+	}
+	if runErr != nil {
+		return runErr.Error()
+	}
+	return "no output"
 }

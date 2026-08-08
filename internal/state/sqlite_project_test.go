@@ -85,3 +85,57 @@ func TestProject_AllEventTypes_NoErrors(t *testing.T) {
 		t.Errorf("expected at least 1 requirement in projection; got %d", len(reqs))
 	}
 }
+
+// TestProject_AgentTerminated_TransitionsRow locks in the wiring fix: an
+// AGENT_TERMINATED event (dashboard kill / controller auto-cancel) must
+// transition the agent row to status='terminated' and clear its
+// current_story_id. Before the fix the event fell through Project's default
+// case and silently no-op'd, so a killed agent stayed status='idle' with a
+// live session→story mapping that crash recovery still consumed.
+func TestProject_AgentTerminated_TransitionsRow(t *testing.T) {
+	ps, err := NewSQLiteStore(filepath.Join(t.TempDir(), "nxd.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer func() { _ = ps.Close() }()
+
+	spawn := NewEvent(EventAgentSpawned, "agent-42", "S1", map[string]any{
+		"role": "junior", "session_name": "nxd-S1",
+	})
+	if err := ps.Project(spawn); err != nil {
+		t.Fatalf("project spawn: %v", err)
+	}
+
+	// Precondition: the spawned agent is idle and mapped to its story.
+	idle, err := ps.ListAgents(AgentFilter{Status: "idle"})
+	if err != nil {
+		t.Fatalf("list idle: %v", err)
+	}
+	if len(idle) != 1 || idle[0].CurrentStoryID != "S1" {
+		t.Fatalf("precondition: want 1 idle agent on S1, got %+v", idle)
+	}
+
+	// Kill it.
+	term := NewEvent(EventAgentTerminated, "agent-42", "", map[string]any{
+		"reason": "killed from dashboard", "source": "dashboard",
+	})
+	if err := ps.Project(term); err != nil {
+		t.Fatalf("project terminate: %v", err)
+	}
+
+	// The agent must no longer be idle...
+	if idle, _ := ps.ListAgents(AgentFilter{Status: "idle"}); len(idle) != 0 {
+		t.Errorf("killed agent still listed as idle: %+v", idle)
+	}
+	// ...it must be terminated with its story mapping cleared.
+	term2, err := ps.ListAgents(AgentFilter{Status: "terminated"})
+	if err != nil {
+		t.Fatalf("list terminated: %v", err)
+	}
+	if len(term2) != 1 {
+		t.Fatalf("want 1 terminated agent, got %d", len(term2))
+	}
+	if term2[0].CurrentStoryID != "" {
+		t.Errorf("terminated agent should have current_story_id cleared, got %q", term2[0].CurrentStoryID)
+	}
+}
