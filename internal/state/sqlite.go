@@ -1,6 +1,7 @@
 package state
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/json"
@@ -95,7 +96,22 @@ CREATE TABLE IF NOT EXISTS story_databases (
     PRIMARY KEY (story_id, db_id)
 );
 CREATE INDEX IF NOT EXISTS idx_story_databases_status ON story_databases(status);
+
+-- projection_meta tracks how far the projection has been reconciled with the
+-- event log. applied_event_count is bumped on every successful Project; on
+-- open, loadStores compares it against the event-log length and rebuilds the
+-- projection when it has fallen behind (the Append-ok / Project-failed desync
+-- that engine.emitEventOrLog documents).
+CREATE TABLE IF NOT EXISTS projection_meta (
+    key   TEXT PRIMARY KEY,
+    value INTEGER NOT NULL
+);
+INSERT OR IGNORE INTO projection_meta (key, value) VALUES ('applied_event_count', 0);
 `
+
+// appliedCountKey is the projection_meta row holding the number of events the
+// projection has successfully applied.
+const appliedCountKey = "applied_event_count"
 
 // SQLiteStore implements ProjectionStore using SQLite.
 //
@@ -167,14 +183,128 @@ func (s *SQLiteStore) Close() error {
 	return s.db.Close()
 }
 
+// projectionTables lists every table materialized purely from the event log.
+// RebuildFrom truncates these before replaying; they must all be reconstructable
+// from Project alone. (projection_meta is excluded — it is the watermark itself
+// and is reset explicitly.)
+var projectionTables = []string{
+	"story_databases",
+	"agent_scores",
+	"escalations",
+	"story_deps",
+	"agents",
+	"stories",
+	"requirements",
+}
+
+// AppliedEventCount returns how many events the projection has successfully
+// applied (the reconciliation watermark). loadStores compares this against the
+// event-log length to decide whether a rebuild is needed.
+func (s *SQLiteStore) AppliedEventCount() (int, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var n int
+	err := s.db.QueryRow(
+		`SELECT value FROM projection_meta WHERE key = ?`, appliedCountKey,
+	).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("read applied_event_count: %w", err)
+	}
+	return n, nil
+}
+
+// AckDirectWrite advances the watermark by n to account for events that were
+// appended to the log and reconciled into the projection by a direct write
+// rather than by Project (the archive command being the sole such path). Without
+// this the projection would look permanently behind the log and rebuild on
+// every open, discarding the direct write.
+func (s *SQLiteStore) AckDirectWrite(n int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(
+		`UPDATE projection_meta SET value = value + ? WHERE key = ?`, n, appliedCountKey,
+	)
+	return err
+}
+
+// RebuildFrom truncates the projection tables and replays every event from the
+// event store back through Project, restoring the materialized state to a
+// faithful function of the durable event log. This is the recovery path
+// engine.emitEventOrLog documents: when a Project fails after its Append
+// succeeded, the projection is left desynced until the next open, when
+// loadStores calls RebuildFrom to rebuild it.
+//
+// Truncate-then-replay (rather than in-place upserts) keeps Project simple:
+// every handler runs against empty tables, so plain INSERTs cannot collide.
+func (s *SQLiteStore) RebuildFrom(ctx context.Context, es EventStore) error {
+	events, err := es.List(EventFilter{})
+	if err != nil {
+		return fmt.Errorf("rebuild: list events: %w", err)
+	}
+	if err := s.truncateProjection(); err != nil {
+		return fmt.Errorf("rebuild: %w", err)
+	}
+	for _, evt := range events {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := s.Project(evt); err != nil {
+			return fmt.Errorf("rebuild: project %s (%s): %w", evt.Type, evt.ID, err)
+		}
+	}
+	return nil
+}
+
+// truncateProjection empties every projection table and resets the watermark to
+// zero so the subsequent replay repopulates both from scratch.
+func (s *SQLiteStore) truncateProjection() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("truncate: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	for _, table := range projectionTables {
+		if _, err := tx.Exec("DELETE FROM " + table); err != nil {
+			return fmt.Errorf("truncate %s: %w", table, err)
+		}
+	}
+	if _, err := tx.Exec(
+		`UPDATE projection_meta SET value = 0 WHERE key = ?`, appliedCountKey,
+	); err != nil {
+		return fmt.Errorf("truncate: reset watermark: %w", err)
+	}
+	return tx.Commit()
+}
+
 // Project applies a domain event to the projection tables, updating the
-// materialized state accordingly.
+// materialized state accordingly. On success it advances the reconciliation
+// watermark (applied_event_count) so an interrupted projection can be detected
+// and rebuilt on the next open.
 func (s *SQLiteStore) Project(evt Event) error {
 	// H6: serialize all writes through a single mutex. SQLite's own locking
 	// produces SQLITE_BUSY under contention; this avoids those errors and
 	// the noisy retry loops they trigger.
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.projectLocked(evt); err != nil {
+		return err
+	}
+	// Advance the watermark only after the projection write succeeded. A
+	// failed Project leaves the watermark behind the event-log length, which
+	// is exactly the signal RebuildFrom keys off on next open.
+	_, err := s.db.Exec(
+		`UPDATE projection_meta SET value = value + 1 WHERE key = ?`,
+		appliedCountKey,
+	)
+	return err
+}
+
+// projectLocked routes a single event to its projection handler. The caller
+// must hold s.mu.
+func (s *SQLiteStore) projectLocked(evt Event) error {
 	payload := s.decodePayload(evt)
 
 	switch evt.Type {

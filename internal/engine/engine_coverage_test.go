@@ -119,6 +119,28 @@ func TestRuntimeForRole_Fallback(t *testing.T) {
 	}
 }
 
+func TestRuntimeForRole_SkipsMissingBinary(t *testing.T) {
+	// aider maps to the ollama provider but its binary is not installed;
+	// selection must skip it and fall back to an available native runtime
+	// instead of spawning a CLI that dies instantly with no code changes.
+	e := &Executor{
+		config: config.Config{
+			Models: config.ModelsConfig{
+				Junior: config.ModelConfig{Provider: "ollama", Model: "qwen2.5-coder:7b"},
+			},
+			Runtimes: map[string]config.RuntimeConfig{
+				"aider":  {Command: "definitely-not-on-path-nxd-test"},
+				"native": {Native: true, Models: []string{"gemma4"}},
+			},
+		},
+	}
+
+	got := e.runtimeForRole(agent.RoleJunior)
+	if got != "native" {
+		t.Errorf("expected native fallback when aider binary is missing, got %q", got)
+	}
+}
+
 // --- latestReviewFeedback ---
 
 func TestLatestReviewFeedback_NoEvents(t *testing.T) {

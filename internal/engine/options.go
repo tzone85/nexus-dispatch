@@ -133,6 +133,30 @@ func WithMonDevDBLifecycle(lc *devdb.Lifecycle) MonitorOption {
 	return func(m *Monitor) { m.lifecycle = lc }
 }
 
+// WithMonSecurityGate wires the per-story security agent (scanners + LLM
+// threat-model review). A finding at or above the configured gate severity
+// pauses the requirement rather than escalating. Nil disables the gate.
+func WithMonSecurityGate(g *SecurityGate) MonitorOption {
+	return func(m *Monitor) { m.securityGate = g }
+}
+
+// WithMonDocGenerator wires the documentation generator that creates/updates
+// README.md + docs/ once every story in a requirement has merged. A nil client
+// disables it.
+func WithMonDocGenerator(client llm.Client, model string) MonitorOption {
+	return func(m *Monitor) {
+		m.docClient = client
+		m.docModel = model
+	}
+}
+
+// WithMonCompletionGate wires the requirement-completion verification gate.
+// When set, REQ_COMPLETED is only emitted after the composed mainline verifies
+// green; a red mainline that survives the auto-fix budget emits REQ_BLOCKED.
+func WithMonCompletionGate(g *CompletionGate) MonitorOption {
+	return func(m *Monitor) { m.completionGate = g }
+}
+
 // Configure applies the given options to an already-constructed Monitor.
 func (m *Monitor) Configure(opts ...MonitorOption) {
 	for _, opt := range opts {
