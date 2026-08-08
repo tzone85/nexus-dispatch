@@ -507,11 +507,17 @@ func runResume(cmd *cobra.Command, args []string) error {
 	if !dryRun && !s.Config.Security.DisableGate {
 		gateSev := security.ParseSeverity(s.Config.Security.GateSeverity)
 		senior := s.Config.Models.Senior
-		monitor.SetSecurityGate(engine.NewSecurityGate(
+		secGate := engine.NewSecurityGate(
 			llmClient, senior.Model, senior.MaxTokens, securityKBPath(s.Config),
 			gateSev, s.Config.Security.AutoLearn, s.Events, s.Proj,
-		))
-		log.Printf("[resume] security gate enabled (block at %s+, auto-learn=%v)", gateSev, s.Config.Security.AutoLearn)
+		)
+		secGate.SetGateScope(s.Config.Security.GateScope)
+		monitor.SetSecurityGate(secGate)
+		scope := s.Config.Security.GateScope
+		if scope == "" {
+			scope = "changed"
+		}
+		log.Printf("[resume] security gate enabled (block at %s+, scope=%s, auto-learn=%v)", gateSev, scope, s.Config.Security.AutoLearn)
 	}
 
 	// Enable auto-documentation: when all stories merge, the monitor

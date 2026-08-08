@@ -309,6 +309,12 @@ type SecurityConfig struct {
 	// AutoLearn grows the knowledge base from confirmed high+ findings so future
 	// builds inherit vulnerability classes seen in past ones. Default true.
 	AutoLearn bool `yaml:"auto_learn"`
+	// GateScope controls what the per-story gate blocks on: "changed" (default)
+	// scopes findings to files the story modified; "repo" blocks on any finding
+	// anywhere in the worktree. Whole-repo auditing is `nxd security scan`'s job;
+	// a per-story gate must not block a story on pre-existing vulnerabilities in
+	// files it never touched (e.g. a legacy package.json).
+	GateScope string `yaml:"gate_scope,omitempty"`
 	// KBPath overrides where the knowledge base persists. Empty ⇒
 	// <state_dir>/security/knowledge.json.
 	KBPath string `yaml:"kb_path,omitempty"`

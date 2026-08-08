@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -35,8 +36,15 @@ type SecurityGate struct {
 	kbPath       string // knowledge-base persistence path (self-upskilling store)
 	gateSeverity security.Severity
 	autoLearn    bool
-	eventStore   state.EventStore
-	projStore    state.ProjectionStore
+	// gateScope controls what the per-story gate blocks on. "changed" (the
+	// default) blocks only on findings in files the story actually modified;
+	// "repo" blocks on any finding anywhere in the worktree. Whole-repo
+	// scanning belongs to `nxd security scan` — a per-story gate that blocks
+	// on pre-existing vulnerabilities in untouched files (e.g. a legacy
+	// package.json the story never opened) is unusable on real codebases.
+	gateScope  string
+	eventStore state.EventStore
+	projStore  state.ProjectionStore
 
 	// upskillMu serializes the load→merge→save of the knowledge base. The
 	// pipeline runs one postExecutionPipeline goroutine per completed story
@@ -76,6 +84,48 @@ func NewSecurityGate(
 		scan:         security.RunScanners,
 		now:          time.Now,
 	}
+}
+
+// SetGateScope sets whether the per-story gate blocks on changed files only
+// ("changed", the default) or the whole worktree ("repo"). Empty ⇒ "changed".
+func (g *SecurityGate) SetGateScope(scope string) {
+	g.gateScope = scope
+}
+
+// changedFilesFromDiff extracts the set of file paths touched by a unified
+// diff (the "+++ b/<path>" side), so the gate can scope findings to the
+// story's own changes. Paths are normalised without the b/ prefix.
+func changedFilesFromDiff(diff string) map[string]bool {
+	files := map[string]bool{}
+	for line := range strings.SplitSeq(diff, "\n") {
+		if !strings.HasPrefix(line, "+++ ") {
+			continue
+		}
+		p := strings.TrimSpace(strings.TrimPrefix(line, "+++ "))
+		if p == "/dev/null" {
+			continue
+		}
+		p = strings.TrimPrefix(p, "b/")
+		files[p] = true
+		files[filepath.Base(p)] = true
+	}
+	return files
+}
+
+// scopeToChanged keeps a finding only if it is attributable to a file the
+// story changed (or has no file at all — unattributable findings are kept to
+// stay safe). LLM diff-review findings are already diff-scoped.
+func scopeToChanged(findings []security.Finding, changed map[string]bool) []security.Finding {
+	if len(changed) == 0 {
+		return findings
+	}
+	kept := findings[:0:0]
+	for _, f := range findings {
+		if f.File == "" || changed[f.File] || changed[filepath.Base(f.File)] {
+			kept = append(kept, f)
+		}
+	}
+	return kept
 }
 
 // ScanRepo runs the full security agent against repoDir: deterministic scanners
@@ -137,6 +187,17 @@ func (g *SecurityGate) ReviewStory(ctx context.Context, storyID, title, diff, re
 		// never blocks the merge, but it must be visible — silently passing the
 		// story would report it as secure when part of the scan never ran.
 		log.Printf("[security-gate] story %s: scan coverage lost, %d scanner(s) failed: %v", storyID, len(failed), failed)
+	}
+	// Scope scanner findings to the story's changed files unless the operator
+	// asked for a whole-repo gate. Without this, pre-existing vulnerabilities
+	// in files the story never touched (a legacy package.json, vendored deps)
+	// block every single story — the gate becomes unusable on real repos.
+	if g.gateScope != "repo" {
+		before := len(findings)
+		findings = scopeToChanged(findings, changedFilesFromDiff(diff))
+		if dropped := before - len(findings); dropped > 0 {
+			log.Printf("[security-gate] story %s: scoped out %d finding(s) in unchanged files (gate_scope=changed)", storyID, dropped)
+		}
 	}
 	if g.client != nil {
 		findings = append(findings, g.llmReviewDiff(ctx, title, diff, langs, kb)...)
