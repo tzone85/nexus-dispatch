@@ -42,3 +42,37 @@ func TestResume_WiresSecurityGate(t *testing.T) {
 		}
 	}
 }
+
+// TestResume_WiresNotifier guards the notifications feature against the same
+// dead-wire class: the notifier only fires if runResume hooks it onto the
+// event store's OnAppend and drains it on exit.
+func TestResume_WiresNotifier(t *testing.T) {
+	src, err := os.ReadFile("resume.go")
+	if err != nil {
+		t.Fatalf("read resume.go: %v", err)
+	}
+	code := string(src)
+
+	for _, want := range []string{"notify.New(", "notifier.HandleEvent", "notifier.Close()"} {
+		if !strings.Contains(code, want) {
+			t.Errorf("resume.go must wire the notifier: missing %q", want)
+		}
+	}
+}
+
+// TestResume_WiresBudgetGuard guards billing.budget_usd enforcement against
+// the dead-wire class: the guard only runs if runResume constructs it from
+// billing config and attaches it to the monitor.
+func TestResume_WiresBudgetGuard(t *testing.T) {
+	src, err := os.ReadFile("resume.go")
+	if err != nil {
+		t.Fatalf("read resume.go: %v", err)
+	}
+	code := string(src)
+
+	for _, want := range []string{"NewBudgetGuard(", "SetBudgetGuard("} {
+		if !strings.Contains(code, want) {
+			t.Errorf("resume.go must wire the budget guard: missing %q", want)
+		}
+	}
+}

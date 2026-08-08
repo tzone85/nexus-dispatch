@@ -29,6 +29,13 @@ const (
 	EventReqPendingReview       EventType = "REQ_PENDING_REVIEW"
 	EventReqRejected            EventType = "REQ_REJECTED"
 
+	// Budget-guard events (billing.budget_usd). WARNING fires once when the
+	// requirement's actual LLM spend crosses the warn threshold; EXCEEDED
+	// fires when it reaches the budget, alongside a REQ_PAUSED that stops
+	// further spend. Neither event changes requirement status by itself.
+	EventReqBudgetWarning  EventType = "REQ_BUDGET_WARNING"
+	EventReqBudgetExceeded EventType = "REQ_BUDGET_EXCEEDED"
+
 	// Story lifecycle events.
 	EventStoryCreated         EventType = "STORY_CREATED"
 	EventStoryEstimated       EventType = "STORY_ESTIMATED"

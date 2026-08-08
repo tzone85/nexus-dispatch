@@ -52,6 +52,7 @@ type Config struct {
 	Plugins       PluginConfig             `yaml:"plugins"`
 	Methodology   MethodologyConfig        `yaml:"methodology"`
 	DevDB         DevDBConfig              `yaml:"devdb,omitempty"`
+	Notifications NotificationsConfig      `yaml:"notifications,omitempty"`
 }
 
 // MethodologyConfig controls the default design / testing approach NXD
@@ -227,6 +228,36 @@ type BillingConfig struct {
 	Currency      string             `yaml:"currency"`
 	HoursPerPoint map[int][2]float64 `yaml:"hours_per_point"`
 	LLMCosts      LLMCostConfig      `yaml:"llm_costs"`
+	// BudgetUSD caps actual LLM spend per requirement (computed from
+	// metrics.jsonl token counts × llm_costs.rates). When the running spend
+	// reaches the cap the requirement is paused and REQ_BUDGET_EXCEEDED is
+	// emitted; crossing budget_warn_pct emits a one-time REQ_BUDGET_WARNING.
+	// 0 (default) disables the guard. Only meaningful with mode: per_token —
+	// subscription mode always computes $0 spend.
+	BudgetUSD float64 `yaml:"budget_usd,omitempty"`
+	// BudgetWarnPct is the warning threshold as a percentage of BudgetUSD.
+	// 0 means the default of 80.
+	BudgetWarnPct float64 `yaml:"budget_warn_pct,omitempty"`
+}
+
+// NotificationsConfig controls push notifications for pipeline events, so an
+// unattended run can tell the operator the moment it completes, blocks,
+// pauses, or trips a gate.
+type NotificationsConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// WebhookURL receives a POST per watched event. Format "json" (default)
+	// posts a structured envelope; "slack" posts a Slack-compatible
+	// {"text": ...} payload (works with Slack/Discord-compatible hooks).
+	WebhookURL string `yaml:"webhook_url,omitempty"`
+	Format     string `yaml:"format,omitempty"`
+	// Desktop shows a native macOS notification (no-op elsewhere).
+	Desktop bool `yaml:"desktop,omitempty"`
+	// Events overrides the default watched set (REQ_COMPLETED, REQ_BLOCKED,
+	// REQ_PAUSED, HUMAN_REVIEW_NEEDED, STORY_SECURITY_FAILED,
+	// REQ_BUDGET_WARNING, REQ_BUDGET_EXCEEDED).
+	Events []string `yaml:"events,omitempty"`
+	// TimeoutS bounds each webhook delivery. 0 means 5 seconds.
+	TimeoutS int `yaml:"timeout_s,omitempty"`
 }
 
 // LLMCostConfig tracks LLM API costs.
@@ -488,6 +519,23 @@ func (c Config) Validate() error {
 		if hrs[0] > hrs[1] {
 			return fmt.Errorf("billing.hours_per_point[%d]: low (%.1f) must be <= high (%.1f)", pts, hrs[0], hrs[1])
 		}
+	}
+	if c.Billing.BudgetUSD < 0 {
+		return fmt.Errorf("billing.budget_usd must be >= 0, got %f", c.Billing.BudgetUSD)
+	}
+	if c.Billing.BudgetWarnPct < 0 || c.Billing.BudgetWarnPct > 100 {
+		return fmt.Errorf("billing.budget_warn_pct must be 0-100, got %f", c.Billing.BudgetWarnPct)
+	}
+
+	// Validate notification settings.
+	if f := c.Notifications.Format; f != "" && f != "json" && f != "slack" {
+		return fmt.Errorf("notifications.format must be \"json\" or \"slack\", got %q", f)
+	}
+	if c.Notifications.Enabled && c.Notifications.WebhookURL == "" && !c.Notifications.Desktop {
+		return fmt.Errorf("notifications.enabled requires webhook_url and/or desktop: true")
+	}
+	if c.Notifications.TimeoutS < 0 {
+		return fmt.Errorf("notifications.timeout_s must be >= 0, got %d", c.Notifications.TimeoutS)
 	}
 
 	// M2: when per_token billing is enabled, every model referenced from

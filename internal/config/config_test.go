@@ -646,3 +646,45 @@ func TestLoadFromFile_InvalidYAML(t *testing.T) {
 		t.Fatal("expected error for invalid YAML content")
 	}
 }
+
+func TestValidate_NotificationsAndBudget(t *testing.T) {
+	base := config.DefaultConfig()
+
+	cfg := base
+	cfg.Notifications = config.NotificationsConfig{Enabled: true, Format: "carrier-pigeon", WebhookURL: "https://x"}
+	if err := cfg.Validate(); err == nil {
+		t.Error("invalid notifications.format must fail validation")
+	}
+
+	cfg = base
+	cfg.Notifications = config.NotificationsConfig{Enabled: true}
+	if err := cfg.Validate(); err == nil {
+		t.Error("notifications.enabled with no channel must fail validation")
+	}
+
+	cfg = base
+	cfg.Notifications = config.NotificationsConfig{Enabled: true, Desktop: true, Format: "slack"}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("desktop-only slack notifications should validate, got %v", err)
+	}
+
+	cfg = base
+	cfg.Billing.BudgetUSD = -1
+	if err := cfg.Validate(); err == nil {
+		t.Error("negative billing.budget_usd must fail validation")
+	}
+
+	cfg = base
+	cfg.Billing.BudgetUSD = 25
+	cfg.Billing.BudgetWarnPct = 150
+	if err := cfg.Validate(); err == nil {
+		t.Error("billing.budget_warn_pct > 100 must fail validation")
+	}
+
+	cfg = base
+	cfg.Billing.BudgetUSD = 25
+	cfg.Billing.BudgetWarnPct = 80
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("valid budget config should validate, got %v", err)
+	}
+}

@@ -24,6 +24,7 @@ import (
 	"github.com/tzone85/nexus-dispatch/internal/llm"
 	"github.com/tzone85/nexus-dispatch/internal/memory"
 	"github.com/tzone85/nexus-dispatch/internal/metrics"
+	"github.com/tzone85/nexus-dispatch/internal/notify"
 	"github.com/tzone85/nexus-dispatch/internal/plugin"
 	"github.com/tzone85/nexus-dispatch/internal/routing"
 	"github.com/tzone85/nexus-dispatch/internal/runtime"
@@ -123,6 +124,25 @@ func runResume(cmd *cobra.Command, args []string) error {
 
 	// Make plugin providers available to buildLLMClient.
 	activePluginProviders = pm.Providers
+
+	// Push notifications: watch the event stream and alert the operator on
+	// terminal outcomes / pauses / gate trips. Delivery is async + best-effort
+	// so it can never stall the pipeline; Close drains in-flight sends.
+	if s.Config.Notifications.Enabled {
+		notifier := notify.New(notify.Options{
+			WebhookURL: s.Config.Notifications.WebhookURL,
+			Format:     s.Config.Notifications.Format,
+			Desktop:    s.Config.Notifications.Desktop,
+			Events:     s.Config.Notifications.Events,
+			Timeout:    time.Duration(s.Config.Notifications.TimeoutS) * time.Second,
+		})
+		if fs, ok := s.Events.(*state.FileStore); ok {
+			fs.OnAppend = notifier.HandleEvent
+			defer notifier.Close()
+			log.Printf("[resume] notifications enabled (webhook=%v desktop=%v)",
+				s.Config.Notifications.WebhookURL != "", s.Config.Notifications.Desktop)
+		}
+	}
 
 	// Acquire pipeline lock to prevent concurrent runs.
 	stateDir := expandHome(s.Config.Workspace.StateDir)
@@ -501,6 +521,16 @@ func runResume(cmd *cobra.Command, args []string) error {
 		monitor.SetDocGenerator(llmClient, s.Config.Models.Senior.Model)
 	}
 
+	// Budget guard: enforce billing.budget_usd against actual metered spend.
+	// NewBudgetGuard returns nil when no budget is configured, and the
+	// monitor treats a nil guard as enforcement-off, so this wires safely in
+	// every configuration.
+	if guard := engine.NewBudgetGuard(s.Config.Billing, filepath.Join(stateDirForMetrics, "metrics.jsonl")); guard != nil {
+		monitor.SetBudgetGuard(guard)
+		log.Printf("[resume] LLM budget guard enabled: $%.2f cap (warn at %.0f%%)",
+			s.Config.Billing.BudgetUSD, budgetWarnPctOrDefault(s.Config.Billing.BudgetWarnPct))
+	}
+
 	// Requirement-completion verification gate: verify the composed mainline
 	// (build + tests) before REQ_COMPLETED, with a bounded auto-fix loop. A
 	// nil client degrades to a hard gate (verify once, block on red) — the
@@ -555,6 +585,15 @@ func runResume(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+// budgetWarnPctOrDefault mirrors the guard's default warning threshold (80%)
+// for the startup log line.
+func budgetWarnPctOrDefault(pct float64) float64 {
+	if pct > 0 {
+		return pct
+	}
+	return 80
 }
 
 // completionFixCycles maps the configured qa.completion_fix_cycles to the
