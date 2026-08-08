@@ -6,7 +6,7 @@ import (
 )
 
 // The frontend design brief is injected into the goal prompt only for
-// UI-facing stories (ctx.IsFrontend). It is the factory's design skill:
+// UI-facing stories (ctx.IsFrontend). It is the frontend design skill:
 // token-first planning, one signature element, the named anti-pattern looks,
 // and a non-negotiable accessibility floor.
 func TestGoalPrompt_FrontendBriefInjectedWhenFlagSet(t *testing.T) {

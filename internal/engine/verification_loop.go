@@ -9,32 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 )
-
-const (
-	// depsInstallTimeout bounds `go mod download` / `npm install` on the
-	// composed mainline so a stalled registry fetch cannot wedge the
-	// completion gate forever.
-	depsInstallTimeout = 5 * time.Minute
-	// testRunTimeout bounds the composed-mainline test suite. That suite runs
-	// LLM-generated code; a single hung test (infinite loop, blocked on
-	// stdin/network) must not block REQ_COMPLETED / REQ_BLOCKED forever.
-	// Generous so large real suites still finish.
-	testRunTimeout = 15 * time.Minute
-)
-
-// boundedContext returns ctx with a timeout guaranteed. If ctx already carries
-// a deadline it is passed through (only wrapped for cancellation); otherwise a
-// backstop timeout is applied so verification subprocesses are always bounded
-// AND remain cancellable via the caller's ctx. The returned cancel must always
-// be called.
-func boundedContext(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
-	if _, ok := ctx.Deadline(); ok {
-		return context.WithCancel(ctx)
-	}
-	return context.WithTimeout(ctx, d)
-}
 
 // VerificationResult holds the outcome of a post-completion verification cycle.
 type VerificationResult struct {
@@ -69,13 +44,13 @@ func RunVerificationLoop(ctx context.Context, repoDir string, cycle int) Verific
 	result := VerificationResult{}
 
 	// Step 1: Ensure dependencies are installed
-	result.DepsInstalled = ensureDependencies(ctx, repoDir)
+	result.DepsInstalled = ensureDependencies(repoDir)
 
 	// Step 2: Check build
-	result.BuildPasses = checkBuild(ctx, repoDir)
+	result.BuildPasses = checkBuild(repoDir)
 
 	// Step 3: Run tests
-	result.TestsPassing, result.TestsFailing, result.TestsTotal = checkTests(ctx, repoDir)
+	result.TestsPassing, result.TestsFailing, result.TestsTotal = checkTests(repoDir)
 
 	// Step 4: Scan for hallucination artifacts
 	hallucinations := scanForHallucinations(repoDir)
@@ -124,14 +99,10 @@ func RunVerificationLoop(ctx context.Context, repoDir string, cycle int) Verific
 }
 
 // ensureDependencies runs the appropriate install command for the project.
-// The command is bounded (and cancellable via ctx) so a stalled registry
-// fetch cannot hang the completion gate indefinitely.
-func ensureDependencies(ctx context.Context, repoDir string) bool {
-	cctx, cancel := boundedContext(ctx, depsInstallTimeout)
-	defer cancel()
+func ensureDependencies(repoDir string) bool {
 	if buildFileExists(filepath.Join(repoDir, "package.json")) {
 		log.Printf("[verify] running npm install ...")
-		cmd := exec.CommandContext(cctx, "npm", "install")
+		cmd := exec.Command("npm", "install")
 		cmd.Dir = repoDir
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
@@ -142,7 +113,7 @@ func ensureDependencies(ctx context.Context, repoDir string) bool {
 		return true
 	}
 	if buildFileExists(filepath.Join(repoDir, "go.mod")) {
-		cmd := exec.CommandContext(cctx, "go", "mod", "download")
+		cmd := exec.Command("go", "mod", "download")
 		cmd.Dir = repoDir
 		if err := cmd.Run(); err != nil {
 			log.Printf("[verify] go mod download failed: %v", err)
@@ -154,8 +125,8 @@ func ensureDependencies(ctx context.Context, repoDir string) bool {
 }
 
 // checkBuild attempts to build the project.
-func checkBuild(ctx context.Context, repoDir string) bool {
-	if err := validateBuild(ctx, repoDir); err != nil {
+func checkBuild(repoDir string) bool {
+	if err := validateBuild(context.Background(), repoDir); err != nil {
 		log.Printf("[verify] build failed: %v", err)
 		return false
 	}
@@ -164,22 +135,17 @@ func checkBuild(ctx context.Context, repoDir string) bool {
 }
 
 // checkTests runs the project's test suite and returns pass/fail/total counts.
-// The suite is bounded (and cancellable via ctx) so a hung test in the
-// LLM-generated composed mainline cannot wedge the completion gate forever.
-func checkTests(ctx context.Context, repoDir string) (passing, failing, total int) {
-	cctx, cancel := boundedContext(ctx, testRunTimeout)
-	defer cancel()
-
+func checkTests(repoDir string) (passing, failing, total int) {
 	var cmd *exec.Cmd
 
 	if buildFileExists(filepath.Join(repoDir, "package.json")) {
-		cmd = exec.CommandContext(cctx, "npx", "jest", "--passWithNoTests", "--json")
+		cmd = exec.Command("npx", "jest", "--passWithNoTests", "--json")
 		// Also try vitest
 		if buildFileExists(filepath.Join(repoDir, "vitest.config.ts")) || buildFileExists(filepath.Join(repoDir, "vitest.config.js")) {
-			cmd = exec.CommandContext(cctx, "npx", "vitest", "run", "--reporter=json")
+			cmd = exec.Command("npx", "vitest", "run", "--reporter=json")
 		}
 	} else if buildFileExists(filepath.Join(repoDir, "go.mod")) {
-		cmd = exec.CommandContext(cctx, "go", "test", "-count=1", "-json", "./...")
+		cmd = exec.Command("go", "test", "-count=1", "-json", "./...")
 	}
 
 	if cmd == nil {
@@ -188,19 +154,20 @@ func checkTests(ctx context.Context, repoDir string) (passing, failing, total in
 	}
 
 	cmd.Dir = repoDir
-	out, err := cmd.CombinedOutput()
+	out, runErr := cmd.CombinedOutput()
 	output := string(out)
 
 	if buildFileExists(filepath.Join(repoDir, "go.mod")) {
 		passing, failing, total = parseGoTestJSON(output)
-		// `go test` exiting non-zero while we parsed zero failing tests means
-		// the failure is structural — a test-file compile error (which
-		// `go build ./...` never catches), a `go vet` failure baked into
-		// `go test`, or a tooling error whose output was not valid JSON. Count
-		// it so the completion gate never reports green on a red suite. Bounds
-		// against the false 0/0/0 that would otherwise pass ShouldRunFixCycle.
-		if err != nil && failing == 0 {
-			log.Printf("[verify] go test exited non-zero with no parsed test failures (structural failure): %v", err)
+		// Defense-in-depth: `go test` exits non-zero on a failing test (already
+		// counted above) but ALSO on a compile/vet failure that produces no
+		// per-test JSON at all — e.g. a broken _test.go that `go build ./...`
+		// never sees, or a vet error before any test runs. If the command
+		// failed yet the parser found no failing tests, the suite did not
+		// actually pass: count it as a failure so the completion gate fails
+		// closed instead of certifying a red mainline as green.
+		if runErr != nil && failing == 0 {
+			log.Printf("[verify] go test exited non-zero with no parsed test failures (compile/vet error) — counting as failure: %v", runErr)
 			failing = 1
 			total = passing + failing
 		}
@@ -229,11 +196,21 @@ func checkTests(ctx context.Context, repoDir string) (passing, failing, total in
 	}
 
 	total = passing + failing
+	// Same fail-closed guard as the Go path: the JS runner is invoked with
+	// --passWithNoTests, so a non-zero exit with no parsed failures means the
+	// runner itself crashed (missing dep, bad config) and no tests actually
+	// ran — treat it as a failure rather than a silent green.
+	if runErr != nil && failing == 0 {
+		log.Printf("[verify] test runner exited non-zero with no parsed failures (runner crash) — counting as failure: %v", runErr)
+		failing = 1
+		total = passing + failing
+	}
 	log.Printf("[verify] tests: %d passing, %d failing, %d total", passing, failing, total)
 	return passing, failing, total
 }
 
 func parseGoTestJSON(output string) (passing, failing, total int) {
+	failedPkgs := map[string]bool{}
 	for _, line := range strings.Split(output, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -242,24 +219,37 @@ func parseGoTestJSON(output string) (passing, failing, total int) {
 		var evt struct {
 			Action      string `json:"Action"`
 			Test        string `json:"Test"`
+			Package     string `json:"Package"`
+			ImportPath  string `json:"ImportPath"`
 			FailedBuild string `json:"FailedBuild"`
 		}
 		if err := json.Unmarshal([]byte(line), &evt); err != nil {
 			continue
 		}
-		// A test-package compile failure surfaces ONLY here: `go build ./...`
-		// skips _test.go files, so a story that breaks another story's test
-		// (e.g. a changed signature) still builds green. `go test -json`
-		// reports it as a package-scoped "build-fail" action, or a package
-		// "fail" carrying a FailedBuild field — neither has a Test field, so
-		// the per-test switch below would drop them and report a false 0
-		// failing. Count them so the completion gate cannot pass a suite that
-		// does not even compile.
-		if evt.Action == "build-fail" || evt.FailedBuild != "" {
-			failing++
-			continue
-		}
+		// Package-level events carry no Test field. A package whose tests fail
+		// to COMPILE surfaces here — as Action "build-fail", or a package-level
+		// "fail" carrying FailedBuild — with no per-test events at all. Because
+		// `go build ./...` never compiles _test.go files, this is the only place
+		// a test-compilation failure (e.g. cross-story symbol drift breaking a
+		// test) becomes visible. Counting it keeps the completion gate failing
+		// closed instead of reading 0-passing/0-failing as "nothing wrong".
 		if evt.Test == "" {
+			if evt.Action == "build-fail" || (evt.Action == "fail" && evt.FailedBuild != "") {
+				// The real toolchain stamps "build-fail" with ImportPath
+				// ("pkg [pkg.test]") and the paired package "fail" with
+				// Package ("pkg"); normalize both to the bare import path so
+				// the two events for one broken package dedupe to one failure.
+				pkg := evt.Package
+				if pkg == "" {
+					pkg = strings.TrimSpace(strings.SplitN(evt.ImportPath, " [", 2)[0])
+				}
+				if pkg == "" {
+					failing++
+				} else if !failedPkgs[pkg] {
+					failedPkgs[pkg] = true
+					failing++
+				}
+			}
 			continue
 		}
 		switch evt.Action {
