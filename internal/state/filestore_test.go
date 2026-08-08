@@ -197,3 +197,45 @@ func TestFileStore_Limit(t *testing.T) {
 		t.Fatalf("expected 3 events with limit, got %d", len(events))
 	}
 }
+
+// TestFileStore_Limit_ReturnsMostRecent pins the semantics that every
+// "recent activity" / live-tail caller (web BuildSnapshot "Last 50 events",
+// the dashboard activity feed, the Hub delta push) relies on: Limit returns
+// the NEWEST N events, in chronological order — not the oldest N. The bug was
+// that readAndFilter broke out of the scan the moment it had collected Limit
+// events, truncating from the FRONT of the log.
+func TestFileStore_Limit_ReturnsMostRecent(t *testing.T) {
+	dir := t.TempDir()
+	store, _ := state.NewFileStore(filepath.Join(dir, "events.jsonl"))
+	defer store.Close()
+
+	// Append 10 distinguishable events, tagged 0..9 in payload order.
+	for i := 0; i < 10; i++ {
+		store.Append(state.NewEvent(state.EventStoryProgress, "jr-1", "s-1", map[string]any{
+			"seq": i,
+		}))
+	}
+
+	events, err := store.List(state.EventFilter{Limit: 3})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(events) != 3 {
+		t.Fatalf("expected 3 events, got %d", len(events))
+	}
+
+	var got []int
+	for _, e := range events {
+		payload := state.DecodePayload(e.Payload)
+		seq, _ := payload["seq"].(float64)
+		got = append(got, int(seq))
+	}
+
+	// Tail semantics: the last three appended (7, 8, 9), oldest-to-newest.
+	want := []int{7, 8, 9}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("Limit returned the wrong slice: got seq %v, want the most recent %v", got, want)
+		}
+	}
+}

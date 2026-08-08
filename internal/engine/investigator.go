@@ -172,12 +172,18 @@ func (inv *Investigator) Investigate(ctx context.Context, repoPath string) (*Inv
 			return nil, fmt.Errorf("investigation LLM call (iteration %d): %w", i+1, err)
 		}
 
-		// No tool calls — append the assistant text and continue the loop
+		// No tool calls — append the assistant text plus a corrective user
+		// nudge, then continue. Without the nudge, small local models keep
+		// chatting in prose until the iteration cap kills the investigation.
 		if len(resp.ToolCalls) == 0 {
 			messages = append(messages, llm.Message{
 				Role:    llm.RoleAssistant,
 				Content: resp.Content,
-			})
+			},
+				llm.Message{
+					Role:    llm.RoleUser,
+					Content: "Respond only with tool calls (read_file, run_command), and call submit_report as soon as you have enough information. Do not reply in prose.",
+				})
 			continue
 		}
 

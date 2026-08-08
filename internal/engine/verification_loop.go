@@ -201,24 +201,36 @@ func parseGoTestJSON(output string) (passing, failing, total int) {
 		if err := json.Unmarshal([]byte(line), &evt); err != nil {
 			continue
 		}
-		if evt.Test == "" {
-			// Package-level event. A package whose test binary fails to
-			// COMPILE emits a package-level "fail" carrying FailedBuild (and
-			// `go build ./...` never catches it, since it does not compile
-			// _test.go files). Count it as a failing package so the completion
-			// gate cannot score an uncompilable test suite as green — the exact
-			// cross-story drift the gate exists to catch. Ordinary package
-			// summary events (pass, or fail without FailedBuild) are ignored
-			// here; their individual test results are already counted below.
-			if evt.Action == "fail" && evt.FailedBuild != "" {
-				failing++
-			}
-			continue
-		}
 		switch evt.Action {
 		case "pass":
-			passing++
+			if evt.Test != "" {
+				passing++
+			}
 		case "fail":
+			if evt.Test != "" {
+				failing++
+				break
+			}
+			// Package-level "fail" carrying FailedBuild: the package's test
+			// binary failed to COMPILE (`go build ./...` never catches this —
+			// it does not compile _test.go files). Count it as a failing
+			// package so the completion gate cannot score an uncompilable
+			// test suite as green — the exact cross-story drift the gate
+			// exists to catch. Ordinary package summaries (pass, or fail
+			// without FailedBuild) are ignored; their individual test results
+			// are already counted.
+			if evt.FailedBuild != "" {
+				failing++
+			}
+		case "build-fail":
+			// A package whose test binary fails to COMPILE emits a build-fail
+			// event with no Test (and no Package) field. `go build ./...` does
+			// not compile _test.go files, so checkBuild stays green and this is
+			// the only signal that the composed mainline's tests are red — e.g.
+			// when one story removes a symbol another story's test references.
+			// Without counting it, parseGoTestJSON returns 0/0/0, ShouldRunFixCycle
+			// sees no failures, and the completion gate emits REQ_COMPLETED on a
+			// mainline whose tests do not even build.
 			failing++
 		}
 	}

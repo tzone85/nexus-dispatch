@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -77,6 +78,18 @@ func loadStores(cfgPath string) (stores, error) {
 		return stores{}, fmt.Errorf("open projection store: %w", err)
 	}
 
+	// Recover from projection desync. emitEventOrLog documents that a Project
+	// failure after a successful Append is "loud-not-fatal" because "replaying
+	// the event log will recover the projection on next startup" — this is that
+	// recovery. When the projection has applied fewer events than the log holds
+	// (a crash or a Project error mid-run left it behind), rebuild it from the
+	// durable log so resume never re-dispatches an already-merged story.
+	if err := rebuildProjectionIfBehind(es, ps); err != nil {
+		es.Close()
+		ps.Close()
+		return stores{}, fmt.Errorf("rebuild projection: %w", err)
+	}
+
 	// Backfill acceptance_criteria for stories created before the column existed.
 	allEvents, _ := es.List(state.EventFilter{Type: state.EventStoryCreated})
 	ps.BackfillAcceptanceCriteria(allEvents)
@@ -86,6 +99,26 @@ func loadStores(cfgPath string) (stores, error) {
 		Events: es,
 		Proj:   ps,
 	}, nil
+}
+
+// rebuildProjectionIfBehind rebuilds the projection from the event log when its
+// reconciliation watermark has fallen behind the log length — the durable
+// desync signature. A matched watermark means the projection is already a
+// faithful function of the log, so the common path does no work.
+func rebuildProjectionIfBehind(es state.EventStore, ps *state.SQLiteStore) error {
+	logCount, err := es.Count(state.EventFilter{})
+	if err != nil {
+		return fmt.Errorf("count events: %w", err)
+	}
+	applied, err := ps.AppliedEventCount()
+	if err != nil {
+		return err
+	}
+	if applied >= logCount {
+		return nil
+	}
+	log.Printf("[projection] watermark %d < log %d; rebuilding projection from event log", applied, logCount)
+	return ps.RebuildFrom(context.Background(), es)
 }
 
 // Close releases both stores.
