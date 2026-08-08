@@ -108,3 +108,17 @@ func TestDefaultYAMLFor_NonGoNeverGetsGoCriteria(t *testing.T) {
 		t.Fatalf("swift-xcode repo must have no default criteria, got %+v", cfg.QA.SuccessCriteria)
 	}
 }
+
+func TestRuntimeConfig_MaxCriteriaRetriesParsed(t *testing.T) {
+	// Regression: the field existed on the runtime but was never wired from
+	// YAML, so operators could not raise the self-correction budget before a
+	// destructive escalation. It must round-trip through config parsing.
+	yamlBody := "native: true\nmax_iterations: 40\nmax_criteria_retries: 5\n"
+	var rc config.RuntimeConfig
+	if err := yaml.Unmarshal([]byte(yamlBody), &rc); err != nil {
+		t.Fatal(err)
+	}
+	if rc.MaxCriteriaRetries != 5 {
+		t.Fatalf("want MaxCriteriaRetries=5 from yaml, got %d", rc.MaxCriteriaRetries)
+	}
+}

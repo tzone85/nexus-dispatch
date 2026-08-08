@@ -610,8 +610,9 @@ func (e *Executor) spawnNative(ctx context.Context, repoDir string, a Assignment
 	go func() {
 		defer e.nativeWG.Done()
 		gemmaRT := runtime.NewGemmaRuntime(storyClient, runtime.GemmaRuntimeConfig{
-			MaxIterations:    nativeCfg.MaxIterations,
-			CommandAllowlist: nativeCfg.CommandAllowlist,
+			MaxIterations:      nativeCfg.MaxIterations,
+			MaxCriteriaRetries: nativeCfg.MaxCriteriaRetries,
+			CommandAllowlist:   nativeCfg.CommandAllowlist,
 		})
 		gemmaRT.AgentID = a.AgentID
 		gemmaRT.StoryID = a.StoryID

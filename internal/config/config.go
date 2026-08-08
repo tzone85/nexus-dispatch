@@ -351,17 +351,24 @@ type RuntimeDetection struct {
 
 // RuntimeConfig describes an external AI coding runtime.
 type RuntimeConfig struct {
-	Command          string             `yaml:"command"`
-	Args             []string           `yaml:"args"`
-	Models           []string           `yaml:"models"`
-	Detection        RuntimeDetection   `yaml:"detection"`
-	Native           bool               `yaml:"native,omitempty"`
-	MaxIterations    int                `yaml:"max_iterations,omitempty"`
-	CommandAllowlist []string           `yaml:"command_allowlist,omitempty"`
-	Concurrency      int                `yaml:"concurrency,omitempty"`
-	Runner           string             `yaml:"runner,omitempty"`
-	Docker           DockerRunnerConfig `yaml:"docker,omitempty"`
-	SSH              SSHRunnerConfig    `yaml:"ssh,omitempty"`
+	Command       string           `yaml:"command"`
+	Args          []string         `yaml:"args"`
+	Models        []string         `yaml:"models"`
+	Detection     RuntimeDetection `yaml:"detection"`
+	Native        bool             `yaml:"native,omitempty"`
+	MaxIterations int              `yaml:"max_iterations,omitempty"`
+	// MaxCriteriaRetries caps how many times an agent may self-correct after
+	// a completion-criteria rejection before the story escalates to a fresh
+	// agent. 0 uses the runtime default (2). Raising it lets one capable
+	// agent iterate on its own build/test failures — repro-first fixing —
+	// instead of handing off to a tier that restarts from scratch and can
+	// regress working code.
+	MaxCriteriaRetries int                `yaml:"max_criteria_retries,omitempty"`
+	CommandAllowlist   []string           `yaml:"command_allowlist,omitempty"`
+	Concurrency        int                `yaml:"concurrency,omitempty"`
+	Runner             string             `yaml:"runner,omitempty"`
+	Docker             DockerRunnerConfig `yaml:"docker,omitempty"`
+	SSH                SSHRunnerConfig    `yaml:"ssh,omitempty"`
 }
 
 // DockerRunnerConfig holds settings for the Docker execution target.
