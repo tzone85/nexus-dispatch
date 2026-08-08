@@ -221,9 +221,29 @@ func parseGoTestJSON(output string) (passing, failing, total int) {
 			Test        string `json:"Test"`
 			Package     string `json:"Package"`
 			ImportPath  string `json:"ImportPath"`
+			Output      string `json:"Output"`
 			FailedBuild string `json:"FailedBuild"`
 		}
 		if err := json.Unmarshal([]byte(line), &evt); err != nil {
+			continue
+		}
+		// Older toolchains have no "build-fail" action or FailedBuild field —
+		// a test-compile failure surfaces only as an output line
+		// "FAIL\tpkg [build failed]" (or "[setup failed]"). Treat that line as
+		// the package's failure marker; failedPkgs dedupes it against the
+		// modern events when both are present.
+		if evt.Action == "output" && evt.Test == "" &&
+			(strings.Contains(evt.Output, "[build failed]") || strings.Contains(evt.Output, "[setup failed]")) {
+			pkg := evt.Package
+			if pkg == "" {
+				pkg = evt.ImportPath
+			}
+			if pkg == "" || !failedPkgs[pkg] {
+				if pkg != "" {
+					failedPkgs[pkg] = true
+				}
+				failing++
+			}
 			continue
 		}
 		// Package-level events carry no Test field. A package whose tests fail

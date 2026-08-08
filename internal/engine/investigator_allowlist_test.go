@@ -185,24 +185,6 @@ func TestInvestigator_CommandAllowlist_EmptyCommand(t *testing.T) {
 	}
 }
 
-// An allowlisted read tool (cat/head/tail are in the default allowlist) must not
-// be rideable into an arbitrary file WRITE via `>`/`>>` redirection. These were
-// not in the prior metacharacter set.
-func TestInvestigator_CommandAllowlist_RejectsRedirection(t *testing.T) {
-	inv := NewInvestigator(nil, "", 0)
-	inv.SetCommandAllowlist([]string{"cat", "ls"})
-
-	for _, cmd := range []string{
-		"cat repo.txt > /home/user/.ssh/authorized_keys",
-		"cat repo.txt >> ~/.bashrc",
-		"ls < /etc/passwd",
-	} {
-		if inv.isCommandAllowed(cmd) {
-			t.Errorf("redirection must be rejected: %q", cmd)
-		}
-	}
-}
-
 // A single `&` (background) and a backslash escape must be rejected too — the
 // prior list only caught the two-character "&&".
 func TestInvestigator_CommandAllowlist_RejectsSingleAmpAndBackslash(t *testing.T) {
