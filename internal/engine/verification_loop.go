@@ -220,6 +220,7 @@ func parseGoTestJSON(output string) (passing, failing, total int) {
 			Action      string `json:"Action"`
 			Test        string `json:"Test"`
 			Package     string `json:"Package"`
+			ImportPath  string `json:"ImportPath"`
 			FailedBuild string `json:"FailedBuild"`
 		}
 		if err := json.Unmarshal([]byte(line), &evt); err != nil {
@@ -234,10 +235,18 @@ func parseGoTestJSON(output string) (passing, failing, total int) {
 		// closed instead of reading 0-passing/0-failing as "nothing wrong".
 		if evt.Test == "" {
 			if evt.Action == "build-fail" || (evt.Action == "fail" && evt.FailedBuild != "") {
-				if evt.Package == "" {
+				// The real toolchain stamps "build-fail" with ImportPath
+				// ("pkg [pkg.test]") and the paired package "fail" with
+				// Package ("pkg"); normalize both to the bare import path so
+				// the two events for one broken package dedupe to one failure.
+				pkg := evt.Package
+				if pkg == "" {
+					pkg = strings.TrimSpace(strings.SplitN(evt.ImportPath, " [", 2)[0])
+				}
+				if pkg == "" {
 					failing++
-				} else if !failedPkgs[evt.Package] {
-					failedPkgs[evt.Package] = true
+				} else if !failedPkgs[pkg] {
+					failedPkgs[pkg] = true
 					failing++
 				}
 			}
