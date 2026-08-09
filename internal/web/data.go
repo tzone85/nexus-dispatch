@@ -137,6 +137,15 @@ func (s *Server) BuildSnapshot() (StateSnapshot, error) {
 	// Metrics from cache
 	if s.metricsCache != nil {
 		snap.Metrics = s.metricsCache.Get()
+		// Derive the escalation count from the same authoritative list the
+		// "Human Review Needed" panel renders (STORY_ESCALATED → escalations
+		// table). The metrics.jsonl "escalated" flag is never written and left
+		// the strip stuck at 0 while the panel showed a screenful of
+		// escalations; per-call tier data is also incomplete. This keeps the
+		// strip and the panel in agreement by construction.
+		if snap.Metrics != nil {
+			snap.Metrics.EscalationCount = len(snap.Escalations)
+		}
 	}
 
 	// MemPalace status

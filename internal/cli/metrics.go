@@ -22,14 +22,15 @@ func newMetricsCmd() *cobra.Command {
 
 func runMetrics(cmd *cobra.Command, _ []string) error {
 	cfgPath, _ := cmd.Flags().GetString("config")
-	cfg, err := loadConfig(cfgPath)
+	s, err := loadStores(cfgPath)
 	if err != nil {
 		return err
 	}
+	defer s.Close()
 
 	jsonMode, _ := cmd.Flags().GetBool("json")
 
-	stateDir := expandHome(cfg.Workspace.StateDir)
+	stateDir := expandHome(s.Config.Workspace.StateDir)
 	metricsPath := filepath.Join(stateDir, "metrics.jsonl")
 	rec := metrics.NewRecorder(metricsPath)
 
@@ -45,6 +46,12 @@ func runMetrics(cmd *cobra.Command, _ []string) error {
 	}
 
 	summary := metrics.Summarize(entries)
+	// Escalation count comes from the event-sourced escalations projection, not
+	// the metrics.jsonl "escalated" flag (never written) — the same
+	// authoritative source the dashboard and `nxd escalations` use. Best-effort.
+	if esc, escErr := s.Proj.ListEscalations(); escErr == nil {
+		summary.EscalationCount = len(esc)
+	}
 	if jsonMode {
 		data, _ := json.MarshalIndent(summary, "", "  ")
 		fmt.Fprintln(out, string(data))

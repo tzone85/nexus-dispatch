@@ -2,11 +2,49 @@ package web
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"testing"
 
 	"github.com/tzone85/nexus-dispatch/internal/graph"
+	"github.com/tzone85/nexus-dispatch/internal/metrics"
 	"github.com/tzone85/nexus-dispatch/internal/state"
 )
+
+// TestBuildSnapshot_EscalationCountMatchesPanel locks fix #12: the metrics
+// strip's escalation count must equal the escalation list the panel renders.
+// The metrics.jsonl "escalated" flag is never written, so the strip used to
+// read 0 while the panel showed a screenful of escalations.
+func TestBuildSnapshot_EscalationCountMatchesPanel(t *testing.T) {
+	s := newTestServer(t)
+
+	// A metrics cache needs ≥1 entry for Get() to return a non-nil summary.
+	dir := t.TempDir()
+	rec := metrics.NewRecorder(filepath.Join(dir, "metrics.jsonl"))
+	_ = rec.Record(metrics.MetricEntry{ReqID: "r", Model: "m", TokensIn: 1, TokensOut: 1, Success: true})
+	_ = rec.Close()
+	s.metricsCache = NewMetricsCache(dir)
+
+	reqID := seedRequirement(t, s)
+	storyID := seedStory(t, s, reqID)
+	for _, to := range []int{1, 2, 3} { // one story escalating 0→1→2→3 = 3 escalations
+		emitAndProject(t, s, state.EventStoryEscalated, "dashboard", storyID,
+			map[string]any{"from_tier": to - 1, "to_tier": to, "reason": "x"})
+	}
+
+	snap, err := s.BuildSnapshot()
+	if err != nil {
+		t.Fatalf("BuildSnapshot: %v", err)
+	}
+	if snap.Metrics == nil {
+		t.Fatal("metrics summary should be non-nil")
+	}
+	if got, want := snap.Metrics.EscalationCount, len(snap.Escalations); got != want {
+		t.Fatalf("strip escalation count %d must equal panel count %d", got, want)
+	}
+	if snap.Metrics.EscalationCount != 3 {
+		t.Fatalf("want 3 escalations, got %d", snap.Metrics.EscalationCount)
+	}
+}
 
 func TestBuildSnapshot_AllPipelineBuckets(t *testing.T) {
 	s := newTestServer(t)
