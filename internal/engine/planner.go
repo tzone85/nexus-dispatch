@@ -541,6 +541,14 @@ Respond ONLY with the JSON array, no other text.`, reqTitle, storyID, storyTitle
 			log.Printf("[replan] skipping empty sub-story %s", s.ID)
 			continue
 		}
+		// Sub-story IDs flow into worktree paths and branch refs unmodified, so
+		// reject any that is not a plain identifier — matching the plan-time
+		// validation the primary planner applies. A hallucinated ID with a "/"
+		// or ".." would otherwise strand the story at the executor's guard.
+		if !sanitize.ValidIdentifier(s.ID) {
+			log.Printf("[replan] skipping sub-story with invalid id %q", s.ID)
+			continue
+		}
 		valid = append(valid, s)
 	}
 	if len(valid) == 0 {

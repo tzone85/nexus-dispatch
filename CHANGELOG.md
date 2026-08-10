@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Security
-- Planner now rejects any LLM-supplied story ID that is not a plain identifier (`sanitize.ValidIdentifier`), and the executor builds the worktree path with `sanitize.SafeJoin`. Previously a story ID containing `..`/`/` flowed unvalidated into the worktree path, which `git.CreateWorktree` passes to `os.RemoveAll` — allowing a crafted or hallucinated plan to delete a directory outside the worktree root.
+- Planner now rejects any LLM-supplied story ID that is not a plain identifier (`sanitize.ValidIdentifier`), and the executor builds the worktree path with `sanitize.SafeJoin`. Previously a story ID containing `..`/`/` flowed unvalidated into the worktree path, which `git.CreateWorktree` passes to `os.RemoveAll` — allowing a crafted or hallucinated plan to delete a directory outside the worktree root. The same identifier validation now covers the split (`EscalationMachine.ValidateSplit`) and re-plan (`Planner.RePlan`) paths, and the manager-escalation worktree path uses `SafeJoin` as well, so no ID-minting path can bypass the guard.
 
 ### Fixed
 - MemPalace bridge invocations (`memory.runBridge`) now run under a bounded timeout (`exec.CommandContext`, 120s default). A wedged `python3` bridge could otherwise block the calling post-execution pipeline goroutine indefinitely.
