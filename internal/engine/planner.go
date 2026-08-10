@@ -288,6 +288,16 @@ architecture and conventions when planning stories.`, profileContext)
 			return PlanResult{}, fmt.Errorf("LLM returned duplicate story ID: %s", s.ID)
 		}
 		newID := prefix + "-" + s.ID
+		// Story IDs flow unmodified into filesystem paths (worktree dirs, artifact
+		// dirs), git branch refs, and shell arguments. A raw LLM-supplied ID
+		// containing "/", "..", or other path/shell metacharacters would let a
+		// crafted (or hallucinated) plan escape the worktree root — the executor
+		// then os.RemoveAll's the resulting path. Reject anything that is not a
+		// plain identifier before it is ever persisted, matching the validation
+		// the artifact store and CLI already apply to story IDs.
+		if !sanitize.ValidIdentifier(newID) {
+			return PlanResult{}, fmt.Errorf("story ID %q is not a valid identifier (only letters, digits, '_', '-', '.' are allowed)", s.ID)
+		}
 		idMap[s.ID] = newID
 		stories[i].ID = newID
 	}
