@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
@@ -201,5 +202,60 @@ func TestSpawn_BadWorktreeDirReturnsError(t *testing.T) {
 	res := e.spawn(context.Background(), t.TempDir(), a, story, nil, nil)
 	if res.Error == nil {
 		t.Fatal("expected error when repoDir is not a git repo")
+	}
+}
+
+// TestSpawn_TraversalStoryIDDoesNotEscapeWorktreeRoot pins the defense-in-depth
+// guard on the os.RemoveAll sink inside CreateWorktree. A story ID that escapes
+// the worktree root (here "../victim") must be rejected by SafeJoin before any
+// filesystem operation — otherwise spawn would RemoveAll an arbitrary directory
+// outside the worktree base. This backstops the planner-level validation for
+// resumed runs whose assignments come from an older event store.
+func TestSpawn_TraversalStoryIDDoesNotEscapeWorktreeRoot(t *testing.T) {
+	repo := t.TempDir()
+	initSpawnTestRepo(t, repo)
+
+	dir := t.TempDir()
+	es, err := state.NewFileStore(filepath.Join(dir, "events.jsonl"))
+	if err != nil {
+		t.Fatalf("filestore: %v", err)
+	}
+	defer es.Close()
+	ps, err := state.NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatalf("sqlite: %v", err)
+	}
+	defer ps.Close()
+
+	// A victim directory sitting next to the worktree base (stateDir/worktrees).
+	// Story ID "../victim" would resolve to it via a raw filepath.Join.
+	victim := filepath.Join(dir, "victim")
+	if err := os.MkdirAll(victim, 0o755); err != nil {
+		t.Fatalf("mkdir victim: %v", err)
+	}
+	sentinel := filepath.Join(victim, "keep.txt")
+	if err := os.WriteFile(sentinel, []byte("do not delete"), 0o644); err != nil {
+		t.Fatalf("write sentinel: %v", err)
+	}
+
+	cfg := config.DefaultConfig()
+	cfg.Workspace.StateDir = dir
+	reg, _ := runtime.NewRegistry(map[string]config.RuntimeConfig{})
+	e := NewExecutor(reg, cfg, es, ps, nil)
+
+	a := Assignment{
+		StoryID: "../victim",
+		Role:    agent.RoleJunior,
+		Branch:  "story/evil",
+		AgentID: "agent-evil",
+	}
+	story := PlannedStory{ID: "../victim"}
+
+	res := e.spawn(context.Background(), repo, a, story, nil, nil)
+	if res.Error == nil {
+		t.Fatal("expected error for a story id that escapes the worktree root")
+	}
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("victim directory was touched — SafeJoin guard failed to protect os.RemoveAll: %v", err)
 	}
 }

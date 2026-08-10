@@ -23,6 +23,7 @@ import (
 	"github.com/tzone85/nexus-dispatch/internal/metrics"
 	"github.com/tzone85/nexus-dispatch/internal/repolearn"
 	"github.com/tzone85/nexus-dispatch/internal/runtime"
+	"github.com/tzone85/nexus-dispatch/internal/sanitize"
 	"github.com/tzone85/nexus-dispatch/internal/scratchboard"
 	"github.com/tzone85/nexus-dispatch/internal/state"
 )
@@ -195,9 +196,18 @@ func (e *Executor) buildNativeClient() llm.Client {
 func (e *Executor) spawn(ctx context.Context, repoDir string, a Assignment, story PlannedStory, waveStories []WaveStoryInfo, nativeClient llm.Client) SpawnResult {
 	result := SpawnResult{Assignment: a}
 
-	// Determine worktree path
+	// Determine worktree path. Build it with SafeJoin rather than a raw
+	// filepath.Join: a.StoryID reaches os.RemoveAll inside CreateWorktree, so a
+	// story ID that escapes the worktree root (via "..", a "/" separator, or an
+	// absolute path) would delete an arbitrary directory. The planner validates
+	// IDs at plan time, but a resumed run reconstructs assignments from a
+	// possibly-older event store, so guard the dangerous sink here too.
 	worktreeBase := filepath.Join(execExpandHome(e.config.Workspace.StateDir), "worktrees")
-	worktreePath := filepath.Join(worktreeBase, a.StoryID)
+	worktreePath, err := sanitize.SafeJoin(worktreeBase, a.StoryID)
+	if err != nil {
+		result.Error = fmt.Errorf("unsafe story id %q for worktree path: %w", a.StoryID, err)
+		return result
+	}
 	result.WorktreePath = worktreePath
 
 	// Create worktree with branch

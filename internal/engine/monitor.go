@@ -23,6 +23,7 @@ import (
 	"github.com/tzone85/nexus-dispatch/internal/memory"
 	"github.com/tzone85/nexus-dispatch/internal/routing"
 	"github.com/tzone85/nexus-dispatch/internal/runtime"
+	"github.com/tzone85/nexus-dispatch/internal/sanitize"
 	"github.com/tzone85/nexus-dispatch/internal/state"
 )
 
@@ -1356,7 +1357,18 @@ func (m *Monitor) dispatchNextWave(ctx context.Context, rc *RunContext, repoDir 
 func (m *Monitor) handleManagerEscalation(ctx context.Context, story PlannedStory, repoDir string, rc *RunContext) {
 	storyID := story.ID
 	stateDir := execExpandHome(m.config.Workspace.StateDir)
-	worktreePath := filepath.Join(stateDir, "worktrees", storyID)
+	// SafeJoin (not a raw filepath.Join): worktreePath is passed to os.RemoveAll
+	// in executeRetryAction when a manager retry requests a worktree reset. A
+	// story ID that escapes the worktrees root would otherwise delete an
+	// arbitrary directory. Plan-time validation constrains freshly-planned IDs,
+	// but this path also runs for stories restored from a persisted event store.
+	worktreeBase := filepath.Join(stateDir, "worktrees")
+	worktreePath, err := sanitize.SafeJoin(worktreeBase, storyID)
+	if err != nil {
+		log.Printf("[manager] unsafe story id %q, skipping escalation: %v", storyID, err)
+		m.resetStoryToDraft(storyID, "manager", fmt.Sprintf("unsafe story id: %v", err))
+		return
+	}
 	logDir := filepath.Join(stateDir, "logs")
 
 	dc, err := m.manager.BuildDiagnosticContext(storyID, worktreePath, logDir)
