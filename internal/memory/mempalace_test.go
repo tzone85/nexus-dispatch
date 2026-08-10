@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 // writeBridgeScript writes a Python script to tmp that always prints the given
@@ -284,6 +286,52 @@ else:
 	}
 	if out != `{"status":"ok","message":"palace flag seen"}` {
 		t.Errorf("unexpected output: %q", out)
+	}
+}
+
+// TestRunBridge_TimesOutOnHang pins the bounded-timeout guard: a wedged bridge
+// process (here a script that sleeps well past the timeout) must not block the
+// caller — and, transitively, the post-execution pipeline goroutine — forever.
+// runBridge must return a timeout error promptly instead of hanging.
+func TestRunBridge_TimesOutOnHang(t *testing.T) {
+	tmp := t.TempDir()
+	script := filepath.Join(tmp, "bridge.py")
+	// Sleeps far longer than the injected timeout, then would print. The
+	// timeout must kill it first.
+	content := "import time\ntime.sleep(30)\nprint('{\"status\":\"ok\"}')\n"
+	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	mp := &MemPalace{bridgePath: script, available: true, timeout: 200 * time.Millisecond}
+
+	start := time.Now()
+	_, err := mp.runBridge("health")
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected a timeout error from a hung bridge, got nil")
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Errorf("expected a timeout error, got: %v", err)
+	}
+	// Must return promptly (bounded by the timeout), not wait out the 30s sleep.
+	if elapsed > 5*time.Second {
+		t.Errorf("runBridge took %s — timeout did not fire", elapsed)
+	}
+}
+
+// TestMemPalace_BridgeTimeoutDefault verifies the zero-value fallback so callers
+// that never set a timeout still get the bounded default rather than an infinite
+// wait.
+func TestMemPalace_BridgeTimeoutDefault(t *testing.T) {
+	mp := &MemPalace{}
+	if got := mp.bridgeTimeout(); got != defaultBridgeTimeout {
+		t.Errorf("bridgeTimeout() = %s, want default %s", got, defaultBridgeTimeout)
+	}
+	mp.timeout = 5 * time.Second
+	if got := mp.bridgeTimeout(); got != 5*time.Second {
+		t.Errorf("bridgeTimeout() = %s, want 5s override", got)
 	}
 }
 

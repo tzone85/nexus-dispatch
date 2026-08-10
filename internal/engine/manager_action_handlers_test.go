@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -87,6 +88,40 @@ func TestExecuteRetryAction_WorktreeResetCleansDir(t *testing.T) {
 
 	if _, err := os.Stat(wt); !os.IsNotExist(err) {
 		t.Errorf("worktree should be removed when WorktreeReset=true; stat err=%v", err)
+	}
+}
+
+// TestHandleManagerEscalation_UnsafeStoryIDDoesNotEscapeWorktreeRoot pins the
+// defense-in-depth guard on the second os.RemoveAll sink (executeRetryAction).
+// A story ID that escapes the worktrees root must be rejected before any
+// worktree path is used — the story is reset to draft and, critically, a
+// sibling "victim" directory outside the worktrees root is left untouched.
+func TestHandleManagerEscalation_UnsafeStoryIDDoesNotEscapeWorktreeRoot(t *testing.T) {
+	m := minimalMonitor(t)
+	stateDir := t.TempDir()
+	m.config.Workspace.StateDir = stateDir
+
+	// Victim sits next to <stateDir>/worktrees; "../victim" would resolve to it.
+	victim := filepath.Join(stateDir, "victim")
+	if err := os.MkdirAll(victim, 0o755); err != nil {
+		t.Fatalf("mkdir victim: %v", err)
+	}
+	sentinel := filepath.Join(victim, "keep.txt")
+	if err := os.WriteFile(sentinel, []byte("keep"), 0o644); err != nil {
+		t.Fatalf("write sentinel: %v", err)
+	}
+
+	// m.manager is nil — the guard must fire before any manager call, so this
+	// must not panic.
+	m.handleManagerEscalation(context.Background(), PlannedStory{ID: "../victim"}, "", nil)
+
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("victim was touched — worktree-root guard failed: %v", err)
+	}
+	// The story must have been re-queued (reset to draft), not silently dropped.
+	failed, _ := m.eventStore.List(state.EventFilter{Type: state.EventStoryReviewFailed})
+	if len(failed) == 0 {
+		t.Error("expected the unsafe-id story to be reset to draft")
 	}
 }
 

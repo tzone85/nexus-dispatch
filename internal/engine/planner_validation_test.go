@@ -76,3 +76,73 @@ func TestPlan_RejectsStoryWithEmptyID(t *testing.T) {
 		t.Fatal("expected error for a story with an empty id/title")
 	}
 }
+
+// TestRePlan_SkipsInvalidSubStoryID pins the audit guard on the re-plan path:
+// a re-planned sub-story whose LLM-supplied ID is not a plain identifier must
+// be dropped (like an empty sub-story) rather than returned to be dispatched
+// into a worktree path — matching the primary planner's plan-time validation.
+func TestRePlan_SkipsInvalidSubStoryID(t *testing.T) {
+	dir := t.TempDir()
+	eventStore, projStore := newPlannerStores(t, dir)
+
+	response := `[
+		{"id": "s-a", "title": "A", "description": "do a", "acceptance_criteria": "ac", "complexity": 2, "owned_files": ["a.go"]},
+		{"id": "../evil", "title": "B", "description": "do b", "acceptance_criteria": "ac", "complexity": 2, "owned_files": ["b.go"]}
+	]`
+	client := llm.NewReplayClient(llm.CompletionResponse{Content: response})
+	cfg := config.DefaultConfig()
+	planner := engine.NewPlanner(client, cfg, eventStore, projStore)
+
+	stories, err := planner.RePlan(context.Background(), "s-parent", "r-1", "failed too many times")
+	if err != nil {
+		t.Fatalf("RePlan error: %v", err)
+	}
+	for _, s := range stories {
+		if s.ID == "../evil" {
+			t.Fatalf("re-plan returned an invalid sub-story id %q that should have been skipped", s.ID)
+		}
+	}
+	if len(stories) != 1 || stories[0].ID != "s-a" {
+		t.Fatalf("expected only the valid sub-story to survive, got %+v", stories)
+	}
+}
+
+// TestPlan_RejectsPathTraversalStoryID pins the fix for the worktree-path
+// traversal: a story ID reaches os.RemoveAll (via the executor's worktree path)
+// and git branch refs unmodified, so an LLM-supplied ID containing path
+// separators or ".." must be rejected at plan time — never persisted, never
+// dispatched. Without the guard the executor would RemoveAll a directory
+// outside the worktree root.
+func TestPlan_RejectsPathTraversalStoryID(t *testing.T) {
+	for _, malicious := range []string{
+		"../../../../tmp/victim",
+		"a/b",
+		"has space",
+		"semi;colon",
+	} {
+		t.Run(malicious, func(t *testing.T) {
+			dir := t.TempDir()
+			eventStore, projStore := newPlannerStores(t, dir)
+
+			response := `[{"id": "` + malicious + `", "title": "Evil", "description": "d", "acceptance_criteria": "ac", "complexity": 2, "owned_files": ["a.go"]}]`
+			client := llm.NewReplayClient(llm.CompletionResponse{Content: response})
+			cfg := config.DefaultConfig()
+			planner := engine.NewPlanner(client, cfg, eventStore, projStore)
+
+			if _, err := planner.Plan(context.Background(), "r-trav", "Do a thing", dir); err == nil {
+				t.Fatalf("expected error for malicious story id %q", malicious)
+			}
+
+			// A rejected plan must not have persisted any story or REQ_PLANNED.
+			events, lerr := eventStore.List(state.EventFilter{})
+			if lerr != nil {
+				t.Fatalf("list events: %v", lerr)
+			}
+			for _, e := range events {
+				if e.Type == state.EventReqPlanned || e.Type == state.EventStoryCreated {
+					t.Errorf("no plan events should be emitted for a rejected story id, got %s", e.Type)
+				}
+			}
+		})
+	}
+}
