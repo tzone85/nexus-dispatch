@@ -939,6 +939,18 @@ func (m *Monitor) enforceBudget(storyID string) bool {
 		return false
 	}
 	status := m.budgetGuard.Check(story.ReqID)
+	if status.Undetermined {
+		// Spend could not be read, so the cap cannot be enforced. Fail safe:
+		// pause for operator review rather than letting the requirement keep
+		// spending uncapped. This is not a REQ_BUDGET_EXCEEDED (we don't know
+		// that spend was exceeded), so pause with an honest reason only.
+		log.Printf("[pipeline] budget guard could not read spend metrics for %s; pausing for review", story.ReqID)
+		m.pauseRequirement(storyID, fmt.Sprintf(
+			"LLM budget guard could not read spend metrics to enforce billing.budget_usd ($%.2f). "+
+				"Investigate the metrics ledger, then `nxd resume %s`.",
+			status.BudgetUSD, story.ReqID))
+		return true
+	}
 	payload := map[string]any{
 		"id":         story.ReqID,
 		"spent_usd":  status.SpentUSD,
