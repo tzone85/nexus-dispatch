@@ -25,6 +25,12 @@ type BudgetStatus struct {
 	SpentUSD  float64
 	BudgetUSD float64
 	WarnUSD   float64
+	// Undetermined is set when actual spend could not be computed because the
+	// metrics ledger failed to read (a genuine I/O/parse error — not a missing
+	// file, which reads as empty). The guard cannot prove the requirement is
+	// under budget, so callers must fail safe (pause for review) rather than
+	// treat it as $0 spent, which would silently uncap the budget.
+	Undetermined bool
 }
 
 // BudgetGuard enforces billing.budget_usd: it prices the requirement's actual
@@ -75,7 +81,12 @@ func (g *BudgetGuard) Check(reqID string) BudgetStatus {
 
 	entries, err := metrics.NewRecorder(g.metricsPath).ReadAll()
 	if err != nil {
-		return status // no metrics yet — nothing spent
+		// A missing ledger is reported by ReadAll as (nil, nil), so reaching
+		// here means a real read/parse failure and actual spend is unknown.
+		// Reporting $0 would fail open and silently disable the cap, so flag the
+		// check as undetermined and let the caller pause for review instead.
+		status.Undetermined = true
+		return status
 	}
 	for _, e := range entries {
 		if e.ReqID != "" && e.ReqID != reqID {

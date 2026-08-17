@@ -751,8 +751,10 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 	// 2.5 Security gate (per-story, pre-merge). Runs the security agent on the
 	// story's worktree. A finding at/above the gate severity PAUSES the
 	// requirement for a human decision (fix, dismiss, or proceed) rather than
-	// escalating — security needs judgment, not a tier-burning retry. A
-	// security-tool failure is logged and never blocks the merge.
+	// escalating — security needs judgment, not a tier-burning retry. A flaky
+	// *scanner tool* is recorded in the report's failed list (coverage lost)
+	// without returning an error, so scanner flakiness never blocks the merge;
+	// but a gate that ERRORS never ran to completion, so it fails closed below.
 	if m.securityGate != nil {
 		passed, summary, secErr := m.securityGate.ReviewStory(ctx, storyID, storyTitle, diff, ag.WorktreePath)
 		switch {
@@ -760,7 +762,15 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 			if m.pauseIfCapacity(storyID, "security review", secErr) {
 				return
 			}
-			log.Printf("[pipeline] security review error for %s (continuing to merge): %v", storyID, secErr)
+			// The gate could not complete (e.g. an unreadable/corrupt knowledge
+			// base). It did NOT certify the story clean, so fail closed: pause
+			// for review rather than merging an unscanned story. Merging on a
+			// gate error would silently bypass the deterministic scanners that
+			// are the real merge blockers.
+			log.Printf("[pipeline] security review error for %s (pausing, not merging): %v", storyID, secErr)
+			m.pauseRequirement(storyID, fmt.Sprintf(
+				"security gate could not complete: %v — resolve the cause, then `nxd resume <req>` to proceed", secErr))
+			return
 		case !passed:
 			log.Printf("[pipeline] security gate FLAGGED %s: %s", storyID, summary)
 			m.pauseRequirement(storyID, fmt.Sprintf("security gate: %s (review the finding, then fix on the branch or `nxd resume <req>` to proceed)", summary))
@@ -939,6 +949,18 @@ func (m *Monitor) enforceBudget(storyID string) bool {
 		return false
 	}
 	status := m.budgetGuard.Check(story.ReqID)
+	if status.Undetermined {
+		// Spend could not be read, so the cap cannot be enforced. Fail safe:
+		// pause for operator review rather than letting the requirement keep
+		// spending uncapped. This is not a REQ_BUDGET_EXCEEDED (we don't know
+		// that spend was exceeded), so pause with an honest reason only.
+		log.Printf("[pipeline] budget guard could not read spend metrics for %s; pausing for review", story.ReqID)
+		m.pauseRequirement(storyID, fmt.Sprintf(
+			"LLM budget guard could not read spend metrics to enforce billing.budget_usd ($%.2f). "+
+				"Investigate the metrics ledger, then `nxd resume %s`.",
+			status.BudgetUSD, story.ReqID))
+		return true
+	}
 	payload := map[string]any{
 		"id":         story.ReqID,
 		"spent_usd":  status.SpentUSD,

@@ -68,6 +68,14 @@ func (f *TechLeadFixer) buildPrompt(triggerStoryID, buildError string, recentSto
 	return sb.String()
 }
 
+// dispatchHint returns the operator-facing command that re-dispatches the
+// LLM-suggested integration fix as a new requirement. It always routes through
+// the nxd CLI — the offline-first tool this project ships — so the hint an
+// operator copies from the integration-fixer log is directly actionable.
+func dispatchHint(fixDescription string) string {
+	return fmt.Sprintf("nxd req %q", fixDescription)
+}
+
 // DispatchIntegrationFix is the entry point called by the monitor after a
 // failed post-merge integration build.
 //
@@ -127,7 +135,7 @@ func (f *TechLeadFixer) DispatchIntegrationFix(ctx context.Context, triggerStory
 
 		fixDescription := strings.TrimSpace(resp.Content)
 		log.Printf("[integration-fixer] suggested fix for %s:\n%s", triggerStoryID, fixDescription)
-		log.Printf("[integration-fixer] to dispatch: nxd req %q", fixDescription)
+		log.Printf("[integration-fixer] to dispatch: %s", dispatchHint(fixDescription))
 
 		// Emit an informational event so the fix suggestion is persisted in the
 		// event log for later review.
