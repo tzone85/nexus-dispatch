@@ -171,7 +171,8 @@ func relPath(repoDir, p string) string {
 
 func parseGosec(out []byte, repoDir string) ([]Finding, error) {
 	var doc struct {
-		Issues []struct {
+		GolangErrors map[string]json.RawMessage `json:"Golang errors"`
+		Issues       []struct {
 			Severity string `json:"severity"`
 			RuleID   string `json:"rule_id"`
 			Details  string `json:"details"`
@@ -184,6 +185,19 @@ func parseGosec(out []byte, repoDir string) ([]Finding, error) {
 	}
 	if err := json.Unmarshal(out, &doc); err != nil {
 		return nil, err
+	}
+	// gosec reports packages it could not load/compile in a "Golang errors" map
+	// while still emitting valid JSON with an empty (or partial) Issues array and
+	// a non-zero exit — which Scanner.Run intentionally ignores for the JSON
+	// scanners. When Issues is empty AND compile errors are present, gosec
+	// inspected nothing, so a clean parse would masquerade as a clean SAST run
+	// (the same coverage-loss trap the npm/govulncheck paths guard against).
+	// Surface that as an error so RunScanners records gosec as failed, not ran.
+	// A PARTIAL run (some packages compiled → real Issues, others errored) keeps
+	// its findings: routing the whole run to `failed` would discard genuine
+	// findings, which is worse than the narrower coverage note it would add.
+	if len(doc.Issues) == 0 && len(doc.GolangErrors) > 0 {
+		return nil, fmt.Errorf("gosec did not analyze any code (%d package(s) failed to compile; SAST coverage lost): %s", len(doc.GolangErrors), gosecCompileErrorDetail(doc.GolangErrors))
 	}
 	findings := make([]Finding, 0, len(doc.Issues))
 	for _, i := range doc.Issues {
@@ -339,6 +353,28 @@ func parseNpmAudit(out []byte) ([]Finding, error) {
 		})
 	}
 	return findings, nil
+}
+
+// gosecCompileErrorDetail renders a short reason from gosec's "Golang errors"
+// map (path → []{line,column,error}) for logging: the first error message it
+// can find, falling back to the offending package path.
+func gosecCompileErrorDetail(golangErrors map[string]json.RawMessage) string {
+	for path, raw := range golangErrors {
+		var errs []struct {
+			Error string `json:"error"`
+		}
+		if err := json.Unmarshal(raw, &errs); err == nil {
+			for _, e := range errs {
+				if strings.TrimSpace(e.Error) != "" {
+					return e.Error
+				}
+			}
+		}
+		if strings.TrimSpace(path) != "" {
+			return path
+		}
+	}
+	return "compile errors reported"
 }
 
 // npmAuditErrorDetail renders npm's failure object (`{"error":{"code","summary"}}`)
