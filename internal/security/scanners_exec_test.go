@@ -313,6 +313,57 @@ func TestRunScanners_GovulncheckHardFailureNotClean(t *testing.T) {
 	}
 }
 
+// TestRunScanners_NpmAuditErrorObjectNotClean guards the same coverage-loss gap
+// for npm audit: npm v7+ emits a JSON *error object* (rather than a report) when
+// it cannot audit — no lockfile (ENOLOCK) or, on NXD's offline-first hosts, an
+// unreachable advisory registry. That object unmarshals without error and leaves
+// no vulnerabilities, so it must be routed to `failed`, never counted as a clean
+// dependency-CVE scan.
+func TestRunScanners_NpmAuditErrorObjectNotClean(t *testing.T) {
+	bin := installAllFakeScanners(t)
+	// npm audit cannot run: it writes an error object to stdout and exits non-zero.
+	fakeTool(t, bin, "npm", `{"error":{"code":"ENOLOCK","summary":"This command requires an existing lockfile.","detail":""}}`, 1)
+	repo := seedRepo(t, map[string]string{"package.json": `{"name":"x"}`})
+
+	_, ran, _, failed := RunScanners(context.Background(), repo)
+
+	failedSet := map[ScannerKind]bool{}
+	for _, k := range failed {
+		failedSet[k] = true
+	}
+	if !failedSet[ScannerNpmAudit] {
+		t.Fatalf("an npm audit that could not run must be in failed, got failed=%v", failed)
+	}
+	for _, k := range ran {
+		if k == ScannerNpmAudit {
+			t.Error("an npm audit that never inspected dependencies must not be counted as ran (clean)")
+		}
+	}
+}
+
+// TestRunScanners_NpmAuditCleanReportIsRan confirms the guard does not mistake a
+// genuine clean audit (report present, zero vulnerabilities) for a failure.
+func TestRunScanners_NpmAuditCleanReportIsRan(t *testing.T) {
+	bin := installAllFakeScanners(t)
+	fakeTool(t, bin, "npm", `{"vulnerabilities":{},"metadata":{"vulnerabilities":{"total":0}}}`, 0)
+	repo := seedRepo(t, map[string]string{"package.json": `{"name":"x"}`})
+
+	_, ran, _, failed := RunScanners(context.Background(), repo)
+
+	for _, k := range failed {
+		if k == ScannerNpmAudit {
+			t.Errorf("a clean npm audit (empty vulnerabilities) must not be in failed: %v", failed)
+		}
+	}
+	ranSet := map[ScannerKind]bool{}
+	for _, k := range ran {
+		ranSet[k] = true
+	}
+	if !ranSet[ScannerNpmAudit] {
+		t.Errorf("a clean npm audit must be counted as ran, got ran=%v", ran)
+	}
+}
+
 // TestRunScanners_GovulncheckCleanExitZero confirms the fix does not mistake a
 // genuine clean run (exit 0, no vulnerabilities) for a failure.
 func TestRunScanners_GovulncheckCleanExitZero(t *testing.T) {

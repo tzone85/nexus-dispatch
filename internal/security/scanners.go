@@ -300,6 +300,7 @@ func parseSemgrep(out []byte, repoDir string) ([]Finding, error) {
 
 func parseNpmAudit(out []byte) ([]Finding, error) {
 	var doc struct {
+		Error           json.RawMessage `json:"error"`
 		Vulnerabilities map[string]struct {
 			Name     string            `json:"name"`
 			Severity string            `json:"severity"`
@@ -309,6 +310,16 @@ func parseNpmAudit(out []byte) ([]Finding, error) {
 	}
 	if err := json.Unmarshal(out, &doc); err != nil {
 		return nil, err
+	}
+	// npm v7+ writes a JSON *error object* to stdout (in place of a report) when
+	// it cannot actually audit — no lockfile (ENOLOCK) or, on NXD's offline-first
+	// host, the advisory registry is unreachable. That object unmarshals cleanly
+	// into the report struct, leaving Vulnerabilities nil, so without this guard
+	// a scan that never inspected a single dependency would masquerade as a clean
+	// run — the exact coverage-loss trap the govulncheck path guards against.
+	// Surface it as an error so RunScanners records npm-audit as failed, not ran.
+	if errDetail := bytes.TrimSpace(doc.Error); len(errDetail) > 0 && !bytes.Equal(errDetail, []byte("null")) {
+		return nil, fmt.Errorf("npm audit did not complete (dependency-CVE coverage lost): %s", npmAuditErrorDetail(doc.Error))
 	}
 	findings := make([]Finding, 0, len(doc.Vulnerabilities))
 	for pkg, v := range doc.Vulnerabilities {
@@ -328,6 +339,27 @@ func parseNpmAudit(out []byte) ([]Finding, error) {
 		})
 	}
 	return findings, nil
+}
+
+// npmAuditErrorDetail renders npm's failure object (`{"error":{"code","summary"}}`)
+// as a short, log-friendly reason. It degrades gracefully if `error` is a bare
+// string or an unexpected shape, falling back to the raw JSON.
+func npmAuditErrorDetail(raw json.RawMessage) string {
+	var e struct {
+		Code    string `json:"code"`
+		Summary string `json:"summary"`
+	}
+	if err := json.Unmarshal(raw, &e); err == nil {
+		switch {
+		case e.Code != "" && e.Summary != "":
+			return e.Code + ": " + e.Summary
+		case e.Summary != "":
+			return e.Summary
+		case e.Code != "":
+			return e.Code
+		}
+	}
+	return strings.TrimSpace(string(raw))
 }
 
 func parseGovulncheck(out []byte) ([]Finding, error) {

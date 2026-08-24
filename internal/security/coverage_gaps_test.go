@@ -195,6 +195,46 @@ func TestParseNpmAudit_FallsBackToMapKeyForName(t *testing.T) {
 	}
 }
 
+// TestParseNpmAudit_ErrorObjectIsFailureNotClean guards the coverage-loss gap:
+// npm v7+ writes a JSON error object to stdout (in place of a report) when it
+// cannot audit — no lockfile, or an unreachable registry on NXD's offline-first
+// hosts. That object parses cleanly and leaves Vulnerabilities nil, so it must
+// be surfaced as an error (→ failed list) rather than counted as a clean scan.
+func TestParseNpmAudit_ErrorObjectIsFailureNotClean(t *testing.T) {
+	cases := []struct {
+		name string
+		out  string
+	}{
+		{"no lockfile", `{"error":{"code":"ENOLOCK","summary":"This command requires an existing lockfile.","detail":""}}`},
+		{"registry unreachable", `{"error":{"code":"ENETUNREACH","summary":"request to https://registry.npmjs.org/-/npm/v1/security/audits failed"}}`},
+		{"bare string error", `{"error":"audit endpoint returned an error"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fs, err := parseNpmAudit([]byte(tc.out))
+			if err == nil {
+				t.Fatalf("an npm audit error object must surface as a failure, got findings=%v err=nil", fs)
+			}
+			if len(fs) != 0 {
+				t.Errorf("a failed audit must not report findings, got %v", fs)
+			}
+		})
+	}
+}
+
+// TestParseNpmAudit_CleanReportIsNoError confirms the guard does not mistake a
+// genuine clean audit (report present, zero vulnerabilities) for a failure.
+func TestParseNpmAudit_CleanReportIsNoError(t *testing.T) {
+	out := []byte(`{"vulnerabilities":{},"metadata":{"vulnerabilities":{"total":0}}}`)
+	fs, err := parseNpmAudit(out)
+	if err != nil {
+		t.Fatalf("a clean audit (empty vulnerabilities) must not be an error: %v", err)
+	}
+	if len(fs) != 0 {
+		t.Errorf("a clean audit must report no findings, got %v", fs)
+	}
+}
+
 func TestParseGovulncheck_MalformedLinesSkipped(t *testing.T) {
 	out := []byte("Vulnerability #1 without colon\nVulnerability #2:   \nVulnerability #3: GO-2025-999\n")
 	fs, err := parseGovulncheck(out)
