@@ -200,3 +200,39 @@ func TestClose_DrainsInFlightDeliveries(t *testing.T) {
 		t.Fatal("Close returned before the in-flight delivery finished")
 	}
 }
+
+// TestHandleEvent_AfterCloseIsDropped documents the shutdown contract: once
+// Close has begun, a late watched event is dropped rather than dispatched, so
+// no new wg.Add can race the wg.Wait inside Close.
+func TestHandleEvent_AfterCloseIsDropped(t *testing.T) {
+	n, cap := newTestNotifier(t, Options{Events: []string{string(state.EventReqCompleted)}})
+	n.Close()
+	n.HandleEvent(state.NewEvent(state.EventReqCompleted, "m", "", nil))
+	n.Close() // idempotent; must not block or panic
+	if got := len(cap.all()); got != 0 {
+		t.Fatalf("event handled after Close must be dropped, got %d deliveries", got)
+	}
+}
+
+// TestHandleEvent_ConcurrentWithCloseNoPanic reproduces the shutdown race:
+// FileStore.OnAppend can fire HandleEvent (→ wg.Add) on a pipeline goroutine at
+// the same instant Close runs wg.Wait. Without the closing guard this can trip
+// Go's "WaitGroup misuse: Add called concurrently with Wait" panic. The Add is
+// registered under the same lock Close takes before Wait, so the test must run
+// cleanly (a panic in any goroutine fails the test).
+func TestHandleEvent_ConcurrentWithCloseNoPanic(t *testing.T) {
+	for iter := 0; iter < 200; iter++ {
+		n, _ := newTestNotifier(t, Options{Events: []string{string(state.EventReqCompleted)}})
+		n.desktopFn = func(string, string) error { return nil }
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 50; i++ {
+				n.HandleEvent(state.NewEvent(state.EventReqCompleted, "m", "", nil))
+			}
+		}()
+		n.Close() // races the appenders above
+		wg.Wait()
+	}
+}

@@ -53,7 +53,10 @@ type Notifier struct {
 	client    *http.Client
 	desktopFn func(title, body string) error
 	logf      func(format string, args ...any)
-	wg        sync.WaitGroup
+
+	mu     sync.Mutex // guards wg.Add against a concurrent Close/wg.Wait
+	closed bool
+	wg     sync.WaitGroup
 }
 
 // DefaultEvents is the set of events a human almost always wants to hear
@@ -103,7 +106,20 @@ func (n *Notifier) HandleEvent(evt state.Event) {
 	if _, ok := n.watch[evt.Type]; !ok {
 		return
 	}
+	// wg.Add must not race wg.Wait: FileStore.OnAppend can fire this after
+	// Close() has begun (e.g. an in-flight post-execution pipeline goroutine
+	// appends REQ_PAUSED during Ctrl-C shutdown, once the monitor has returned
+	// without draining it). Registering the Add under the same lock that Close
+	// takes before Wait guarantees every Add happens-before Wait, and drops the
+	// (best-effort) delivery once closing rather than triggering Go's
+	// "WaitGroup misuse: Add called concurrently with Wait" panic.
+	n.mu.Lock()
+	if n.closed {
+		n.mu.Unlock()
+		return
+	}
 	n.wg.Add(1)
+	n.mu.Unlock()
 	go func() {
 		defer n.wg.Done()
 		n.deliver(evt)
@@ -112,8 +128,12 @@ func (n *Notifier) HandleEvent(evt state.Event) {
 
 // Close waits for in-flight deliveries to flush (bounded by the per-delivery
 // HTTP timeout). Call it before process exit so a REQ_COMPLETED fired moments
-// earlier is not lost.
+// earlier is not lost. After Close begins, further HandleEvent calls are
+// dropped (delivery is best-effort) so no new Add can race the Wait below.
 func (n *Notifier) Close() {
+	n.mu.Lock()
+	n.closed = true
+	n.mu.Unlock()
 	n.wg.Wait()
 }
 
