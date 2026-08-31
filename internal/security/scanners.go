@@ -300,6 +300,10 @@ func parseSemgrep(out []byte, repoDir string) ([]Finding, error) {
 
 func parseNpmAudit(out []byte) ([]Finding, error) {
 	var doc struct {
+		Error *struct {
+			Code    string `json:"code"`
+			Summary string `json:"summary"`
+		} `json:"error"`
 		Vulnerabilities map[string]struct {
 			Name     string            `json:"name"`
 			Severity string            `json:"severity"`
@@ -309,6 +313,24 @@ func parseNpmAudit(out []byte) ([]Finding, error) {
 	}
 	if err := json.Unmarshal(out, &doc); err != nil {
 		return nil, err
+	}
+	// npm audit emits {"error":{...}} and exits non-zero when it ran but could
+	// not perform the audit: no lockfile (ENOLOCK), no package.json
+	// (EAUDITNOPJSON), or — the norm on NXD's offline-first host — the registry
+	// advisory endpoint was unreachable. That payload is valid JSON with no
+	// "vulnerabilities" key, so a naive parse returns zero findings and no
+	// error, and RunScanners would record a clean run when dependency coverage
+	// was actually lost. Surface it as an error so the run lands in the `failed`
+	// list, mirroring the govulncheck exit-code guard.
+	if doc.Error != nil && (doc.Error.Code != "" || doc.Error.Summary != "") {
+		msg := doc.Error.Summary
+		switch {
+		case msg == "":
+			msg = doc.Error.Code
+		case doc.Error.Code != "":
+			msg = doc.Error.Code + ": " + msg
+		}
+		return nil, fmt.Errorf("npm audit did not complete (dependency coverage lost): %s", msg)
 	}
 	findings := make([]Finding, 0, len(doc.Vulnerabilities))
 	for pkg, v := range doc.Vulnerabilities {
