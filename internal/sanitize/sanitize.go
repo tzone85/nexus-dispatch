@@ -63,3 +63,51 @@ func ScanForSecrets(content string) bool {
 	}
 	return false
 }
+
+// RedactedSecret replaces each credential-like token found by RedactSecrets.
+const RedactedSecret = "[REDACTED-SECRET]"
+
+// RedactedInjection replaces each prompt-injection marker found by
+// RedactPromptInjection.
+const RedactedInjection = "[REDACTED-INJECTION]"
+
+// RedactSecrets returns content with every secret-pattern match replaced by
+// RedactedSecret, leaving the surrounding text intact. Same patterns as
+// ScanForSecrets.
+func RedactSecrets(content string) string {
+	for _, re := range secretPatterns {
+		content = re.ReplaceAllLiteralString(content, RedactedSecret)
+	}
+	return content
+}
+
+// RedactPromptInjection returns content with every injection marker (matched
+// case-insensitively, same vocabulary as DetectPromptInjection) replaced by
+// RedactedInjection, leaving the surrounding text intact.
+func RedactPromptInjection(content string) string {
+	for _, pattern := range injectionPatterns {
+		content = replaceFold(content, pattern, RedactedInjection)
+	}
+	return content
+}
+
+// replaceFold replaces every case-insensitive occurrence of old in s with repl.
+func replaceFold(s, old, repl string) string {
+	if old == "" {
+		return s
+	}
+	lower := strings.ToLower(s)
+	lowerOld := strings.ToLower(old)
+	var b strings.Builder
+	for {
+		i := strings.Index(lower, lowerOld)
+		if i < 0 {
+			b.WriteString(s)
+			return b.String()
+		}
+		b.WriteString(s[:i])
+		b.WriteString(repl)
+		s = s[i+len(old):]
+		lower = lower[i+len(old):]
+	}
+}
