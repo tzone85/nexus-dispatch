@@ -16,6 +16,7 @@ import (
 	"github.com/tzone85/nexus-dispatch/internal/config"
 	nxdgit "github.com/tzone85/nexus-dispatch/internal/git"
 	"github.com/tzone85/nexus-dispatch/internal/llm"
+	"github.com/tzone85/nexus-dispatch/internal/metrics"
 	"github.com/tzone85/nexus-dispatch/internal/routing"
 	"github.com/tzone85/nexus-dispatch/internal/security"
 	"github.com/tzone85/nexus-dispatch/internal/state"
@@ -804,4 +805,169 @@ func TestSimulateDryRunChanges(t *testing.T) {
 			t.Errorf("directory must not be created: %v", err)
 		}
 	})
+}
+
+// resolvedFile wraps content in the resolver's output sentinels.
+func resolvedFile(content string) llm.CompletionResponse {
+	return llm.CompletionResponse{Content: resolvedFileSentinelStart + "\n" + content + resolvedFileSentinelEnd + "\n"}
+}
+
+func TestPostExecutionPipeline_ConflictResolved_ThenPostRebaseQA(t *testing.T) {
+	f := newPipelineFixture(t)
+	// main and the branch both edit feature.txt → rebase conflict.
+	if err := os.WriteFile(filepath.Join(f.repo, "feature.txt"), []byte("main line one\nmain line two\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, f.repo, "add", ".")
+	gitIn(t, f.repo, "commit", "-m", "main edits feature")
+	merged := "main line one\nmain line two\nfeature\n"
+	resolver := NewConflictResolver(llm.NewReplayClient(resolvedFile(merged)), "resolver-model", 2000, f.es)
+	m := f.build()
+	m.SetConflictResolver(resolver)
+	f.run()
+
+	f.one(state.EventStoryMerged)
+	got, err := os.ReadFile(filepath.Join(f.repo, "feature.txt"))
+	// extractResolvedFileContent trims the trailing newline before the sentinel.
+	if err != nil || strings.TrimSpace(string(got)) != strings.TrimSpace(merged) {
+		t.Errorf("main feature.txt = %q (err=%v), want the LLM resolution", got, err)
+	}
+	// The resolver rewrote a file, so QA ran twice: once on the agent's tree
+	// and once on the rebased tree.
+	if f.qaRunner.calls != 2 {
+		t.Errorf("QA runner calls = %d, want 2 (pre-merge + post-rebase)", f.qaRunner.calls)
+	}
+	stages := f.stageResults()
+	if stages["qa_post_rebase"] != "success" || stages["merge"] != "success" {
+		t.Errorf("stages = %v, want qa_post_rebase and merge success", stages)
+	}
+	var resolvedEvents int
+	for _, evt := range f.events(state.EventStoryProgress) {
+		if state.DecodePayload(evt.Payload)["action"] == "conflicts_resolved" {
+			resolvedEvents++
+		}
+	}
+	if resolvedEvents != 1 {
+		t.Errorf("conflicts_resolved progress events = %d, want 1", resolvedEvents)
+	}
+}
+
+func TestPostExecutionPipeline_ConflictResolved_PostRebaseQAFails(t *testing.T) {
+	f := newPipelineFixture(t)
+	if err := os.WriteFile(filepath.Join(f.repo, "feature.txt"), []byte("main line one\nmain line two\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, f.repo, "add", ".")
+	gitIn(t, f.repo, "commit", "-m", "main edits feature")
+	resolver := NewConflictResolver(llm.NewReplayClient(resolvedFile("main line one\nmain line two\nfeature\n")), "resolver-model", 2000, f.es)
+	// First QA call (pre-merge) passes, the post-rebase call fails.
+	runner := &sequenceRunner{results: []runResult{{output: "ok"}, {output: "--- FAIL: TestMerged", err: errors.New("exit status 1")}}}
+	f.qa = NewQA(QAConfig{TestCommand: "go test ./..."}, runner, f.es, f.ps)
+	m := f.build()
+	m.SetConflictResolver(resolver)
+	f.run()
+
+	f.none(state.EventStoryMerged)
+	reason := f.resetReason("qa")
+	if !strings.Contains(reason, "after rebase with conflict resolution") || !strings.Contains(reason, "TestMerged") {
+		t.Errorf("reset reason = %q", reason)
+	}
+	stages := f.stageResults()
+	if stages["qa_post_rebase"] != "failure" || stages["merge"] != "failure" {
+		t.Errorf("stages = %v, want qa_post_rebase and merge failure", stages)
+	}
+	if got := f.storyStatus(); got != "draft" {
+		t.Errorf("story status = %q, want draft", got)
+	}
+}
+
+// runResult is one scripted CommandRunner outcome.
+type runResult struct {
+	output string
+	err    error
+}
+
+// sequenceRunner returns scripted results in order (last one repeats).
+type sequenceRunner struct {
+	results []runResult
+	calls   int
+}
+
+func (r *sequenceRunner) Run(context.Context, string, string, ...string) (string, error) {
+	i := r.calls
+	if i >= len(r.results) {
+		i = len(r.results) - 1
+	}
+	r.calls++
+	return r.results[i].output, r.results[i].err
+}
+
+func TestPostExecutionPipeline_ScrubsReasoningPreamble(t *testing.T) {
+	f := newPipelineFixture(t)
+	src := "Looking at the code, I'll add the handler.\nHere's the file:\n\npackage main\n\nfunc main() {}\n"
+	if err := os.WriteFile(filepath.Join(f.worktree, "main.go"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, f.worktree, "add", ".")
+	gitIn(t, f.worktree, "commit", "-m", "agent output with preamble")
+	commitsBefore := gitIn(t, f.worktree, "rev-list", "--count", "HEAD")
+	f.run()
+
+	f.one(state.EventStoryMerged)
+	got, err := os.ReadFile(filepath.Join(f.repo, "main.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "package main\n\nfunc main() {}\n" {
+		t.Errorf("main.go on main = %q, want the preamble stripped", got)
+	}
+	// The scrub was amended into the agent's commit, not added as a new one.
+	if n := gitIn(t, f.repo, "rev-list", "--count", "main^2"); n != commitsBefore {
+		t.Errorf("branch commit count after amend = %s, want %s", n, commitsBefore)
+	}
+}
+
+func TestPostExecutionPipeline_BudgetExceeded_StopsBeforeReview(t *testing.T) {
+	f := newPipelineFixture(t)
+	metricsPath := filepath.Join(t.TempDir(), "metrics.jsonl")
+	writeMetrics(t, metricsPath, metrics.MetricEntry{ReqID: f.req, Model: "m1", TokensIn: 3000, TokensOut: 1000}) // $5
+	m := f.build()
+	m.SetBudgetGuard(NewBudgetGuard(budgetBilling(4, 80), metricsPath))
+	f.run()
+
+	exceeded := f.one(state.EventReqBudgetExceeded)
+	p := state.DecodePayload(exceeded.Payload)
+	if p["id"] != f.req || p["spent_usd"].(float64) != 5 || p["budget_usd"].(float64) != 4 {
+		t.Errorf("budget payload = %v", p)
+	}
+	if got := f.reqStatus(); got != "paused" {
+		t.Errorf("requirement status = %q, want paused", got)
+	}
+	if reason := f.pauseReason(); !strings.Contains(reason, "LLM budget exceeded: spent $5.00 of $4.00") {
+		t.Errorf("pause reason = %q", reason)
+	}
+	f.none(state.EventStoryReviewPassed)
+	f.none(state.EventStoryMerged)
+}
+
+func TestPostExecutionPipeline_PausedRequirementStillMergesButStops(t *testing.T) {
+	f := newPipelineFixture(t)
+	pause := state.NewEvent(state.EventReqPaused, "cli", "", map[string]any{"id": f.req, "reason": "operator pause"})
+	if err := f.es.Append(pause); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.ps.Project(pause); err != nil {
+		t.Fatal(err)
+	}
+	f.run()
+
+	// The finished story still lands (its work is done), but the requirement
+	// stays paused so no next wave is dispatched from here.
+	f.one(state.EventStoryMerged)
+	if got := f.reqStatus(); got != "paused" {
+		t.Errorf("requirement status = %q, want paused", got)
+	}
+	if n := len(f.allEvents(state.EventReqPaused)); n != 1 {
+		t.Errorf("REQ_PAUSED events = %d, want the operator's single pause", n)
+	}
 }
