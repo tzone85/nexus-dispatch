@@ -5,6 +5,7 @@ package config
 import (
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/tzone85/nexus-dispatch/internal/devdb"
@@ -54,6 +55,9 @@ type Config struct {
 	Methodology   MethodologyConfig        `yaml:"methodology"`
 	DevDB         DevDBConfig              `yaml:"devdb,omitempty"`
 	Notifications NotificationsConfig      `yaml:"notifications,omitempty"`
+	// --- workstream B: sandboxed execution + human approval queue ---
+	Sandbox   SandboxConfig   `yaml:"sandbox"`
+	Approvals ApprovalsConfig `yaml:"approvals"`
 }
 
 // MethodologyConfig controls the default design / testing approach NXD
@@ -396,8 +400,187 @@ var validCriteriaKinds = map[string]bool{
 
 // InvestigationConfig controls how the investigation agent operates.
 type InvestigationConfig struct {
+	// CommandAllowlist lists the argv prefixes the investigator's run_command
+	// tool may execute (argv-aware matching, see internal/runtime/allowlist.go).
+	// An EMPTY list denies every command — it is never "allow all".
 	CommandAllowlist []string `yaml:"command_allowlist"`
 }
+
+// ---------------------------------------------------------------------------
+// Workstream B — sandbox + approvals configuration.
+// ---------------------------------------------------------------------------
+
+// SandboxConfig controls where native tool commands (the Gemma runtime's
+// run_command, the criteria evaluator's command_succeeds/test_passes and the
+// investigator's run_command) are executed.
+type SandboxConfig struct {
+	// Mode is auto|docker|host. auto (default) uses docker when `docker info`
+	// succeeds and otherwise falls back to host with a one-time warning.
+	Mode string `yaml:"mode"`
+	// Image is the container image used by the docker sandbox. It MUST contain
+	// the toolchain the command allowlist needs (go, make, npm, ...). Default
+	// golang:1.26-alpine covers Go projects only.
+	Image string `yaml:"image"`
+	// Network is none|bridge for the sandbox container. Default none.
+	Network string `yaml:"network"`
+	// ExtraMounts are additional bind mounts in "<worktree-relative-src>:<abs
+	// container path>[:ro]" form. Sources must stay inside the worktree.
+	ExtraMounts []string `yaml:"extra_mounts,omitempty"`
+	// CPUs / Memory are passed to docker run --cpus / --memory. Defaults "2"
+	// and "2g".
+	CPUs   string `yaml:"cpus,omitempty"`
+	Memory string `yaml:"memory,omitempty"`
+	// AutoApprovePrompts controls whether the watchdog auto-answers CLI agents'
+	// permission prompts. nil derives the default: true when the agent runs in
+	// a docker/ssh runner, false on the host.
+	AutoApprovePrompts *bool `yaml:"auto_approve_prompts,omitempty"`
+}
+
+// ApprovalsConfig controls the human approval queue.
+type ApprovalsConfig struct {
+	// RequireFor lists the approval kinds that block the pipeline until a human
+	// decides: conflict_resolution, integration_failure, security_finding.
+	// Default: all three.
+	RequireFor []string `yaml:"require_for"`
+	// TimeoutAction is what happens while an approval is pending: "pause"
+	// (default, the only supported value today).
+	TimeoutAction string `yaml:"timeout_action"`
+}
+
+// Approval kinds accepted by approvals.require_for.
+var validApprovalKinds = map[string]bool{
+	"conflict_resolution": true,
+	"integration_failure": true,
+	"security_finding":    true,
+	"merge":               true,
+}
+
+// Requires reports whether approvals.require_for lists kind.
+func (a ApprovalsConfig) Requires(kind string) bool {
+	for _, k := range a.RequireFor {
+		if k == kind {
+			return true
+		}
+	}
+	return false
+}
+
+// unattendedFlags are the per-CLI flags that let an agent run without asking
+// for permission. They are safe only when the agent is confined to a
+// docker/ssh runner, so DefaultConfig no longer bakes them into args;
+// EffectiveArgs appends them when the runner is sandboxed.
+var unattendedFlags = map[string]string{
+	"claude": "--dangerously-skip-permissions",
+	"codex":  "--full-auto",
+}
+
+// Sandboxed reports whether the runtime runs inside a docker or ssh runner.
+func (rc RuntimeConfig) Sandboxed() bool {
+	return rc.Runner == "docker" || rc.Runner == "ssh"
+}
+
+// EffectiveArgs returns rc.Args plus the CLI's unattended-mode flag when the
+// runtime is sandboxed and the flag is not already present. On the host the
+// args are returned unchanged, so the agent keeps prompting for permission.
+func (rc RuntimeConfig) EffectiveArgs() []string {
+	out := append([]string(nil), rc.Args...)
+	flag, ok := unattendedFlags[rc.Command]
+	if !ok || !rc.Sandboxed() {
+		return out
+	}
+	for _, a := range out {
+		if a == flag {
+			return out
+		}
+	}
+	return append(out, flag)
+}
+
+// UnsandboxedRuntimes lists the CLI runtimes that execute directly on the
+// host (tmux runner). `nxd doctor` reports them as a warning.
+func (c Config) UnsandboxedRuntimes() []string {
+	var names []string
+	for name, rt := range c.Runtimes {
+		if rt.Native || rt.Sandboxed() {
+			continue
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// AutoApprovePrompts resolves sandbox.auto_approve_prompts for a runtime:
+// an explicit setting wins, otherwise true only when the runtime is sandboxed.
+func (c Config) AutoApprovePrompts(runtimeName string) bool {
+	if c.Sandbox.AutoApprovePrompts != nil {
+		return *c.Sandbox.AutoApprovePrompts
+	}
+	rt, ok := c.Runtimes[runtimeName]
+	return ok && rt.Sandboxed()
+}
+
+func validateSandbox(c SandboxConfig) error {
+	switch c.Mode {
+	case "auto", "docker", "host":
+	default:
+		return fmt.Errorf("sandbox.mode must be auto|docker|host, got %q", c.Mode)
+	}
+	switch c.Network {
+	case "none", "bridge":
+	default:
+		return fmt.Errorf("sandbox.network must be none|bridge, got %q", c.Network)
+	}
+	if strings.TrimSpace(c.Image) == "" {
+		return fmt.Errorf("sandbox.image must not be empty")
+	}
+	for i, m := range c.ExtraMounts {
+		if err := ValidateExtraMount(m); err != nil {
+			return fmt.Errorf("sandbox.extra_mounts[%d]: %w", i, err)
+		}
+	}
+	return nil
+}
+
+// ValidateExtraMount checks one sandbox.extra_mounts entry:
+// "<worktree-relative-src>:<abs container path>[:ro]". The source may not be
+// absolute, may not start with "~" and may not contain "..".
+func ValidateExtraMount(m string) error {
+	parts := strings.Split(m, ":")
+	if len(parts) < 2 || len(parts) > 3 {
+		return fmt.Errorf("mount %q must be <rel-src>:<abs-dst>[:ro]", m)
+	}
+	src, dst := parts[0], parts[1]
+	if src == "" || strings.HasPrefix(src, "/") || strings.HasPrefix(src, "~") {
+		return fmt.Errorf("mount source %q must be a worktree-relative path", src)
+	}
+	for _, seg := range strings.Split(src, "/") {
+		if seg == ".." {
+			return fmt.Errorf("mount source %q must not contain ..", src)
+		}
+	}
+	if !strings.HasPrefix(dst, "/") || strings.Contains(dst, "..") {
+		return fmt.Errorf("mount destination %q must be an absolute container path", dst)
+	}
+	if len(parts) == 3 && parts[2] != "ro" {
+		return fmt.Errorf("mount option %q must be ro", parts[2])
+	}
+	return nil
+}
+
+func validateApprovals(c ApprovalsConfig) error {
+	for _, k := range c.RequireFor {
+		if !validApprovalKinds[k] {
+			return fmt.Errorf("approvals.require_for contains unknown kind %q", k)
+		}
+	}
+	if c.TimeoutAction != "pause" {
+		return fmt.Errorf("approvals.timeout_action must be \"pause\", got %q", c.TimeoutAction)
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
 
 // RuntimeDetection holds patterns used to detect runtime states.
 type RuntimeDetection struct {
@@ -662,6 +845,14 @@ func (c Config) Validate() error {
 	}
 
 	if err := validateDevDB(c.DevDB); err != nil {
+		return err
+	}
+
+	// Workstream B blocks.
+	if err := validateSandbox(c.Sandbox); err != nil {
+		return err
+	}
+	if err := validateApprovals(c.Approvals); err != nil {
 		return err
 	}
 

@@ -10,37 +10,50 @@ import (
 	"github.com/tzone85/nexus-dispatch/internal/sanitize"
 )
 
-// dangerousDockerFlags are flags that can break out of the agent sandbox
-// (privilege escalation, host filesystem access, capability grants). H12:
-// reject these from extra_flags unless the operator explicitly opts in via
-// a future allow_dangerous config field.
-var dangerousDockerFlags = []string{
-	"--privileged",
-	"--cap-add",
-	"--security-opt=label=disable",
-	"--device",
-	"--pid=host",
-	"--pid=container",
-	"--ipc=host",
-	"--userns=host",
-	"--uts=host",
-	"--cgroupns=host",
+// allowedDockerExtraFlags is the ALLOWLIST of `docker run` flags an operator
+// may add via runtimes.<name>.docker.extra_flags. Everything else is rejected
+// — in particular anything that escalates privileges or reaches the host
+// (--privileged, --cap-add, --device, --pid/--ipc/--userns/--uts/--cgroupns
+// =host, --security-opt, --volume/-v, --mount, --network). Flags are matched
+// by name; a value may follow as the next element or after "=".
+var allowedDockerExtraFlags = map[string]bool{
+	"--cpus": true, "--memory": true, "-m": true, "--memory-swap": true,
+	"--cpu-shares": true, "--pids-limit": true, "--shm-size": true,
+	"--read-only": true, "--tmpfs": true, "--ulimit": true,
+	"--label": true, "-l": true, "--hostname": true, "-h": true,
+	"--user": true, "-u": true, "--workdir": true, "--platform": true,
+	"--pull": true, "--dns": true, "--stop-timeout": true, "--init": true,
+	"--cap-drop": true, "--no-healthcheck": true, "--env": true, "-e": true,
 }
 
-// validateDockerExtraFlags rejects flags that escalate the container's
-// privileges. Returns an error describing the first dangerous flag found.
+// validDockerNetworks are the networks a runner may use. "host" is never
+// allowed — it removes the network namespace entirely.
+var validDockerNetworks = map[string]bool{"none": true, "bridge": true}
+
+// validateDockerExtraFlags enforces the allowlist and rejects shell
+// metacharacters. It walks flag/value pairs so `--memory 512m` and
+// `--memory=512m` both validate.
 func validateDockerExtraFlags(flags []string) error {
+	expectValue := false
 	for _, f := range flags {
-		// Match exact and prefix-with-= forms (e.g. --cap-add=SYS_ADMIN).
-		for _, danger := range dangerousDockerFlags {
-			if f == danger || strings.HasPrefix(f, danger+"=") {
-				return fmt.Errorf("dangerous docker flag rejected: %q (set runtimes.<name>.docker.allow_dangerous: true to override)", f)
-			}
-		}
-		// Also reject anything containing shell metacharacters.
-		if strings.ContainsAny(f, ";&|`$<>") {
+		if strings.ContainsAny(f, ";&|`$<>\n\r") {
 			return fmt.Errorf("docker flag contains shell metacharacters: %q", f)
 		}
+		if expectValue {
+			expectValue = false
+			continue
+		}
+		if !strings.HasPrefix(f, "-") {
+			return fmt.Errorf("docker extra_flags entry %q is not a flag", f)
+		}
+		name, _, hasEq := strings.Cut(f, "=")
+		if !allowedDockerExtraFlags[name] {
+			return fmt.Errorf("docker flag not in allowlist: %q (allowed: resource limits, labels, user, workdir, tmpfs, read-only)", f)
+		}
+		expectValue = !hasEq && name != "--read-only" && name != "--init" && name != "--no-healthcheck"
+	}
+	if expectValue {
+		return fmt.Errorf("docker extra_flags ends with a flag missing its value")
 	}
 	return nil
 }
@@ -48,8 +61,8 @@ func validateDockerExtraFlags(flags []string) error {
 // DockerRunner executes agent sessions inside Docker containers.
 type DockerRunner struct {
 	image      string   // Docker image to use (e.g., "nxd-agent:latest")
-	network    string   // Docker network (default: "host")
-	extraFlags []string // Additional flags passed to docker run
+	network    string   // Docker network: none (default) or bridge
+	extraFlags []string // Additional flags passed to docker run (allowlisted)
 }
 
 // DockerConfig holds configuration for the Docker runner.
@@ -59,11 +72,12 @@ type DockerConfig struct {
 	ExtraFlags []string `yaml:"extra_flags"`
 }
 
-// NewDockerRunner creates a DockerRunner with the given config.
+// NewDockerRunner creates a DockerRunner with the given config. The network
+// defaults to "none"; use "bridge" when the agent needs outbound access.
 func NewDockerRunner(cfg DockerConfig) *DockerRunner {
 	network := cfg.Network
 	if network == "" {
-		network = "host"
+		network = "none"
 	}
 	return &DockerRunner{
 		image:      cfg.Image,
@@ -72,26 +86,30 @@ func NewDockerRunner(cfg DockerConfig) *DockerRunner {
 	}
 }
 
-// Run starts a Docker container with the prepared execution.
+// dockerEnvFileRel is where the runner stages the --env-file (0600) inside
+// the worktree. Removed after `docker run` returns.
+const dockerEnvFileRel = ".nxd-prompts/docker.env"
+
+// Run starts a Docker container with the prepared execution:
+//
+//	docker run -d --name <session> --network <net> -w /workspace
+//	  -v <worktree>:/workspace --cap-drop ALL --security-opt no-new-privileges
+//	  [--env-file <worktree>/.nxd-prompts/docker.env] [-v logdir:logdir]
+//	  <extra flags> <image> sh -c <command>
+//
+// Secrets never appear in argv: the environment is passed via --env-file.
 func (r *DockerRunner) Run(pe PreparedExecution) error {
-	// H13: validate session name before using it as a container name.
 	if !sanitize.ValidIdentifier(pe.SessionName) {
 		return fmt.Errorf("invalid session name %q", pe.SessionName)
 	}
-	// H12: reject dangerous extra flags before assembling the command.
+	if !validDockerNetworks[r.network] {
+		return fmt.Errorf("docker network %q not allowed (use none or bridge)", r.network)
+	}
 	if err := validateDockerExtraFlags(r.extraFlags); err != nil {
 		return err
 	}
-	// Write setup files to the work directory before mounting.
-	for path, content := range pe.SetupFiles {
-		dir := filepath.Dir(path)
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return fmt.Errorf("create dir for setup file %s: %w", path, err)
-		}
-		// H11-equiv: setup files often carry env vars / API keys; mode 0o600.
-		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-			return fmt.Errorf("write setup file %s: %w", path, err)
-		}
+	if err := pe.WriteSetupFiles(); err != nil {
+		return err
 	}
 
 	args := []string{
@@ -100,11 +118,21 @@ func (r *DockerRunner) Run(pe PreparedExecution) error {
 		"--network", r.network,
 		"-w", "/workspace",
 		"-v", pe.WorkDir + ":/workspace",
+		"--cap-drop", "ALL",
+		"--security-opt", "no-new-privileges",
 	}
 
-	// Pass environment variables.
-	for key, val := range pe.Env {
-		args = append(args, "-e", key+"="+val)
+	if len(pe.Env) > 0 {
+		content, err := RenderDockerEnvFile(pe.Env)
+		if err != nil {
+			return err
+		}
+		envFile := filepath.Join(pe.WorkDir, dockerEnvFileRel)
+		if err := writeSecretFile(envFile, content); err != nil {
+			return fmt.Errorf("write docker env file: %w", err)
+		}
+		defer func() { _ = os.Remove(envFile) }()
+		args = append(args, "--env-file", envFile)
 	}
 
 	// Mount log directory if a log file is specified.
@@ -116,10 +144,7 @@ func (r *DockerRunner) Run(pe PreparedExecution) error {
 		args = append(args, "-v", logDir+":"+logDir)
 	}
 
-	// Append any extra flags from config.
 	args = append(args, r.extraFlags...)
-
-	// Image and command.
 	args = append(args, r.image, "sh", "-c", pe.Command)
 
 	cmd := execCommand("docker", args...)

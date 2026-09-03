@@ -3,8 +3,10 @@ package web
 
 import (
 	"encoding/json"
+	"log"
 	"path/filepath"
 
+	"github.com/tzone85/nexus-dispatch/internal/approvals"
 	"github.com/tzone85/nexus-dispatch/internal/criteria"
 	"github.com/tzone85/nexus-dispatch/internal/graph"
 	"github.com/tzone85/nexus-dispatch/internal/improver"
@@ -33,6 +35,10 @@ type StateSnapshot struct {
 	// split into discrete, human-readable items so the dashboard can render a
 	// clean checklist instead of a run-on technical blob.
 	AcceptanceCriteriaItems map[string][]string `json:"acceptance_criteria_items,omitempty"`
+	// Approvals are the pending human-approval items (internal/approvals) for
+	// the Approvals panel; Approve/Reject buttons send approve_approval /
+	// reject_approval commands.
+	Approvals []approvals.Item `json:"approvals"`
 }
 
 // StoryDB is the dashboard-friendly per-story devdb status.
@@ -174,6 +180,16 @@ func (s *Server) BuildSnapshot() (StateSnapshot, error) {
 		}
 	}
 	snap.ReviewGates = gates
+
+	// Pending human approvals (conflict resolutions, integration failures,
+	// security findings, gated merges). A load failure must not break the
+	// whole snapshot — log and show an empty panel.
+	if items, err := s.pendingApprovals(); err != nil {
+		log.Printf("[web] approvals snapshot: %v", err)
+		snap.Approvals = []approvals.Item{}
+	} else {
+		snap.Approvals = items
+	}
 
 	// Recovery log from STORY_RECOVERY events
 	recoveryEvents, _ := s.eventStore.List(state.EventFilter{

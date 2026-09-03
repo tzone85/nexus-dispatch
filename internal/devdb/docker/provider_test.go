@@ -4,8 +4,10 @@ package docker_test
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/tzone85/nexus-dispatch/internal/devdb"
@@ -41,6 +43,11 @@ func TestProvider_BootstrapFlow_WithMockDaemon(t *testing.T) {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"State":{"Running":true}}`))
 		case r.URL.Path == "/containers/create":
+			// The dev DB must only be reachable from the loopback interface.
+			body, _ := io.ReadAll(r.Body)
+			if !strings.Contains(string(body), `"HostIp":"127.0.0.1"`) {
+				t.Errorf("container create body must bind 127.0.0.1, got %s", body)
+			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(201)
 			_, _ = w.Write([]byte(`{"Id":"container-abc"}`))

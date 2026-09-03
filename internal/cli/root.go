@@ -67,6 +67,7 @@ func init() {
 	rootCmd.AddCommand(newWatchCmd())
 	rootCmd.AddCommand(newPlanCmd())
 	rootCmd.AddCommand(newApproveCmd())
+	rootCmd.AddCommand(newApprovalsCmd())
 	rootCmd.AddCommand(newRejectCmd())
 	rootCmd.AddCommand(newReviewStoryCmd())
 	rootCmd.AddCommand(newMergeStoryCmd())

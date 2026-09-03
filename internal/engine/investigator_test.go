@@ -331,6 +331,7 @@ func TestInvestigator_RunCommandTruncation(t *testing.T) {
 	)
 
 	inv := engine.NewInvestigator(client, "test-model", 4096)
+	inv.SetCommandAllowlist([]string{"echo"})
 	result, err := inv.Investigate(context.Background(), dir)
 	if err != nil {
 		t.Fatalf("investigate: %v", err)

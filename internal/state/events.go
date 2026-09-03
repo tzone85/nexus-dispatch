@@ -134,6 +134,12 @@ const (
 	// EventReqPlanningStarted is a heartbeat emitted before the Tech Lead
 	// LLM call so operators can see progress while planning runs.
 	EventReqPlanningStarted EventType = "REQ_PLANNING_STARTED"
+
+	// Human approval queue (internal/approvals). APPROVAL_REQUESTED carries the
+	// item (id, req_id, kind, summary, details); APPROVAL_RESOLVED carries
+	// id, status (approved|rejected), decided_by and note.
+	EventApprovalRequested EventType = "APPROVAL_REQUESTED"
+	EventApprovalResolved  EventType = "APPROVAL_RESOLVED"
 )
 
 // Event represents a single domain event in the append-only event store.

@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -13,7 +14,6 @@ import (
 	"github.com/tzone85/nexus-dispatch/internal/criteria"
 	"github.com/tzone85/nexus-dispatch/internal/llm"
 	"github.com/tzone85/nexus-dispatch/internal/scratchboard"
-	"github.com/tzone85/nexus-dispatch/internal/shellexec"
 )
 
 // GemmaRuntimeConfig holds configuration for the native Gemma coding runtime.
@@ -63,6 +63,17 @@ type GemmaRuntime struct {
 	StoryID      string               // used as context when writing to scratchboard
 	ReqID        string               // used to scope directive lookups
 	Directives   DirectiveProvider    // optional: inject operator directives at iteration start
+	// Sandbox executes run_command. nil falls back to DefaultSandbox()
+	// (host until resume.go installs the configured sandbox).
+	Sandbox CommandSandbox
+}
+
+// sandbox returns the runtime's sandbox or the process default.
+func (g *GemmaRuntime) sandbox() CommandSandbox {
+	if g.Sandbox != nil {
+		return g.Sandbox
+	}
+	return DefaultSandbox()
 }
 
 // DirectiveProvider supplies pending operator instructions to the runtime
@@ -285,7 +296,7 @@ func (g *GemmaRuntime) Execute(ctx context.Context, workDir, model, systemPrompt
 		// the content looks like one or more tool-call objects, parse them
 		// out and execute as if they were real tool calls.
 		if len(resp.ToolCalls) == 0 {
-			extracted := extractInlineToolCalls(resp.Content)
+			extracted := extractInlineToolCalls(resp.Content, knownToolNames(tools))
 			if len(extracted) > 0 {
 				log.Printf("[gemma] recovered %d inline tool call(s) from text content", len(extracted))
 				resp.ToolCalls = extracted
@@ -618,44 +629,11 @@ func safePath(relPath, workDir string) (string, error) {
 	return cleaned, nil
 }
 
-// isCommandAllowed checks whether a command is permitted by the allowlist.
-// It extracts the binary name from the command (first whitespace-delimited token)
-// and validates that the full command starts with an allowlisted prefix followed
-// by either a space, end-of-string, or the exact match. Shell metacharacters
-// (;, |, &, $, `, \n, \r, \t, NUL, <, >) are rejected outright to prevent
-// command chaining, redirection, expansion, and substitution.
+// isCommandAllowed is the two-argument compatibility wrapper around the
+// argv-aware matcher in allowlist.go (see CheckCommand). With no worktree
+// supplied, absolute paths, "~" and any ".." component are rejected.
 func isCommandAllowed(command string, allowlist []string) bool {
-	command = strings.TrimSpace(command)
-	if command == "" {
-		return false
-	}
-
-	// H9: reject any shell metacharacter that could chain commands, redirect
-	// I/O, or escape the allowlist. ContainsAny over a canonical set is
-	// faster than per-pattern substring scans AND closes the gaps the prior
-	// list left open — bare tab (was only "\t&"), NUL byte (would otherwise
-	// pass the metachar check and then fail the prefix match, but better
-	// rejected loudly), and `\` (escapes).
-	const forbidden = ";&|$`<>\n\r\t\x00\\"
-	if strings.ContainsAny(command, forbidden) {
-		return false
-	}
-
-	for _, pattern := range allowlist {
-		pattern = strings.TrimSpace(pattern)
-		if pattern == "" {
-			continue
-		}
-		if command == pattern {
-			return true
-		}
-		// Allow if command starts with pattern followed by a space
-		// (e.g., pattern "go test" matches "go test ./..." but not "go testevil").
-		if strings.HasPrefix(command, pattern+" ") {
-			return true
-		}
-	}
-	return false
+	return IsCommandAllowed(command, allowlist, "")
 }
 
 // execReadFile reads a file relative to the working directory.
@@ -883,63 +861,71 @@ func (g *GemmaRuntime) execRunCommand(ctx context.Context, call llm.ToolCall, wo
 		return result
 	}
 
-	// Check command against allowlist using safe binary extraction.
-	if !isCommandAllowed(args.Command, g.config.CommandAllowlist) {
+	// Argv-aware allowlist check scoped to the worktree (allowlist.go).
+	if err := CheckCommand(args.Command, g.config.CommandAllowlist, workDir); err != nil {
 		result.IsError = true
-		// Live-test discovery: small models default to `mkdir -p X` to set up
-		// directories, but write_file already auto-creates parents. Steer the
-		// model to the right tool instead of just rejecting.
-		hint := ""
-		trimmed := strings.TrimSpace(args.Command)
-		switch {
-		case strings.HasPrefix(trimmed, "mkdir"),
-			strings.HasPrefix(trimmed, "touch"),
-			strings.HasPrefix(trimmed, "cd "),
-			trimmed == "cd",
-			strings.HasPrefix(trimmed, "pwd"),
-			strings.HasPrefix(trimmed, "ls"):
-			hint = "\nhint: use the write_file tool — it creates parent directories automatically. mkdir/touch/cd/ls/pwd are not needed."
-		case strings.HasPrefix(trimmed, "rm"),
-			strings.HasPrefix(trimmed, "mv"),
-			strings.HasPrefix(trimmed, "cp"):
-			hint = "\nhint: file mutation is intentionally blocked. Use write_file or edit_file. To delete a file, write empty content."
-		case strings.HasPrefix(trimmed, "git ") ||
-			strings.HasPrefix(trimmed, "git\t"):
-			// LB9 (live test): qwen 14b loves to manually run git checkout/add/commit/status.
-			// NXD already auto-commits in the post-execution pipeline AND creates the branch.
-			// The agent's job is purely to write/edit code; git operations are a no-op.
-			hint = "\nhint: do NOT run git commands. NXD already created the branch and will auto-commit your changes after task_complete. Just write/edit files; the orchestrator handles git."
-		case strings.Contains(trimmed, "&&") || strings.Contains(trimmed, "||"):
-			hint = "\nhint: chained commands are blocked. Run one command per run_command call."
-		}
-		result.Content = fmt.Sprintf("command not in allowlist: %s%s", args.Command, hint)
+		result.Content = fmt.Sprintf("command not in allowlist: %s (%v)%s", args.Command, err, allowlistHint(args.Command))
 		return result
 	}
-
-	// Derive a per-command context so a hung child process can't pin the
-	// outer iteration's 5-minute budget. shellexec.CommandContext wires
-	// SIGKILL through Go's os/exec when the context cancels.
-	cmdCtx, cancel := context.WithTimeout(ctx, runCommandTimeout)
-	defer cancel()
-	cmd := shellexec.CommandContext(cmdCtx, args.Command)
-	cmd.Dir = workDir
-
-	output, err := cmd.CombinedOutput()
+	argv, err := TokenizeCommand(args.Command)
 	if err != nil {
 		result.IsError = true
-		// Translate context-deadline failures into actionable text so the
-		// model can adjust (e.g. avoid the slow test it just wrote).
-		if cmdCtx.Err() == context.DeadlineExceeded {
-			result.Content = fmt.Sprintf("command timed out after %s — split into smaller commands or fix the slow path. output: %s",
-				runCommandTimeout, string(output))
-			return result
-		}
-		result.Content = fmt.Sprintf("command error: %v\noutput: %s", err, string(output))
+		result.Content = fmt.Sprintf("command rejected: %v", err)
 		return result
 	}
 
-	result.Content = string(output)
+	// The sandbox bounds the command with runCommandTimeout so a hung child
+	// can't pin the outer iteration's 5-minute budget, and runs it argv-only
+	// (no shell) on the host or inside a locked-down container.
+	res, err := g.sandbox().Exec(ctx, workDir, argv, runCommandTimeout)
+	output := res.Combined()
+	if err != nil {
+		result.IsError = true
+		// Translate timeouts into actionable text so the model can adjust
+		// (e.g. avoid the slow test it just wrote).
+		if errors.Is(err, ErrSandboxTimeout) {
+			result.Content = fmt.Sprintf("command timed out after %s — split into smaller commands or fix the slow path. output: %s",
+				runCommandTimeout, output)
+			return result
+		}
+		result.Content = fmt.Sprintf("command error: %v\noutput: %s", err, output)
+		return result
+	}
+	if res.ExitCode != 0 {
+		result.IsError = true
+		result.Content = fmt.Sprintf("command error: exit status %d\noutput: %s", res.ExitCode, output)
+		return result
+	}
+
+	result.Content = output
 	return result
+}
+
+// allowlistHint steers small models away from commands NXD handles for them.
+// Live-test discovery: they default to `mkdir -p X` to set up directories,
+// but write_file already auto-creates parents, and qwen 14b loves to run
+// git checkout/add/commit even though NXD auto-commits.
+func allowlistHint(command string) string {
+	trimmed := strings.TrimSpace(command)
+	switch {
+	case strings.HasPrefix(trimmed, "mkdir"),
+		strings.HasPrefix(trimmed, "touch"),
+		strings.HasPrefix(trimmed, "cd "),
+		trimmed == "cd",
+		strings.HasPrefix(trimmed, "pwd"),
+		strings.HasPrefix(trimmed, "ls"):
+		return "\nhint: use the write_file tool — it creates parent directories automatically. mkdir/touch/cd/ls/pwd are not needed."
+	case strings.HasPrefix(trimmed, "rm"),
+		strings.HasPrefix(trimmed, "mv"),
+		strings.HasPrefix(trimmed, "cp"):
+		return "\nhint: file mutation is intentionally blocked. Use write_file or edit_file. To delete a file, write empty content."
+	case strings.HasPrefix(trimmed, "git ") ||
+		strings.HasPrefix(trimmed, "git\t"):
+		return "\nhint: do NOT run git commands. NXD already created the branch and will auto-commit your changes after task_complete. Just write/edit files; the orchestrator handles git."
+	case strings.Contains(trimmed, "&&") || strings.Contains(trimmed, "||"):
+		return "\nhint: chained commands are blocked. Run one command per run_command call."
+	}
+	return ""
 }
 
 // execWriteScratchboard writes a discovery to the shared scratchboard.

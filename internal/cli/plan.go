@@ -103,6 +103,9 @@ func runPlan(cmd *cobra.Command, args []string) error {
 	var report *engine.InvestigationReport
 	if repoProfile.IsExisting {
 		fmt.Fprintf(out, "Running codebase investigation...\n")
+		if err := installSandbox(cfg, out); err != nil {
+			return err
+		}
 		investigatorModel := cfg.Models.Investigator
 		inv := engine.NewInvestigator(client, investigatorModel.Model, investigatorModel.MaxTokens)
 		inv.SetCommandAllowlist(cfg.Investigation.CommandAllowlist)

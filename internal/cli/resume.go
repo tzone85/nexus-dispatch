@@ -134,6 +134,12 @@ func runResume(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Sandbox for native tool commands (gemma run_command, criteria,
+	// investigator): docker when available, else host with a loud warning.
+	if err := installSandbox(s.Config, out); err != nil {
+		return err
+	}
+
 	// Load plugins.
 	pluginDir := expandHome("~/.nxd/plugins")
 	pm, pluginErr := plugin.LoadPlugins(s.Config.Plugins, pluginDir)

@@ -230,8 +230,8 @@ func TestHub_Broadcast_EventDiff(t *testing.T) {
 		"acceptance_criteria": "Works",
 		"complexity":          1,
 	})
-	s.eventStore.Append(evt)  //nolint:errcheck
-	s.projStore.Project(evt)  //nolint:errcheck
+	s.eventStore.Append(evt) //nolint:errcheck
+	s.projStore.Project(evt) //nolint:errcheck
 
 	// Manually trigger broadcast
 	s.hub.broadcast(ctx)

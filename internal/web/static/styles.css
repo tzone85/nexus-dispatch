@@ -381,6 +381,14 @@ button:hover {
 /* ── Badges ───────────────────────────────────────────────────────── */
 .badge { display: inline-block; padding: 0.2rem 0.6rem; border-radius: 12px; font-size: 0.75rem; background: #333; }
 .badge-pending_review { background: #ffc107; color: #000; }
+.badge-conflict_resolution { background: #fd7e14; color: #000; }
+.badge-integration_failure { background: #dc3545; color: #fff; }
+.badge-security_finding { background: #6f42c1; color: #fff; }
+.badge-merge { background: #17a2b8; color: #fff; }
+.approval-item { padding: 0.8rem; margin-bottom: 0.5rem; background: var(--card-bg, #1a1a2e); border-radius: 6px; }
+.approval-head { display: flex; align-items: center; gap: 0.8rem; flex-wrap: wrap; }
+.approval-details { white-space: pre-wrap; font-family: monospace; font-size: 0.85rem; margin: 0.5rem 0 0; opacity: 0.85; max-height: 8rem; overflow: auto; }
+.approval-note { width: 16rem; max-width: 100%; }
 .badge-merge_ready { background: #6f42c1; color: #fff; }
 .badge-warn { background: #ffc107; color: #000; }
 .badge-danger { background: #dc3545; color: #fff; }

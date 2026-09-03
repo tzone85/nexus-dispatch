@@ -1,10 +1,6 @@
 package runtime
 
 import (
-	"fmt"
-	"os"
-	"path/filepath"
-
 	"github.com/tzone85/nexus-dispatch/internal/tmux"
 )
 
@@ -16,26 +12,16 @@ func NewTmuxRunner() *TmuxRunner {
 	return &TmuxRunner{}
 }
 
-// Run starts a tmux session with the prepared execution.
-// It writes setup files (e.g., CLAUDE.md, prompt files) before spawning
-// the session, then propagates critical environment variables into the
-// tmux global environment.
+// Run writes the setup files (CLAUDE.md, prompt, 0600 env file) and starts a
+// detached tmux session running the prepared command. Secrets reach the
+// agent by the command sourcing the env file — never via tmux argv or the
+// tmux global environment; stale global values are cleared first so they
+// cannot shadow the per-session file.
 func (r *TmuxRunner) Run(exec PreparedExecution) error {
-	// Write setup files before spawning so the agent finds them on start.
-	for path, content := range exec.SetupFiles {
-		dir := filepath.Dir(path)
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed to create dir %s: %v\n", dir, err)
-			continue
-		}
-		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed to write %s: %v\n", path, err)
-		}
+	if err := exec.WriteSetupFiles(); err != nil {
+		return err
 	}
-
-	// Propagate critical env vars so tmux sessions pick up fresh values.
-	tmux.PropagateCriticalEnv()
-
+	tmux.ClearStaleCriticalEnv()
 	return tmux.CreateSession(exec.SessionName, exec.WorkDir, exec.Command)
 }
 

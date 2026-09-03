@@ -59,7 +59,7 @@ var safeShellArgPattern = regexp.MustCompile(`^[a-zA-Z0-9._:/@=,+-]+$`)
 
 // QuoteShellArg returns a shell-safe version of the argument using single
 // quotes. If the argument contains only safe characters, it is returned
-// unchanged. Embedded single quotes are escaped with the '\'' idiom.
+// unchanged. Embedded single quotes are escaped with the '\” idiom.
 func QuoteShellArg(arg string) string {
 	if arg == "" {
 		return "''"

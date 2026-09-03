@@ -89,6 +89,9 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 	// 12. DevDB provider (only when configured)
 	checks = append(checks, checkDevDB(cfg))
 
+	// 13. Sandbox: where agent commands run (docker vs. unsandboxed host)
+	checks = append(checks, checkSandbox(cfg, func() bool { return exec.Command("docker", "info").Run() == nil }))
+
 	// Print results
 	okCount, warnCount, failCount := 0, 0, 0
 	for _, c := range checks {

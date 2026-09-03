@@ -174,8 +174,7 @@ runtimes:
             permission_pattern: \[Y/n\]
     claude-code:
         command: claude
-        args:
-            - --dangerously-skip-permissions
+        args: []
         models:
             - opus-4
             - sonnet-4
@@ -186,8 +185,7 @@ runtimes:
             plan_mode_pattern: Plan mode
     codex:
         command: codex
-        args:
-            - --full-auto
+        args: []
         models:
             - o3
             - o4-mini
@@ -221,3 +219,15 @@ methodology:
     tdd: true
     min_coverage_pct: 80
     allow_override: true
+sandbox:
+    mode: auto
+    image: golang:1.26-alpine
+    network: none
+    cpus: "2"
+    memory: 2g
+approvals:
+    require_for:
+        - conflict_resolution
+        - integration_failure
+        - security_finding
+    timeout_action: pause

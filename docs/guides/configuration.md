@@ -371,7 +371,65 @@ runtimes:
       permission_pattern: "\\[Y/n\\]"          # Regex: agent is asking for permission
 ```
 
-**Native runtime (`gemma`):** Built into NXD, requires no external dependencies. Auto-selects for Gemma 4 models. Uses function calling for structured code edits. The `command_allowlist` restricts which shell commands the runtime can execute for safety. The `max_iterations` field limits edit-test cycles to prevent runaway loops.
+**Native runtime (`gemma`):** Built into NXD, requires no external dependencies. Auto-selects for Gemma 4 models. Uses function calling for structured code edits. The `command_allowlist` restricts which commands the runtime can execute; matching is **argv-aware** (the entry's tokens must equal the command's leading tokens — `go test` matches `go test ./...` but not `go testevil`), shell metacharacters are rejected, and so are exec-style flags (`-exec`, `-toolexec`, `find -execdir`), env-var prefixes (`FOO=x cmd`), and any absolute / `~` / `..` path that leaves the worktree. An empty allowlist denies everything. Commands run inside the [sandbox](#sandbox). The `max_iterations` field limits edit-test cycles to prevent runaway loops.
+
+**Runner (`runner: tmux|docker|ssh`):** CLI runtimes run in a tmux session on this host by default. `runner: docker` (with `docker.image`, `docker.network: none|bridge`, allowlisted `docker.extra_flags` such as `--cpus`/`--memory`) or `runner: ssh` (`ssh.host`, `ssh.key_file`, `ssh.remote_dir`) confines the agent instead. The unattended-mode flags (`claude --dangerously-skip-permissions`, `codex --full-auto`) are **no longer in the default args**: NXD appends them automatically only when the runner is docker/ssh; on the host the agent keeps its permission prompts and `nxd doctor` warns "agents run unsandboxed on this host". Secrets (API keys, `env_vars`) never appear in a command line or `ps`: they are written to a 0600 `.nxd-prompts/env.sh` in the worktree that the session sources and deletes.
+
+### sandbox
+
+Where **native tool commands** run: the gemma runtime's `run_command`, the criteria evaluator's `command_succeeds` / `test_passes`, and the investigator's `run_command`.
+
+```yaml
+sandbox:
+  mode: auto                    # auto | docker | host
+  image: golang:1.26-alpine     # container image for the docker sandbox
+  network: none                 # none | bridge
+  cpus: "2"                     # docker --cpus
+  memory: 2g                    # docker --memory
+  extra_mounts: []              # "<worktree-relative-src>:<abs container path>[:ro]"
+  # auto_approve_prompts: false # watchdog auto-answers CLI permission prompts (default: only when sandboxed)
+```
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `mode` | `auto` | `docker`: every command runs as `docker run --rm --network <network> -v <worktree>:/work -w /work --cpus … --memory … --cap-drop ALL --security-opt no-new-privileges <image> <argv>` (argv passed directly — no shell on the host or in the container). `host`: run on this machine (argv exec, no shell). `auto`: docker if `docker info` succeeds (probed once per process), otherwise host **with a loud one-time warning** naming the risk and this override. `docker` fails hard when the daemon is unreachable. |
+| `image` | `golang:1.26-alpine` | **Must contain the toolchain your allowlist needs.** The default covers Go only — a Node/Python/Make project needs an image with those tools (build your own or pick e.g. `node:22-alpine`). |
+| `network` | `none` | Container network. `none` blocks all egress (module downloads must already be vendored/cached inside the worktree); `bridge` allows outbound access. |
+| `cpus`, `memory` | `2`, `2g` | Resource limits passed to `docker run`. |
+| `extra_mounts` | `[]` | Additional bind mounts. Sources are validated to be **worktree-relative** (no absolute paths, `~` or `..`); destinations must be absolute container paths; the only option is `ro`. |
+| `auto_approve_prompts` | unset | Whether the watchdog answers `Y` to a CLI agent's permission prompt. Unset ⇒ `true` for runtimes whose `runner` is docker/ssh, `false` on the host. |
+
+`coverage_above` criteria still run on the host (they need a coverage profile in a temp directory outside the worktree). `nxd doctor` reports the effective mode.
+
+### approvals
+
+The human approval queue. Instead of auto-resolving risky decisions the pipeline records an approval item, pauses the requirement and blocks the story's merge until you decide (`nxd approvals list|approve|reject`, or the dashboard **Approvals** panel), then `nxd resume <req-id>`.
+
+```yaml
+approvals:
+  require_for:                  # which decisions need a human
+    - conflict_resolution       # LLM-resolved or escalated rebase conflicts
+    - integration_failure       # post-merge build failed on the mainline
+    - security_finding          # security gate finding at/above gate_severity
+    # - merge                   # opt-in: every merge waits for approval
+  timeout_action: pause         # what happens while an item is pending (only "pause" today)
+```
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `require_for` | all three shown | Kinds that create an approval item. Remove a kind to let the pipeline auto-proceed for it. `merge` gates every merge on an explicit OK. |
+| `timeout_action` | `pause` | Pending items pause the requirement (`REQ_PAUSED`) rather than expiring; there is no auto-approve. |
+
+Items are persisted as `APPROVAL_REQUESTED` / `APPROVAL_RESOLVED` events (see the event reference).
+
+### investigation
+
+```yaml
+investigation:
+  command_allowlist: ["ls", "find", "wc", "grep", "cat", "head", "tail", "git log", "git status", "git diff", "go build", "go test", "make"]
+```
+
+Commands the investigator (`nxd req` / `nxd plan` on an existing repo) may run. Same argv-aware matcher and sandbox as the native runtime: `cat /etc/passwd`, `cat ~/.aws/credentials`, `find / -name '*.pem'` and `find … -exec` are denied even with `cat`/`find` listed, and an **empty list denies everything**. `read_file` refuses symlinks that resolve outside the repository.
 
 **Detection patterns** are compiled as Go regexps and matched against the last 30 lines of tmux pane output. The Watchdog uses these to determine agent status.
 
@@ -471,7 +529,7 @@ merge:
 runtimes:
   claude-code:
     command: claude
-    args: ["--dangerously-skip-permissions"]
+    args: ["--dangerously-skip-permissions"]   # only safe with runner: docker|ssh — on the host NXD leaves permission prompts on
     models: ["opus-4", "sonnet-4", "haiku-4"]
     detection:
       idle_pattern: "^\\$\\s*$"

@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 )
 
@@ -33,11 +32,28 @@ func (a *CLIAdapter) Name() string { return a.name }
 func (a *CLIAdapter) SupportedModels() []string { return a.models }
 
 // Prepare builds the full command string and environment without executing.
-// This mirrors the logic in CLIRuntime.BuildCommand but returns a
-// PreparedExecution instead of performing I/O directly.
+// Secrets are never placed in the command: the env file (0600, sourced then
+// deleted by the command) and the prompt file are returned as SetupFiles.
 func (a *CLIAdapter) Prepare(cfg SessionConfig) (PreparedExecution, error) {
-	cmdStr := a.command
-	for _, arg := range a.args {
+	return prepareCLIExecution(a.command, a.args, cfg, true)
+}
+
+// prepareCLIExecution is the single builder behind CLIAdapter.Prepare and
+// CLIRuntime.BuildCommand. promptFlag adds "-p" before the prompt argument
+// (Claude Code's non-interactive flag; BuildCommand historically passed the
+// prompt positionally).
+//
+// Resulting command shape:
+//
+//	. ./.nxd-prompts/env.sh && rm -f ./.nxd-prompts/env.sh; unset CLAUDECODE; \
+//	  <command> <args...> --model <m> [-p] "$(cat .nxd-prompts/prompt.txt)" 2>&1 | tee <log>
+//
+// Every interpolated value goes through QuoteShellArg; the env file and the
+// prompt file are referenced by worktree-relative path so the same string is
+// valid under tmux (-c workdir), docker (-w /workspace) and ssh (cd dir).
+func prepareCLIExecution(command string, args []string, cfg SessionConfig, promptFlag bool) (PreparedExecution, error) {
+	cmdStr := command
+	for _, arg := range args {
 		if err := ValidateShellArg(arg); err != nil {
 			return PreparedExecution{}, fmt.Errorf("invalid runtime arg: %w", err)
 		}
@@ -47,10 +63,9 @@ func (a *CLIAdapter) Prepare(cfg SessionConfig) (PreparedExecution, error) {
 		if err := ValidateModelName(cfg.Model); err != nil {
 			return PreparedExecution{}, fmt.Errorf("invalid model name: %w", err)
 		}
-		cmdStr += fmt.Sprintf(" --model %q", cfg.Model)
+		cmdStr += " --model " + QuoteShellArg(cfg.Model)
 	}
 
-	// Combine system prompt and goal into a single prompt string.
 	prompt := cfg.Goal
 	if cfg.SystemPrompt != "" {
 		prompt = cfg.SystemPrompt + "\n\n---\n\n" + cfg.Goal
@@ -58,42 +73,38 @@ func (a *CLIAdapter) Prepare(cfg SessionConfig) (PreparedExecution, error) {
 
 	setupFiles := make(map[string]string)
 
-	// Write prompt to a file and reference it via shell substitution.
-	// Piping via stdin does not work reliably inside tmux detached sessions.
+	// Prompt goes into a file referenced via shell substitution — piping via
+	// stdin does not work reliably inside tmux detached sessions.
 	if prompt != "" && cfg.WorkDir != "" {
-		promptDir := filepath.Join(cfg.WorkDir, ".nxd-prompts")
-		promptFile := filepath.Join(promptDir, "prompt.txt")
-		setupFiles[promptFile] = prompt
-		cmdStr = fmt.Sprintf("%s -p \"$(cat %q)\"", cmdStr, promptFile)
+		setupFiles[filepath.Join(cfg.WorkDir, PromptFileRel)] = prompt
+		if promptFlag {
+			cmdStr += " -p"
+		}
+		cmdStr += ` "$(cat ` + PromptFileRel + `)"`
 	}
 
 	// Tee output to a log file for post-mortem diagnosis.
 	if cfg.LogFile != "" {
-		cmdStr += fmt.Sprintf(" 2>&1 | tee %q", cfg.LogFile)
+		cmdStr += " 2>&1 | tee " + QuoteShellArg(cfg.LogFile)
 	}
 
-	// Build env map: pass through non-Anthropic API keys and session-specific vars.
-	env := make(map[string]string)
-	for _, key := range []string{"OPENAI_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY", "OLLAMA_HOST"} {
-		if val := os.Getenv(key); val != "" {
-			env[key] = val
+	env, err := sessionEnv(cfg.EnvVars)
+	if err != nil {
+		return PreparedExecution{}, err
+	}
+	hasEnvFile := len(env) > 0 && cfg.WorkDir != ""
+	if hasEnvFile {
+		content, err := RenderEnvFile(env)
+		if err != nil {
+			return PreparedExecution{}, err
 		}
+		setupFiles[filepath.Join(cfg.WorkDir, EnvFileRel)] = content
 	}
-	for key, val := range cfg.EnvVars {
-		env[key] = val
-	}
+	cmdStr = envSourcePrefix(hasEnvFile) + cmdStr
 
-	// Prepend env exports and unset CLAUDECODE to prevent nested-session errors.
-	var envExports string
-	for key, val := range env {
-		envExports += fmt.Sprintf("export %s=%q; ", key, val)
-	}
-	cmdStr = envExports + "unset CLAUDECODE; " + cmdStr
-
-	// Add CLAUDE.md to setup files so agents don't brainstorm/plan.
+	// CLAUDE.md stops Claude Code plugins from brainstorming/planning.
 	if cfg.WorkDir != "" {
-		claudeMDPath := filepath.Join(cfg.WorkDir, "CLAUDE.md")
-		setupFiles[claudeMDPath] = nxdMDContent
+		setupFiles[filepath.Join(cfg.WorkDir, "CLAUDE.md")] = nxdMDContent
 	}
 
 	return PreparedExecution{
@@ -104,4 +115,15 @@ func (a *CLIAdapter) Prepare(cfg SessionConfig) (PreparedExecution, error) {
 		LogFile:     cfg.LogFile,
 		SetupFiles:  setupFiles,
 	}, nil
+}
+
+// WriteSetupFiles writes every SetupFiles entry with mode 0600 (they may
+// carry API keys), creating parent directories. Shared by all runners.
+func (pe PreparedExecution) WriteSetupFiles() error {
+	for path, content := range pe.SetupFiles {
+		if err := writeSecretFile(path, content); err != nil {
+			return fmt.Errorf("write setup file %s: %w", path, err)
+		}
+	}
+	return nil
 }

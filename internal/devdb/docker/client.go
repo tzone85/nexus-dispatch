@@ -124,7 +124,7 @@ func (c *Client) CreateContainer(ctx context.Context, spec CreateContainerSpec) 
 			"NetworkMode": spec.Network,
 			"Binds":       []string{spec.VolumeMount + ":/var/lib/postgresql/data"},
 			"PortBindings": map[string]any{
-				"5432/tcp": []map[string]string{{"HostPort": fmt.Sprintf("%d", spec.HostPort)}},
+				"5432/tcp": []map[string]string{{"HostIp": "127.0.0.1", "HostPort": fmt.Sprintf("%d", spec.HostPort)}},
 			},
 		},
 		"ExposedPorts": map[string]any{"5432/tcp": map[string]any{}},

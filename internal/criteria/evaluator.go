@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/tzone85/nexus-dispatch/internal/sanitize"
 )
@@ -24,6 +25,42 @@ import (
 // host filesystem.
 func resolveWorkDirPath(workDir, rel string) (string, error) {
 	return sanitize.SafeJoin(workDir, rel)
+}
+
+// CommandExecutor runs argv (no shell) inside workDir and returns the
+// combined output; a non-zero exit is reported as a non-nil error. The default
+// executes on the host; resume.go installs the configured sandbox via
+// SetCommandExecutor(runtime.ArgvExecutor(sandbox)) so command_succeeds and
+// test_passes run wherever the agent's own commands run.
+type CommandExecutor func(ctx context.Context, workDir string, argv []string) ([]byte, error)
+
+var (
+	commandExecutorMu sync.RWMutex
+	commandExecutor   CommandExecutor = hostCommandExecutor
+)
+
+func hostCommandExecutor(ctx context.Context, workDir string, argv []string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.Dir = workDir
+	return cmd.CombinedOutput()
+}
+
+// SetCommandExecutor installs the executor used by command_succeeds and
+// test_passes. nil restores the host executor.
+func SetCommandExecutor(e CommandExecutor) {
+	commandExecutorMu.Lock()
+	defer commandExecutorMu.Unlock()
+	if e == nil {
+		e = hostCommandExecutor
+	}
+	commandExecutor = e
+}
+
+func runCriterionCommand(ctx context.Context, workDir string, argv []string) ([]byte, error) {
+	commandExecutorMu.RLock()
+	e := commandExecutor
+	commandExecutorMu.RUnlock()
+	return e(ctx, workDir, argv)
 }
 
 // Evaluate runs a single criterion check against the given working directory.
@@ -190,9 +227,7 @@ func evalFileContains(workDir string, c Criterion) Result {
 
 func evalTestPasses(ctx context.Context, workDir string, c Criterion) Result {
 	args := normalizeGoTestArgs(c.Target)
-	cmd := exec.CommandContext(ctx, "go", append([]string{"test"}, args...)...)
-	cmd.Dir = workDir
-	out, err := cmd.CombinedOutput()
+	out, err := runCriterionCommand(ctx, workDir, append([]string{"go", "test"}, args...))
 	if err != nil {
 		return Result{
 			Criterion: c, Passed: false,
@@ -330,9 +365,7 @@ func evalCommandSucceeds(ctx context.Context, workDir string, c Criterion) Resul
 		cleanup := cleanupGoBuildArtifacts(workDir)
 		defer cleanup()
 	}
-	cmd := exec.CommandContext(ctx, parts[0], parts[1:]...)
-	cmd.Dir = workDir
-	out, err := cmd.CombinedOutput()
+	out, err := runCriterionCommand(ctx, workDir, parts)
 	if err != nil {
 		return Result{
 			Criterion: c, Passed: false,
