@@ -105,8 +105,8 @@ func runResume(cmd *cobra.Command, args []string) error {
 
 	// Sandbox for native tool commands (gemma run_command, criteria,
 	// investigator): docker when available, else host with a loud warning.
-	if _, err := runtime.InstallSandbox(s.Config.Sandbox, func(msg string) { fmt.Fprintln(out, msg) }); err != nil {
-		return fmt.Errorf("sandbox: %w", err)
+	if err := installSandbox(s.Config, out); err != nil {
+		return err
 	}
 
 	// Load plugins.

