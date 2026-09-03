@@ -1,9 +1,11 @@
 .PHONY: build test lint clean install release release-snapshot vet check \
         fmt tidy bench coverage-html watch vulncheck doctor notice \
-        install-mempalace mempalace-check setup
+        install-mempalace mempalace-check setup e2e leak-check schema-drift
 
 BINARY=nxd
-VERSION?=0.1.0
+# Default to the nearest tag (or 0.0.0-<sha> when untagged) so a local
+# `make build` reports something meaningful from `nxd version`.
+VERSION?=$(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS=-ldflags "-X main.version=$(VERSION)"
 INSTALL_DIR?=$(shell go env GOPATH)/bin
 
@@ -93,9 +95,24 @@ notice:
 	  > NOTICE 2>/dev/null && \
 	  echo "wrote NOTICE ($$(wc -l < NOTICE | tr -d ' ') lines)"
 
+# `make e2e` runs the build-tagged end-to-end lane (replay + dry-run
+# scenarios; live scenarios skip when Ollama is not reachable).
+e2e:
+	go test -tags e2e -count=1 -timeout 300s ./test/...
+
+# `make leak-check` runs scripts/check-leaks.sh. The forbidden terms live in
+# the git-ignored scripts/.leak-terms (see CONTRIBUTING.md).
+leak-check:
+	bash scripts/check-leaks.sh
+
+# `make schema-drift` verifies migrations/001_init.sql matches the schema
+# embedded in internal/state/sqlite.go. `--write` regenerates the file.
+schema-drift:
+	bash scripts/check-schema-drift.sh
+
 # `make check` is the single command CI / contributors should run before
-# pushing: vet + race tests + build.
-check: vet test build
+# pushing: vet + race tests + build + schema drift.
+check: vet test build schema-drift
 
 lint:
 	golangci-lint run ./...
