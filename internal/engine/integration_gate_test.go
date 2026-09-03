@@ -11,6 +11,15 @@ import (
 	"github.com/tzone85/nexus-dispatch/internal/state"
 )
 
+// integrationStores returns a file-backed projection store: the fixer runs in
+// a goroutine concurrently with the monitor, and a ":memory:" sqlite DSN
+// hands each pooled connection its own empty database.
+func integrationStores(t *testing.T) (state.EventStore, state.ProjectionStore) {
+	t.Helper()
+	es, ps := newControllerTestStores(t)
+	return es, ps
+}
+
 func newIntegrationMonitor(t *testing.T, es state.EventStore, ps state.ProjectionStore, pause bool, buildErr error, client llm.Client) *Monitor {
 	t.Helper()
 	cfg := config.DefaultConfig()
@@ -35,7 +44,7 @@ func TestDefaultConfig_PausesOnIntegrationFailure(t *testing.T) {
 // build used to be logged and then dispatchNextWave branched the next wave
 // from a red mainline. With the default config the requirement is paused.
 func TestCheckIntegration_PausesRequirementOnRedMainline(t *testing.T) {
-	es, ps := capacityTestStores(t)
+	es, ps := integrationStores(t)
 	seedCapacityStory(t, es, ps, "REQ-INT", "s-int")
 	client := &recordingFixClient{called: make(chan struct{})}
 	m := newIntegrationMonitor(t, es, ps, true, errors.New("main.go:3: undefined: Foo"), client)
@@ -71,7 +80,7 @@ func TestCheckIntegration_PausesRequirementOnRedMainline(t *testing.T) {
 }
 
 func TestCheckIntegration_ConfigOffKeepsGoing(t *testing.T) {
-	es, ps := capacityTestStores(t)
+	es, ps := integrationStores(t)
 	seedCapacityStory(t, es, ps, "REQ-INT", "s-int")
 	client := &recordingFixClient{called: make(chan struct{})}
 	m := newIntegrationMonitor(t, es, ps, false, errors.New("boom"), client)
@@ -94,7 +103,7 @@ func TestCheckIntegration_ConfigOffKeepsGoing(t *testing.T) {
 }
 
 func TestCheckIntegration_GreenBuildIsNoop(t *testing.T) {
-	es, ps := capacityTestStores(t)
+	es, ps := integrationStores(t)
 	seedCapacityStory(t, es, ps, "REQ-INT", "s-int")
 	m := newIntegrationMonitor(t, es, ps, true, nil, llm.NewReplayClient())
 	if m.checkIntegration(context.Background(), "s-int", "", t.TempDir()) {
@@ -106,7 +115,7 @@ func TestCheckIntegration_GreenBuildIsNoop(t *testing.T) {
 }
 
 func TestCheckIntegration_NoFixerSkipsBuild(t *testing.T) {
-	es, ps := capacityTestStores(t)
+	es, ps := integrationStores(t)
 	cfg := config.DefaultConfig()
 	reg, _ := runtime.NewRegistry(map[string]config.RuntimeConfig{})
 	m := NewMonitor(reg, NewWatchdog(WatchdogConfig{StuckThresholdS: 120}, es), nil, nil, nil, cfg, es, ps)
@@ -121,7 +130,7 @@ func TestCheckIntegration_NoFixerSkipsBuild(t *testing.T) {
 // only log when the Tech Lead call failed — the operator saw nothing in the
 // event log. It now records the failure with the build error.
 func TestRunIntegrationFix_LLMFailureIsRecorded(t *testing.T) {
-	es, ps := capacityTestStores(t)
+	es, ps := integrationStores(t)
 	seedCapacityStory(t, es, ps, "REQ-INT", "s-int")
 	fixer := NewTechLeadFixer(llm.NewErrorClient(errors.New("ollama down")), "model", 256, es, ps)
 
@@ -140,7 +149,7 @@ func TestRunIntegrationFix_LLMFailureIsRecorded(t *testing.T) {
 }
 
 func TestRunIntegrationFix_SuggestionInPayload(t *testing.T) {
-	es, ps := capacityTestStores(t)
+	es, ps := integrationStores(t)
 	seedCapacityStory(t, es, ps, "REQ-INT", "s-int")
 	fixer := NewTechLeadFixer(llm.NewReplayClient(llm.CompletionResponse{Content: "  align the Handler interface  "}), "model", 256, es, ps)
 
@@ -155,7 +164,7 @@ func TestRunIntegrationFix_SuggestionInPayload(t *testing.T) {
 }
 
 func TestRunIntegrationFix_UnknownStory(t *testing.T) {
-	es, ps := capacityTestStores(t)
+	es, ps := integrationStores(t)
 	fixer := NewTechLeadFixer(llm.NewReplayClient(), "model", 256, es, ps)
 	if _, err := fixer.runIntegrationFix(context.Background(), "nope", "build broke"); err == nil {
 		t.Fatal("expected error for unknown story")

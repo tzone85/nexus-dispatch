@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -781,10 +782,15 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 		m.mergeMu.Lock()
 		defer m.mergeMu.Unlock()
 		mergeStart := time.Now()
-		result, err := m.rebaseAndMerge(ctx, storyID, branch, repoDir, ag.WorktreePath)
+		result, err := m.rebaseAndMerge(ctx, storyID, attemptID, branch, repoDir, ag.WorktreePath)
 
 		if err != nil {
 			EmitStageCompleted(m.eventStore, m.projStore, "monitor", storyID, "merge", "failure", mergeStart)
+			// Post-rebase QA already reset the story with feedback.
+			if errors.Is(err, errPostRebaseQA) {
+				log.Printf("[pipeline] %s not merged: %v", storyID, err)
+				return
+			}
 			// Transient Ollama capacity/overload during LLM conflict
 			// resolution — pause cleanly without burning an escalation tier.
 			if m.pauseIfCapacity(storyID, "merge/conflict-resolution", err) {
@@ -842,7 +848,7 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 //
 // If a ConflictResolver is configured, rebase conflicts are automatically
 // resolved via LLM instead of failing immediately.
-func (m *Monitor) rebaseAndMerge(ctx context.Context, storyID, branch, repoDir, worktreePath string) (MergeResult, error) {
+func (m *Monitor) rebaseAndMerge(ctx context.Context, storyID, attemptID, branch, repoDir, worktreePath string) (MergeResult, error) {
 	baseBranch := m.baseBranch(repoDir)
 
 	log.Printf("[pipeline] fetching %s and rebasing %s for %s", baseBranch, branch, storyID)
@@ -863,6 +869,7 @@ func (m *Monitor) rebaseAndMerge(ctx context.Context, storyID, branch, repoDir, 
 		upstream = baseBranch
 	}
 
+	resolvedBefore := conflictsResolvedCount(m.eventStore, storyID)
 	if m.conflictResolver != nil {
 		// Use LLM-powered conflict resolution during rebase.
 		if err := m.conflictResolver.RebaseWithResolution(ctx, storyID, worktreePath, upstream); err != nil {
@@ -873,6 +880,12 @@ func (m *Monitor) rebaseAndMerge(ctx context.Context, storyID, branch, repoDir, 
 		if err := nxdgit.RebaseOnto(worktreePath, upstream); err != nil {
 			return MergeResult{}, fmt.Errorf("rebase onto %s: %w", baseBranch, err)
 		}
+	}
+
+	// If the resolver rewrote files, the tree QA approved is gone — re-verify
+	// before merging (rebase_qa.go). A clean rebase skips this.
+	if err := m.postRebaseGate(ctx, storyID, attemptID, worktreePath, resolvedBefore); err != nil {
+		return MergeResult{}, err
 	}
 
 	log.Printf("[pipeline] rebase succeeded for %s, proceeding to merge", storyID)
