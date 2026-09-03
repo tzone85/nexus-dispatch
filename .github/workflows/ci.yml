@@ -202,14 +202,8 @@ jobs:
     # git fixture repos, llm.ReplayClient / DryRunClient instead of Ollama.
     # Live scenarios (build tag `live`) are not compiled here; anything that
     # calls RequireOllama skips cleanly when :11434 is not listening.
-    #
-    # NON-BLOCKING FOR NOW: the replay scenarios assert exact story counts
-    # (e.g. "expected 3 stories, got 5") that predate the planner's
-    # emit_integration_story / emit_scribe_story defaults. Until the fixtures
-    # set both flags false in test/helpers_test.go NewTestConfig (or update
-    # their expectations) this lane reports but does not gate merges. Flip
-    # continue-on-error to false once `go test -tags e2e ./test/...` is green.
-    continue-on-error: true
+    # Blocking: the fixtures disable emit_integration_story / emit_scribe_story
+    # so exact story counts hold, and story ids are read from the plan.
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1

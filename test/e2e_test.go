@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/tzone85/nexus-dispatch/internal/config"
@@ -134,6 +135,10 @@ func TestE2E_FullPipeline(t *testing.T) {
 	)
 
 	cfg := config.DefaultConfig()
+	// The fixture plan has exactly three stories; keep the planner from
+	// appending its synthetic integration/scribe stories.
+	cfg.Planning.EmitIntegrationStory = false
+	cfg.Planning.EmitScribeStory = false
 	reqID := "r-e2e-001"
 
 	// ==========================================
@@ -268,8 +273,10 @@ func TestE2E_FullPipeline(t *testing.T) {
 		t.Fatalf("expected 3 completed stories, got %d", len(completed))
 	}
 
-	// Every story should have status = "merged".
-	for _, storyID := range []string{"s-e2e-1", "s-e2e-2", "s-e2e-3"} {
+	// Every story should have status = "merged". The planner namespaces
+	// fixture ids under the requirement, so take the ids from the plan.
+	for _, planned := range planResult.Stories {
+		storyID := planned.ID
 		story, err := ps.GetStory(storyID)
 		if err != nil {
 			t.Fatalf("get story %s: %v", storyID, err)
@@ -345,7 +352,7 @@ func TestE2E_FullPipeline(t *testing.T) {
 	if len(assignEvents) != 3 {
 		t.Fatalf("expected 3 assign events, got %d", len(assignEvents))
 	}
-	if assignEvents[0].StoryID != "s-e2e-1" {
+	if !strings.HasSuffix(assignEvents[0].StoryID, "s-e2e-1") {
 		t.Fatalf("expected first assigned story to be s-e2e-1, got %s", assignEvents[0].StoryID)
 	}
 }

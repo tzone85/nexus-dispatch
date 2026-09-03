@@ -109,6 +109,10 @@ func NewTestConfig(stateDir string, opts ...ConfigOption) config.Config {
 	cfg.Workspace.StateDir = stateDir
 	cfg.Merge.Mode = "local"
 	cfg.Merge.AutoMerge = true
+	// The e2e/replay scenarios assert exact story counts from their fixtures;
+	// the planner's synthetic integration/scribe stories would skew them.
+	cfg.Planning.EmitIntegrationStory = false
+	cfg.Planning.EmitScribeStory = false
 	for _, opt := range opts {
 		opt(&cfg)
 	}
