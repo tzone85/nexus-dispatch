@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/tzone85/nexus-dispatch/internal/sanitize"
@@ -68,7 +69,12 @@ func NewSSHRunner(cfg SSHConfig) (*SSHRunner, error) {
 	}, nil
 }
 
+// sshEnvFileRel is the remote-relative path of the staged env file.
+const sshEnvFileRel = ".nxd-env.sh"
+
 // Run uploads setup files and starts the execution on the remote machine.
+// The environment is shipped as a 0600 env file (scp) that the remote
+// command sources and deletes; no secret is ever part of the ssh argv.
 func (r *SSHRunner) Run(pe PreparedExecution) error {
 	// H13: validate SessionName before using it in remote paths to prevent
 	// path traversal on the SSH target (e.g. SessionName="../../etc").
@@ -77,47 +83,64 @@ func (r *SSHRunner) Run(pe PreparedExecution) error {
 	}
 	remoteWorkDir := filepath.Join(r.remoteDir, pe.SessionName)
 
-	// Create remote directory.
-	if err := r.sshExec("mkdir", "-p", remoteWorkDir); err != nil {
-		return fmt.Errorf("create remote dir: %w", err)
-	}
-
 	// H14: per-session staging dir so parallel SSH agents do not race on
-	// the same /tmp/<basename> path. The previous code wrote
-	// os.TempDir()+filepath.Base(localPath); two agents shipping the same
-	// CLAUDE.md would clobber each other before scp, leaking one session's
-	// prompt/env into the other.
+	// the same /tmp/<basename> path.
 	stageDir, err := os.MkdirTemp("", "nxd-ssh-"+pe.SessionName+"-")
 	if err != nil {
 		return fmt.Errorf("create stage dir: %w", err)
 	}
 	defer func() { _ = os.RemoveAll(stageDir) }()
 
-	// Upload setup files via scp.
+	// Setup files keep their path relative to the local WorkDir so the
+	// command's relative references (.nxd-prompts/prompt.txt, env.sh) resolve.
+	uploads := map[string]string{} // remote relative path -> local staged path
 	for localPath, content := range pe.SetupFiles {
-		// H11: write setup files mode 0o600 — they may carry env-var values
-		// (API keys, tokens). Mode 0o644 leaves them world-readable on
-		// shared dev hosts for the duration of the SCP.
-		tmpFile := filepath.Join(stageDir, filepath.Base(localPath))
-		if err := os.WriteFile(tmpFile, []byte(content), 0o600); err != nil {
+		rel := remoteRelPath(pe.WorkDir, localPath)
+		staged := filepath.Join(stageDir, filepath.FromSlash(rel))
+		if err := writeSecretFile(staged, content); err != nil {
 			return fmt.Errorf("write temp file: %w", err)
 		}
+		uploads[rel] = staged
+	}
+	if len(pe.Env) > 0 {
+		content, err := RenderEnvFile(pe.Env)
+		if err != nil {
+			return err
+		}
+		staged := filepath.Join(stageDir, sshEnvFileRel)
+		if err := writeSecretFile(staged, content); err != nil {
+			return fmt.Errorf("write env file: %w", err)
+		}
+		uploads[sshEnvFileRel] = staged
+	}
 
-		remotePath := filepath.Join(remoteWorkDir, filepath.Base(localPath))
-		if err := r.scpTo(tmpFile, remotePath); err != nil {
-			return fmt.Errorf("scp setup file %s: %w", localPath, err)
+	// Create every remote directory in one round trip.
+	dirs := map[string]bool{remoteWorkDir: true}
+	for rel := range uploads {
+		dirs[filepath.Join(remoteWorkDir, filepath.Dir(rel))] = true
+	}
+	mkdirArgs := []string{"mkdir", "-p"}
+	for _, d := range sortedKeys(dirs) {
+		mkdirArgs = append(mkdirArgs, d)
+	}
+	if err := r.sshExec(mkdirArgs...); err != nil {
+		return fmt.Errorf("create remote dir: %w", err)
+	}
+
+	for _, rel := range sortedKeys(uploads) {
+		if err := r.scpTo(uploads[rel], filepath.Join(remoteWorkDir, rel)); err != nil {
+			return fmt.Errorf("scp setup file %s: %w", rel, err)
 		}
 	}
 
-	// Build env exports.
-	var envExports string
-	for key, val := range pe.Env {
-		envExports += fmt.Sprintf("export %s=%q; ", key, val)
+	// Execute command remotely in background (nohup). Every interpolated
+	// value is single-quoted via QuoteShellArg.
+	prefix := ""
+	if len(pe.Env) > 0 {
+		prefix = ". ./" + sshEnvFileRel + " && rm -f ./" + sshEnvFileRel + "; "
 	}
-
-	// Execute command remotely in background (nohup + disown).
-	remoteCmd := fmt.Sprintf("cd %s && %s nohup sh -c %q > /dev/null 2>&1 &",
-		remoteWorkDir, envExports, pe.Command)
+	remoteCmd := fmt.Sprintf("cd %s && %snohup sh -c %s > /dev/null 2>&1 &",
+		remoteWorkDir, prefix, QuoteShellArg(pe.Command))
 
 	if err := r.sshExec("sh", "-c", remoteCmd); err != nil {
 		return fmt.Errorf("ssh exec: %w", err)
@@ -126,9 +149,29 @@ func (r *SSHRunner) Run(pe PreparedExecution) error {
 	return nil
 }
 
+// remoteRelPath returns localPath relative to workDir (slash-separated), or
+// just its basename when it is not inside workDir.
+func remoteRelPath(workDir, localPath string) string {
+	if workDir != "" {
+		if rel, err := filepath.Rel(workDir, localPath); err == nil && rel != "." && !strings.HasPrefix(rel, "..") {
+			return filepath.ToSlash(rel)
+		}
+	}
+	return filepath.Base(localPath)
+}
+
+func sortedKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 // Terminate kills the remote process by session ID pattern.
 func (r *SSHRunner) Terminate(sessionID string) error {
-	cmd := fmt.Sprintf("pkill -f %q 2>/dev/null || true", sessionID)
+	cmd := "pkill -f " + QuoteShellArg(sessionID) + " 2>/dev/null || true"
 	return r.sshExec("sh", "-c", cmd)
 }
 

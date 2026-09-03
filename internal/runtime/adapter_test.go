@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -137,8 +138,15 @@ func TestCLIAdapter_Prepare_EnvVars(t *testing.T) {
 	if exec.Env["CUSTOM_VAR"] != "custom_value" {
 		t.Error("env should contain custom var")
 	}
-	if !strings.Contains(exec.Command, "CUSTOM_VAR") {
-		t.Error("command should export custom env var")
+	if strings.Contains(exec.Command, "CUSTOM_VAR") || strings.Contains(exec.Command, "custom_value") {
+		t.Errorf("secrets must not be in the command string: %s", exec.Command)
+	}
+	envFile := exec.SetupFiles[filepath.Join(dir, EnvFileRel)]
+	if !strings.Contains(envFile, "export CUSTOM_VAR=custom_value") {
+		t.Errorf("env file must carry the variable: %q", envFile)
+	}
+	if !strings.HasPrefix(exec.Command, ". ./.nxd-prompts/env.sh && rm -f ./.nxd-prompts/env.sh; unset CLAUDECODE; ") {
+		t.Errorf("command must source then delete the env file: %s", exec.Command)
 	}
 }
 

@@ -2,12 +2,9 @@ package runtime
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"regexp"
 
 	"github.com/tzone85/nexus-dispatch/internal/config"
-	"github.com/tzone85/nexus-dispatch/internal/tmux"
 )
 
 // Detection holds compiled regex patterns for detecting runtime states
@@ -26,7 +23,11 @@ type CLIRuntime struct {
 	args      []string
 	models    []string
 	detection Detection
+	runner    Runner
 }
+
+// newRunnerFromConfig is swappable in tests.
+var newRunnerFromConfig = NewRunnerFromConfig
 
 // Registry maps runtime names to their CLIRuntime instances, loaded from
 // configuration at startup. Native runtimes (e.g. Gemma) are stored
@@ -76,12 +77,22 @@ func NewRegistry(cfg map[string]config.RuntimeConfig) (*Registry, error) {
 			detection.PlanModePattern = p
 		}
 
+		// Select the execution backend from runtimes.<name>.runner
+		// (tmux default, docker, ssh). Previously the factory was never
+		// called and every runtime silently ran in tmux.
+		runner, err := newRunnerFromConfig(rc)
+		if err != nil {
+			return nil, fmt.Errorf("runtime %s: %w", name, err)
+		}
 		reg.runtimes[name] = &CLIRuntime{
-			name:      name,
-			command:   rc.Command,
-			args:      rc.Args,
+			name:    name,
+			command: rc.Command,
+			// EffectiveArgs appends the CLI's unattended-mode flag only when
+			// the runner is docker/ssh; on the host the agent keeps prompting.
+			args:      rc.EffectiveArgs(),
 			models:    rc.Models,
 			detection: detection,
+			runner:    runner,
 		}
 	}
 
@@ -146,119 +157,59 @@ Follow these rules strictly:
 6. **Stay focused on the assigned story only.** Do not refactor unrelated code.
 `
 
-// BuildCommand constructs the full shell command string for the CLI runtime.
-// It writes the prompt to a file in cfg.WorkDir and returns the assembled
-// command including environment exports. Extracted from Spawn for testability.
+// BuildCommand constructs the full shell command string for the CLI runtime
+// and writes the prompt and env files (0600) into cfg.WorkDir. The returned
+// string never contains a secret value — see envfile.go.
 func (c *CLIRuntime) BuildCommand(cfg SessionConfig) (string, error) {
-	cmdStr := c.command
-	for _, arg := range c.args {
-		if err := ValidateShellArg(arg); err != nil {
-			return "", fmt.Errorf("invalid runtime arg: %w", err)
-		}
-		cmdStr += " " + QuoteShellArg(arg)
+	pe, err := c.prepare(cfg)
+	if err != nil {
+		return "", err
 	}
-	if cfg.Model != "" {
-		if err := ValidateModelName(cfg.Model); err != nil {
-			return "", fmt.Errorf("invalid model name: %w", err)
-		}
-		cmdStr += fmt.Sprintf(" --model %q", cfg.Model)
+	if err := pe.WriteSetupFiles(); err != nil {
+		return "", err
 	}
-
-	// Write the combined prompt (system context + goal) to a file and pass
-	// it via shell argument with proper quoting. Piping via stdin does not
-	// work reliably inside tmux detached sessions.
-	prompt := cfg.Goal
-	if cfg.SystemPrompt != "" {
-		prompt = cfg.SystemPrompt + "\n\n---\n\n" + cfg.Goal
-	}
-	if prompt != "" {
-		promptDir := filepath.Join(cfg.WorkDir, ".nxd-prompts")
-		_ = os.MkdirAll(promptDir, 0o755)
-		promptFile := filepath.Join(promptDir, "prompt.txt")
-		if err := os.WriteFile(promptFile, []byte(prompt), 0o644); err != nil {
-			return "", fmt.Errorf("write prompt file: %w", err)
-		}
-		// Pass the prompt file contents as a shell argument using $(...) to
-		// avoid stdin pipe issues in tmux.
-		cmdStr = fmt.Sprintf("%s \"$(cat %q)\"", cmdStr, promptFile)
-	}
-
-	// Tee output to a log file so we can inspect it after the session exits.
-	if cfg.LogFile != "" {
-		cmdStr += fmt.Sprintf(" 2>&1 | tee %q", cfg.LogFile)
-	}
-
-	// Pass through non-Anthropic API keys and unset CLAUDECODE to prevent
-	// "nested session" errors when NXD itself is running inside Claude Code.
-	// ANTHROPIC_API_KEY is intentionally NOT exported: Claude Code agents
-	// should authenticate via the user's OAuth session (Max subscription)
-	// rather than the pay-per-token API. NXD's own internal LLM calls
-	// (planner, reviewer, QA) still use the API key from the parent process.
-	// If an agent runtime genuinely needs the Anthropic API key, it can be
-	// configured explicitly via EnvVars in the session config.
-	var envExports string
-	for _, key := range []string{
-		"OPENAI_API_KEY",
-		"GOOGLE_API_KEY",
-		"GEMINI_API_KEY",
-		"OLLAMA_HOST",
-	} {
-		if val := os.Getenv(key); val != "" {
-			envExports += fmt.Sprintf("export %s=%q; ", key, val)
-		}
-	}
-	// Also pass through any env vars from the session config.
-	for key, val := range cfg.EnvVars {
-		envExports += fmt.Sprintf("export %s=%q; ", key, val)
-	}
-	cmdStr = envExports + "unset CLAUDECODE; " + cmdStr
-
-	return cmdStr, nil
+	return pe.Command, nil
 }
 
-// Spawn creates a new tmux session running the CLI tool with the given
-// configuration. Output is tee'd to a log file for post-mortem diagnosis.
+// prepare builds the PreparedExecution for cfg without I/O.
+func (c *CLIRuntime) prepare(cfg SessionConfig) (PreparedExecution, error) {
+	return prepareCLIExecution(c.command, c.args, cfg, false)
+}
+
+// Spawn prepares the session and delegates to the runtime's Runner (tmux by
+// default; docker/ssh when runtimes.<name>.runner says so). The runner writes
+// the setup files (CLAUDE.md, prompt, env) — unconditionally on every spawn,
+// because a reused worktree may have stale content — and starts the session.
 func (c *CLIRuntime) Spawn(cfg SessionConfig) error {
-	// Write CLAUDE.md unconditionally to the worktree to suppress
-	// brainstorming/planning plugins that would override -p prompt
-	// instructions. This must happen on every spawn, not just the first
-	// worktree creation, because reused worktrees may have stale content.
-	if cfg.WorkDir != "" {
-		claudeMDPath := filepath.Join(cfg.WorkDir, "CLAUDE.md")
-		if err := os.WriteFile(claudeMDPath, []byte(nxdMDContent), 0o644); err != nil {
-			// Non-fatal: log and continue so the agent can still run.
-			fmt.Fprintf(os.Stderr, "warning: failed to write CLAUDE.md to %s: %v\n", cfg.WorkDir, err)
-		}
-	}
-
-	// Propagate critical API keys and host overrides (OLLAMA_HOST,
-	// ANTHROPIC_API_KEY, OPENAI_API_KEY) from the current process into
-	// the tmux global environment. This ensures agents spawned in tmux
-	// sessions pick up freshly-sourced values from ~/.zshrc rather than
-	// inheriting stale keys from a long-running tmux server.
-	tmux.PropagateCriticalEnv()
-
-	cmdStr, err := c.BuildCommand(cfg)
+	pe, err := c.prepare(cfg)
 	if err != nil {
 		return err
 	}
-
-	return tmux.CreateSession(cfg.SessionName, cfg.WorkDir, cmdStr)
+	return c.runner.Run(pe)
 }
 
-// Terminate destroys the tmux session identified by sessionID.
+// Terminate stops the session via the runner.
 func (c *CLIRuntime) Terminate(sessionID string) error {
-	return tmux.KillSession(sessionID)
+	return c.runner.Terminate(sessionID)
 }
 
-// SendInput sends a line of text to the tmux session identified by sessionID.
+// SendInput sends a line of text to the session via the runner.
 func (c *CLIRuntime) SendInput(sessionID string, input string) error {
-	return tmux.SendKeys(sessionID, input)
+	return c.runner.SendInput(sessionID, input)
 }
 
-// ReadOutput captures the last N lines of terminal output from the session.
+// ReadOutput captures the last N lines of output via the runner.
 func (c *CLIRuntime) ReadOutput(sessionID string, lines int) (string, error) {
-	return tmux.CapturePaneOutput(sessionID, lines)
+	return c.runner.ReadOutput(sessionID, lines)
+}
+
+// Runner returns the execution backend this runtime delegates to.
+func (c *CLIRuntime) Runner() Runner { return c.runner }
+
+// WithRunner replaces the execution backend (tests inject fakes).
+func (c *CLIRuntime) WithRunner(r Runner) *CLIRuntime {
+	c.runner = r
+	return c
 }
 
 // DetectStatus reads recent output from the session and matches it against
@@ -266,7 +217,7 @@ func (c *CLIRuntime) ReadOutput(sessionID string, lines int) (string, error) {
 func (c *CLIRuntime) DetectStatus(sessionID string) (AgentStatus, error) {
 	output, err := c.ReadOutput(sessionID, 20)
 	if err != nil {
-		if !tmux.SessionExists(sessionID) {
+		if !c.runner.IsAlive(sessionID) {
 			return StatusTerminated, nil
 		}
 		return StatusWorking, err

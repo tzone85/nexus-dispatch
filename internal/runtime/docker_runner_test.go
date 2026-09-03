@@ -17,8 +17,8 @@ func TestNewDockerRunner_Defaults(t *testing.T) {
 	if r.image != "test:latest" {
 		t.Errorf("image = %q, want test:latest", r.image)
 	}
-	if r.network != "host" {
-		t.Errorf("network = %q, want host (default)", r.network)
+	if r.network != "none" {
+		t.Errorf("network = %q, want none (default — host networking is never allowed)", r.network)
 	}
 }
 
@@ -98,8 +98,17 @@ func TestDockerRunner_Run_BuildsCorrectArgs(t *testing.T) {
 	if !strings.Contains(joined, "-w /workspace") {
 		t.Error("should set working directory to /workspace")
 	}
-	if !strings.Contains(joined, "API_KEY=secret") {
-		t.Error("should pass environment variables")
+	if strings.Contains(joined, "secret") {
+		t.Errorf("secret value must not appear in docker argv: %s", joined)
+	}
+	if !strings.Contains(joined, "--env-file "+filepath.Join(pe.WorkDir, ".nxd-prompts", "docker.env")) {
+		t.Errorf("environment must be passed via --env-file: %s", joined)
+	}
+	if !strings.Contains(joined, "--cap-drop ALL") || !strings.Contains(joined, "--security-opt no-new-privileges") {
+		t.Errorf("container must drop capabilities: %s", joined)
+	}
+	if _, statErr := os.Stat(filepath.Join(pe.WorkDir, ".nxd-prompts", "docker.env")); !os.IsNotExist(statErr) {
+		t.Errorf("env file must be removed after docker run returns: %v", statErr)
 	}
 	if !strings.Contains(joined, "nxd-agent:latest") {
 		t.Error("should use the configured image")

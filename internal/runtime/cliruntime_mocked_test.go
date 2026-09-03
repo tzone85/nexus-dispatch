@@ -40,6 +40,7 @@ func mkTestRegistry(t *testing.T) *Registry {
 //   - CLAUDE.md is written into the worktree (suppresses
 //     brainstorming/planning plugin overrides).
 //   - tmux.CreateSession is invoked with the right args.
+//
 // Was 0% before this PR.
 func TestCLIRuntime_Spawn_WritesClaudeMDAndCallsTmux(t *testing.T) {
 	reg := mkTestRegistry(t)

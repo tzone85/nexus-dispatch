@@ -3,6 +3,7 @@ package runtime
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -252,10 +253,28 @@ func TestSSHRunner_Run_EnvExports(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	// The last command should contain the env export
+	// No secret in any ssh/scp argv; the env travels as a staged file that
+	// the remote command sources and deletes.
+	for _, c := range commands {
+		if strings.Contains(c, "my_value") {
+			t.Errorf("secret value leaked into argv: %q", c)
+		}
+	}
 	lastCmd := commands[len(commands)-1]
-	if !strings.Contains(lastCmd, "MY_KEY") {
-		t.Errorf("last command = %q, should contain env var export", lastCmd)
+	if !strings.Contains(lastCmd, ". ./.nxd-env.sh && rm -f ./.nxd-env.sh;") {
+		t.Errorf("last command = %q, should source+delete the env file", lastCmd)
+	}
+	if !strings.Contains(lastCmd, `nohup sh -c 'claude -p '\''test'\'''`) {
+		t.Errorf("command must be single-quoted via QuoteShellArg: %q", lastCmd)
+	}
+	scpFound := false
+	for _, c := range commands {
+		if strings.HasPrefix(c, "scp ") && strings.HasSuffix(c, "user@host:/tmp/nxd-agent/test-ssh-env/.nxd-env.sh") {
+			scpFound = true
+		}
+	}
+	if !scpFound {
+		t.Errorf("env file must be uploaded via scp: %v", commands)
 	}
 }
 
@@ -493,5 +512,78 @@ func TestSSHRunner_ScpTo_Fails(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "scp:") {
 		t.Errorf("error = %v, expected 'scp:'", err)
+	}
+}
+
+// Setup files keep their worktree-relative path on the remote so the
+// command's relative references (.nxd-prompts/prompt.txt) resolve, and the
+// command itself is single-quoted rather than %q-escaped.
+func TestSSHRunner_Run_PreservesRelativeSetupPathsAndQuotes(t *testing.T) {
+	var commands []string
+	original := sshExecCommand
+	sshExecCommand = func(name string, args ...string) *exec.Cmd {
+		commands = append(commands, name+" "+strings.Join(args, " "))
+		return exec.Command("true")
+	}
+	defer func() { sshExecCommand = original }()
+
+	work := t.TempDir()
+	r, _ := NewSSHRunner(SSHConfig{Host: "u@h", RemoteDir: "/opt/nxd"})
+	pe := PreparedExecution{
+		Command:     `claude -p "$(cat .nxd-prompts/prompt.txt)"`,
+		WorkDir:     work,
+		SessionName: "sess",
+		SetupFiles: map[string]string{
+			filepath.Join(work, ".nxd-prompts", "prompt.txt"): "goal",
+			filepath.Join(work, "CLAUDE.md"):                  "md",
+			"/elsewhere/outside.txt":                          "o",
+		},
+	}
+	if err := r.Run(pe); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	joined := strings.Join(commands, "\n")
+	for _, want := range []string{
+		"mkdir -p /opt/nxd/sess /opt/nxd/sess/.nxd-prompts",
+		"u@h:/opt/nxd/sess/.nxd-prompts/prompt.txt",
+		"u@h:/opt/nxd/sess/CLAUDE.md",
+		"u@h:/opt/nxd/sess/outside.txt",
+		`nohup sh -c 'claude -p "$(cat .nxd-prompts/prompt.txt)"' > /dev/null 2>&1 &`,
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("commands missing %q:\n%s", want, joined)
+		}
+	}
+	if strings.Contains(joined, `\"`) {
+		t.Errorf("no %%q escaping expected:\n%s", joined)
+	}
+}
+
+func TestSSHRunner_Terminate_QuotesSessionID(t *testing.T) {
+	var got string
+	original := sshExecCommand
+	sshExecCommand = func(name string, args ...string) *exec.Cmd {
+		got = strings.Join(args, " ")
+		return exec.Command("true")
+	}
+	defer func() { sshExecCommand = original }()
+	r, _ := NewSSHRunner(SSHConfig{Host: "u@h"})
+	if err := r.Terminate("my session"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "pkill -f 'my session' 2>/dev/null || true") {
+		t.Errorf("terminate cmd = %q", got)
+	}
+}
+
+func TestRemoteRelPath(t *testing.T) {
+	if got := remoteRelPath("/w", "/w/a/b.txt"); got != "a/b.txt" {
+		t.Errorf("inside = %q", got)
+	}
+	if got := remoteRelPath("/w", "/x/b.txt"); got != "b.txt" {
+		t.Errorf("outside = %q", got)
+	}
+	if got := remoteRelPath("", "/x/b.txt"); got != "b.txt" {
+		t.Errorf("no workdir = %q", got)
 	}
 }

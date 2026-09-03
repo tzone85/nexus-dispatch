@@ -184,7 +184,19 @@ func TestBuildCommand_WithEnvVars(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildCommand: %v", err)
 	}
-	if !strings.Contains(cmd, "MY_TOKEN") {
-		t.Error("command should export custom env vars")
+	if strings.Contains(cmd, "MY_TOKEN") || strings.Contains(cmd, "tok123") {
+		t.Errorf("secrets must not be in the command string: %s", cmd)
+	}
+	envPath := filepath.Join(dir, ".nxd-prompts", "env.sh")
+	info, err := os.Stat(envPath)
+	if err != nil {
+		t.Fatalf("env file must be written: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("env file mode = %o, want 0600", info.Mode().Perm())
+	}
+	data, _ := os.ReadFile(envPath)
+	if !strings.Contains(string(data), "export MY_TOKEN=tok123") {
+		t.Errorf("env file content = %q", data)
 	}
 }
