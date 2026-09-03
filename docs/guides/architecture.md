@@ -341,6 +341,40 @@ Overall = (Quality * 0.50) + (Reliability * 0.30) + (Speed * 0.20)
 
 Scores influence future routing — high-performing agents get prioritized for similar tasks.
 
+## Story Attempts
+
+A story can be dispatched many times — review reset, QA failure, manager retry, crash recovery. Each dispatch is one **attempt**: one agent, one worktree run, one `STORY_STARTED` → `STORY_COMPLETED` lifecycle. The Dispatcher mints an attempt id per assignment (`<story-id>-a<ULID>`, `engine/attempt_id.go`) and the Executor and Monitor stamp it onto every event they emit for that run via `state.NewEventForAttempt` (`Event.AttemptID`, payload `attempt_id`): `AGENT_SPAWNED`, `STORY_ASSIGNED`, `STORY_STARTED`, `STORY_PROGRESS`, `STORY_COMPLETED`, and the pipeline's `STORY_QA_FAILED` / `STORY_REVIEW_FAILED` / `STORY_ESCALATED` / `STORY_INTEGRATION_FAILED`.
+
+Why it matters: before attempt ids every event was keyed by story id alone, so a `STORY_COMPLETED` left behind by attempt 1 looked identical to attempt 2 finishing and the monitor would run review/QA against a worktree the new agent had barely touched. `nativeAgentCompleted` now filters on the current attempt; an empty attempt id (legacy logs, agents recovered from pre-attempt state) falls back to the old any-completion behaviour. `EventFilter.AttemptID` and `engine.AttemptTracker` (`attempts.go`) reconstruct per-attempt history — start, end, outcome, duration — for `nxd timeline` and the dashboard.
+
+Related decisions made at the same time:
+
+- **Latest-wins escalation tier.** `EscalationMachine.CurrentTier` and routing use the latest `to_tier`, not the maximum ever reached, so a manager retry that lowers the tier really lowers it. Retries are reset with `STORY_RESET` (never a synthetic `STORY_REVIEW_FAILED`), so the new attempt starts with its full retry budget.
+- **Awaiting merge is not done** (`engine/wave_completion.go`). Stories in `pr_submitted` or `merge_ready` are neither completed nor dispatchable: dependents stay blocked, and when nothing else can run the monitor emits `REQ_PENDING_REVIEW` (payload `open_pr_story_ids`, `blocked_story_ids`) instead of `REQ_COMPLETED` or `PIPELINE_STALLED`. Merge the PRs, then `nxd resume`.
+- **QA after conflict resolution** (`engine/rebase_qa.go`). QA runs before the rebase; if the conflict resolver rewrote files during it (`STORY_PROGRESS action=conflicts_resolved` count grew), QA runs again on the rebased tree and a red result resets the story (`STORY_QA_FAILED` source `post_rebase_qa`) instead of merging unverified code.
+- **Post-merge integration gate** (`engine/integration_gate.go`). After each merge the base branch is built; a failure is `STORY_INTEGRATION_FAILED` (with the Tech Lead's `fix_hint`) and, unless `qa.pause_on_integration_failure: false`, pauses the requirement so the next wave is not branched from a red mainline.
+
+## Sandbox and Approvals
+
+### Command sandbox (`internal/runtime/sandbox.go`)
+
+Everything that executes a command on the operator's behalf — the gemma runtime's `run_command`, the criteria evaluator's `command_succeeds` / `test_passes`, the investigator's `run_command` — goes through one `CommandSandbox` interface: `Exec(ctx, workDir, argv, timeout)`. Argv only; there is no shell on the host or in the container, so quoting can never be re-interpreted. Two implementations:
+
+| Mode | What runs |
+|------|-----------|
+| `HostSandbox` | `exec.CommandContext` in the worktree (the pre-sandbox behaviour and the fallback) |
+| `DockerSandbox` | `docker run --rm --network <none\|bridge> -v <worktree>:/work -w /work --cpus … --memory … --cap-drop ALL --security-opt no-new-privileges [extra ro mounts] <image> <argv…>` — a fresh container per command |
+
+`InstallSandbox(cfg)` picks by `sandbox.mode`: `docker` fails hard when the daemon is unreachable, `host` is explicit, and `auto` (default) probes `docker info` once per process and falls back to host with a loud one-time warning that names the override. `nxd resume` / `nxd req` install it before anything runs (`cli/sandbox_install.go`, wiring test). Before a command reaches the sandbox it must pass the **argv-aware allowlist** (`runtime/allowlist.go`): an allowlist entry's tokens must equal the command's leading tokens; exec-style flags, env-var prefixes, shell metacharacters and any absolute / `~` / `..` path leaving the worktree are rejected; an empty allowlist denies everything.
+
+CLI agents are confined separately by the **runner** (`runtimes.<name>.runner: tmux|docker|ssh`): docker/ssh runners get the unattended flags appended (`--dangerously-skip-permissions`, `--full-auto`), secrets arrive through a 0600 env file rather than argv, and the docker runner always adds `--cap-drop ALL --security-opt no-new-privileges` with `--network none` by default.
+
+### Human approval queue (`internal/approvals`)
+
+Risky pipeline decisions are recorded, not auto-resolved. `approvals.Queue` is the single writer: `Request(reqID, storyID, kind, summary, details)` persists `APPROVAL_REQUESTED` (item id = ULID, so items sort by creation time) and `Resolve(id, approved|rejected, decidedBy, note)` persists `APPROVAL_RESOLVED`; the in-memory index is rebuilt from those events on `Load`, so the resume loop, the CLI and the dashboard all see the same queue through the event store. Kinds: `conflict_resolution`, `integration_failure`, `security_finding`, `merge`.
+
+The monitor calls the nil-safe hooks in `engine/approval_hooks.go` at its decision points: `RequestConflictApproval` after an LLM-resolved or escalated rebase conflict, `RequestIntegrationApproval` after a failed post-merge build, `RequestSecurityApproval` when the security gate trips, `RequestMergeApproval` when `merge` is in `approvals.require_for`. Each request is deduplicated per story+kind, pauses the requirement (`REQ_PAUSED`), and `MergeBlockedByApproval` keeps the story from merging while any item for it is pending; a rejected item resets the story (`ApprovalRejected`). Humans decide with `nxd approvals list|approve|reject` or the dashboard's **Approvals** panel (`GET /api/approvals`, `approve_approval` / `reject_approval` WebSocket commands), then `nxd resume <req-id>`. `approvals.timeout_action` is `pause` — items never expire or auto-approve.
+
 ## Data Flow Summary
 
 ```
