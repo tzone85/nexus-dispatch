@@ -253,6 +253,10 @@ func convertToolResultToManagerAction(tr ManagerToolResult) ManagerAction {
 		children := make([]SplitChildConfig, len(tr.Split.NewStories))
 		for i, ns := range tr.Split.NewStories {
 			children[i] = SplitChildConfig{
+				// The split_story tool schema has no suffix field, so mint a
+				// deterministic one; ValidateSplit rejects duplicate (empty)
+				// suffixes and child ids are derived as <parent>-<suffix>.
+				Suffix:      splitChildSuffix(i),
 				Title:       ns.Title,
 				Description: ns.Description,
 				Complexity:  ns.Complexity,
@@ -269,6 +273,22 @@ func convertToolResultToManagerAction(tr ManagerToolResult) ManagerAction {
 	}
 
 	return ManagerAction{}
+}
+
+// splitChildSuffix returns the deterministic id suffix for the i-th child of
+// a tool-call split: a, b, …, z, aa, ab, … (spreadsheet-column style), so
+// children read as <parent>-a, <parent>-b and never collide.
+func splitChildSuffix(i int) string {
+	var out []byte
+	n := i
+	for {
+		out = append([]byte{byte('a' + n%26)}, out...)
+		n = n/26 - 1
+		if n < 0 {
+			break
+		}
+	}
+	return string(out)
 }
 
 // mapEscalationActionToManagerAction converts an escalation tool action string
