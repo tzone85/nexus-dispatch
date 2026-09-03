@@ -182,3 +182,35 @@ func TestAttemptTracker_LastAttempt(t *testing.T) {
 		t.Errorf("last attempt outcome = %q, want success", last.Outcome)
 	}
 }
+
+// A STORY_RESET (manager retry, rejected approval, recovery) closes the
+// running attempt as an error carrying the reset reason.
+func TestAttemptTracker_ResetClosesAttemptAsError(t *testing.T) {
+	es := setupAttemptStore(t)
+	storyID := "s-reset"
+	es.Append(state.NewEvent(state.EventStoryStarted, "agent-1", storyID, map[string]any{"tier": 1, "role": "senior"}))
+	es.Append(state.NewEvent(state.EventStoryReset, "approvals", storyID, map[string]any{"reason": "approval rejected by alice"}))
+	es.Append(state.NewEvent(state.EventStoryStarted, "agent-2", storyID, map[string]any{"tier": 1, "role": "senior"}))
+
+	attempts, err := NewAttemptTracker(es).ListAttempts(storyID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(attempts) != 2 {
+		t.Fatalf("attempts = %d, want 2", len(attempts))
+	}
+	first := attempts[0]
+	if first.Outcome != "error" || first.Error != "approval rejected by alice" || first.Tier != 1 || first.Role != "senior" {
+		t.Errorf("attempt 1 = %+v", first)
+	}
+	if first.EndedAt.Before(first.StartedAt) || first.Duration < 0 {
+		t.Errorf("attempt 1 timing = start %v end %v", first.StartedAt, first.EndedAt)
+	}
+	if attempts[1].Outcome != "in_progress" || attempts[1].Number != 2 {
+		t.Errorf("attempt 2 = %+v", attempts[1])
+	}
+	last, err := NewAttemptTracker(es).LastAttempt(storyID)
+	if err != nil || last == nil || last.Number != 2 {
+		t.Errorf("LastAttempt = %+v (err=%v)", last, err)
+	}
+}
