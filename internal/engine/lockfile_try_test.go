@@ -119,11 +119,11 @@ func TestForceClearLock(t *testing.T) {
 			t.Error("lock file must be left in place")
 		}
 	})
-	t.Run("own pid is cleared", func(t *testing.T) {
+	t.Run("own live pid is refused too", func(t *testing.T) {
 		dir := t.TempDir()
 		writeLockInfo(t, dir, os.Getpid())
-		if err := ForceClearLock(dir); err != nil {
-			t.Fatal(err)
+		if err := ForceClearLock(dir); err == nil {
+			t.Fatal("a live holder is a live holder, even when it is us")
 		}
 	})
 }

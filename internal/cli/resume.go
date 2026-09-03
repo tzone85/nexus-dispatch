@@ -43,19 +43,37 @@ func newResumeCmd() *cobra.Command {
 		RunE:  runResume,
 	}
 	cmd.Flags().Bool("godmode", false, "skip permission prompts on LLM calls (fully autonomous)")
-	cmd.Flags().Bool("force", false, "Force override of lock file if another instance appears stuck")
+	cmd.Flags().Bool("force", false, "Clear a stale lock file whose holder process is dead (refused while the holder is alive)")
 	cmd.Flags().Bool("dry-run", false, "Simulate LLM responses for pipeline testing (no API calls)")
+	cmd.Flags().String("repo", "", "Repository to run in (required when the requirement was submitted from a different repo)")
 	cmd.SilenceUsage = true
 	return cmd
 }
 
 func runResume(cmd *cobra.Command, args []string) error {
 	cfgPath, _ := cmd.Flags().GetString("config")
-	s, err := loadStores(cfgPath)
+
+	// --force: clear a stale lock (dead holder / unreadable file) before we
+	// try to acquire. A live holder is refused — deleting its lock would let
+	// two pipelines run against the same state.
+	if forceFlag, _ := cmd.Flags().GetBool("force"); forceFlag {
+		cfg, err := loadConfig(cfgPath)
+		if err != nil {
+			return err
+		}
+		if err := engine.ForceClearLock(cfg.Workspace.StateDir); err != nil {
+			return err
+		}
+	}
+
+	// Acquire the pipeline lock BEFORE opening stores so the projection
+	// rebuild (if the watermark is behind) can never race another instance.
+	s, lock, err := loadStoresLocked(cfgPath)
 	if err != nil {
 		return err
 	}
 	defer s.Close()
+	defer func() { _ = lock.Release() }()
 
 	// Auto-select the requirement if only one active (non-archived, non-completed) exists.
 	var reqID string
@@ -95,11 +113,24 @@ func runResume(cmd *cobra.Command, args []string) error {
 
 	out := cmd.OutOrStdout()
 
+	// Verify the requirement exists and belongs to this repository. A
+	// requirement submitted from /path/a must not be resumed from /path/b:
+	// worktrees, merges and the completion gate would all run against the
+	// wrong tree. --repo lets an operator run it from elsewhere on purpose.
+	req, err := s.Proj.GetRequirement(reqID)
+	if err != nil {
+		return fmt.Errorf("requirement not found: %w", err)
+	}
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("determine working directory: %w", err)
 	}
-	if err := PreflightForRun(cwd, s.Config); err != nil {
+	repoFlag, _ := cmd.Flags().GetString("repo")
+	repoDir, err := resolveRepoDir(req, cwd, repoFlag)
+	if err != nil {
+		return err
+	}
+	if err := PreflightForRun(repoDir, s.Config); err != nil {
 		return err
 	}
 
@@ -144,24 +175,7 @@ func runResume(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Acquire pipeline lock to prevent concurrent runs.
-	stateDir := expandHome(s.Config.Workspace.StateDir)
-	forceFlag, _ := cmd.Flags().GetBool("force")
-	if forceFlag {
-		// Force removes any existing lock file before acquiring.
-		_ = os.Remove(filepath.Join(stateDir, "nxd.lock"))
-	}
-	lock, err := engine.AcquireLock(stateDir)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = lock.Release() }()
-
-	// Detect repo path early for recovery (also used later for execution).
-	repoDir, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("get working directory: %w", err)
-	}
+	stateDir := s.Config.Workspace.StateDir
 
 	// Resolve the merge base branch once, here, so every downstream consumer
 	// (the local merger, the monitor's rebase, the post-merge pull, and the
@@ -181,12 +195,6 @@ func runResume(cmd *cobra.Command, args []string) error {
 			fmt.Fprintf(out, "  - %s: %s\n", a.StoryID, a.Description)
 		}
 		fmt.Fprintln(out)
-	}
-
-	// Verify the requirement exists
-	req, err := s.Proj.GetRequirement(reqID)
-	if err != nil {
-		return fmt.Errorf("requirement not found: %w", err)
 	}
 
 	// If paused, emit REQ_RESUMED event to transition back to planned
@@ -266,7 +274,7 @@ func runResume(cmd *cobra.Command, args []string) error {
 
 	// Initialize Bayesian router for adaptive routing.
 	bayesianRouter := routing.NewBayesianRouter()
-	priorsPath := filepath.Join(expandHome(s.Config.Workspace.StateDir), "bayesian_priors.json")
+	priorsPath := filepath.Join(stateDir, "bayesian_priors.json")
 	if err := bayesianRouter.Load(priorsPath); err != nil {
 		// No prior data yet — start with defaults. This is the normal path
 		// on first run or after clearing state.
@@ -318,7 +326,7 @@ func runResume(cmd *cobra.Command, args []string) error {
 	// runtime (executor stage) and the post-execution pipeline (reviewer /
 	// merger stages) so all three categories land in metrics.jsonl with the
 	// correct stage label for the reporter.
-	stateDirForMetrics := expandHome(s.Config.Workspace.StateDir)
+	stateDirForMetrics := stateDir
 	metricsRecorder := metrics.NewRecorder(filepath.Join(stateDirForMetrics, "metrics.jsonl"))
 
 	// Provide LLM client for native runtimes (Gemma)
@@ -328,7 +336,10 @@ func runResume(cmd *cobra.Command, args []string) error {
 		nativeClient = llm.NewDryRunClient(100 * time.Millisecond)
 		fmt.Fprintf(out, "[DRY RUN] Using simulated LLM responses\n")
 	} else {
-		nativeClient, _ = buildLLMClient(s.Config.Models.Junior.Provider)
+		nativeClient, err = buildLLMClient(s.Config.Models.Junior.Provider)
+		if err != nil {
+			return fmt.Errorf("build LLM client for native runtime (provider %q): %w", s.Config.Models.Junior.Provider, err)
+		}
 	}
 	if nativeClient != nil {
 		// Wrap with metrics so every native LLM call gets recorded with the
@@ -341,13 +352,19 @@ func runResume(cmd *cobra.Command, args []string) error {
 	}
 
 	// Initialize artifact store for per-story persistence.
-	stateDir0 := expandHome(s.Config.Workspace.StateDir)
+	stateDir0 := s.Config.Workspace.StateDir
 	artifactDir := filepath.Join(stateDir0, "artifacts")
-	artStore, _ := artifact.NewStore(artifactDir)
+	artStore, err := artifact.NewStore(artifactDir)
+	if err != nil {
+		return fmt.Errorf("open artifact store %s: %w", artifactDir, err)
+	}
 
 	// Initialize scratchboard for cross-agent knowledge sharing.
 	sbPath := filepath.Join(stateDir0, "scratchboards", reqID+".jsonl")
-	sb, _ := scratchboard.New(sbPath)
+	sb, err := scratchboard.New(sbPath)
+	if err != nil {
+		return fmt.Errorf("open scratchboard %s: %w", sbPath, err)
+	}
 
 	// Initialize periodic controller for stuck agent detection.
 	controller := engine.NewController(s.Config.Controller, nil, s.Events, s.Proj)
@@ -421,8 +438,13 @@ func runResume(cmd *cobra.Command, args []string) error {
 		llmClient, llmErr = buildLLMClient(s.Config.Models.Senior.Provider, godmode)
 	}
 	if llmErr != nil {
-		log.Printf("Warning: LLM client unavailable, skipping code review: %v", llmErr)
+		log.Printf("Warning: LLM client (provider %q) unavailable, skipping code review: %v", s.Config.Models.Senior.Provider, llmErr)
 	} else {
+		// The executor wraps the native client in a semaphore; the shared
+		// pipeline client (reviewer, conflict resolver, gates, doc generator)
+		// must respect the same runtime concurrency so a single-GPU Ollama is
+		// never hit by review + execution calls at once.
+		llmClient = wrapSharedClient(s.Config, llmClient)
 		// Reuse the metrics recorder created earlier so executor + reviewer
 		// + merger entries all land in the same metrics.jsonl with distinct
 		// stage labels.
@@ -610,6 +632,63 @@ func runResume(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+// resolveRepoDir decides which repository resume runs in. When the
+// requirement recorded a repo_path it must match the current repository
+// (symlinks resolved) unless --repo names it explicitly, in which case --repo
+// is used. Requirements without a recorded path (legacy) run in cwd or --repo.
+func resolveRepoDir(req state.Requirement, cwd, repoFlag string) (string, error) {
+	target := cwd
+	if repoFlag != "" {
+		abs, err := filepath.Abs(repoFlag)
+		if err != nil {
+			return "", fmt.Errorf("resolve --repo %q: %w", repoFlag, err)
+		}
+		if !dirExists(abs) {
+			return "", fmt.Errorf("--repo %s is not a directory", abs)
+		}
+		target = abs
+	}
+	if req.RepoPath == "" {
+		return target, nil
+	}
+	if samePath(req.RepoPath, target) {
+		return target, nil
+	}
+	if repoFlag != "" {
+		return "", fmt.Errorf("requirement %s belongs to %s, but --repo is %s", req.ID, req.RepoPath, target)
+	}
+	return "", fmt.Errorf("requirement %s belongs to %s; run from that repo or pass --repo %s",
+		req.ID, req.RepoPath, req.RepoPath)
+}
+
+// samePath reports whether a and b name the same directory after symlink
+// resolution. Paths that cannot be resolved are compared cleaned.
+func samePath(a, b string) bool {
+	ra, errA := filepath.EvalSymlinks(a)
+	rb, errB := filepath.EvalSymlinks(b)
+	if errA != nil || errB != nil {
+		return filepath.Clean(a) == filepath.Clean(b)
+	}
+	return filepath.Clean(ra) == filepath.Clean(rb)
+}
+
+// wrapSharedClient limits the shared pipeline LLM client to the native
+// runtime's configured concurrency (default 1), mirroring what the executor
+// does for the per-agent client. nil stays nil.
+func wrapSharedClient(cfg config.Config, client llm.Client) llm.Client {
+	if client == nil {
+		return nil
+	}
+	concurrency := 1
+	for _, rt := range cfg.Runtimes {
+		if rt.Native && rt.Concurrency > 0 {
+			concurrency = rt.Concurrency
+			break
+		}
+	}
+	return llm.NewSemaphoreClient(client, concurrency)
 }
 
 // budgetWarnPctOrDefault mirrors the guard's default warning threshold (80%)

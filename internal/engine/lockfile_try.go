@@ -66,7 +66,7 @@ func ForceClearLock(stateDir string) error {
 	case err != nil:
 		// Corrupt or empty lock file: nothing identifies a holder; clear it.
 		return removeLock(lockPath)
-	case isProcessAlive(info.PID) && info.PID != os.Getpid():
+	case isProcessAlive(info.PID):
 		return fmt.Errorf("refusing to force-clear %s: holder pid %d is still alive (started %s); stop it first",
 			lockPath, info.PID, info.StartedAt.Format(time.RFC3339))
 	default:

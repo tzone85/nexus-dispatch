@@ -85,11 +85,14 @@ func runReq(cmd *cobra.Command, args []string) error {
 	}
 
 	cfgPath, _ := cmd.Flags().GetString("config")
-	s, err := loadStores(cfgPath)
+	// Acquire the pipeline lock before opening stores so the projection
+	// rebuild (if behind) can never race a concurrent instance.
+	s, lock, err := loadStoresLocked(cfgPath)
 	if err != nil {
 		return err
 	}
 	defer s.Close()
+	defer func() { _ = lock.Release() }()
 
 	out := cmd.OutOrStdout()
 
@@ -123,13 +126,7 @@ func runReq(cmd *cobra.Command, args []string) error {
 	// Make plugin providers available to buildLLMClient.
 	activePluginProviders = pm.Providers
 
-	// Acquire pipeline lock to prevent concurrent runs.
-	stateDir := expandHome(s.Config.Workspace.StateDir)
-	lock, err := engine.AcquireLock(stateDir)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = lock.Release() }()
+	stateDir := s.Config.Workspace.StateDir
 
 	// Determine LLM client — --godmode flag takes precedence over config
 	godmode, _ := cmd.Flags().GetBool("godmode")
@@ -321,6 +318,16 @@ func runReq(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("open /dev/null: %w", err)
 		}
 		child.Stdin = devNull
+
+		// The child runs `nxd resume`, which takes the same pipeline lock.
+		// While we hold it the child would see a live holder (us) and refuse,
+		// so release before spawning. Release is idempotent; the deferred
+		// call becomes a no-op.
+		if err := lock.Release(); err != nil {
+			lf.Close()
+			devNull.Close()
+			return fmt.Errorf("release pipeline lock before daemonizing: %w", err)
+		}
 
 		if err := child.Start(); err != nil {
 			lf.Close()
