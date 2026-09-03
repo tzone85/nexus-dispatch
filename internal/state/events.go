@@ -143,7 +143,13 @@ type Event struct {
 	Timestamp time.Time `json:"timestamp"`
 	AgentID   string    `json:"agent_id"`
 	StoryID   string    `json:"story_id,omitempty"`
-	Payload   []byte    `json:"payload,omitempty"`
+	// AttemptID identifies one dispatch of a story (one agent run). Every
+	// re-dispatch of the same story gets a fresh attempt id, so consumers can
+	// tell "attempt 2 completed" from a stale "attempt 1 completed". Empty on
+	// events written before attempts were tracked and on story-level events
+	// that are not tied to a single run.
+	AttemptID string `json:"attempt_id,omitempty"`
+	Payload   []byte `json:"payload,omitempty"`
 }
 
 // DecodePayload unmarshals a JSON-encoded event payload into a map.
@@ -190,4 +196,23 @@ func NewEvent(eventType EventType, agentID, storyID string, data map[string]any)
 		StoryID:   storyID,
 		Payload:   payload,
 	}
+}
+
+// NewEventForAttempt is NewEvent plus attempt stamping: the attempt id is set
+// on the Event struct (so EventFilter.AttemptID can select it) AND copied into
+// the payload under "attempt_id" (so JSON consumers that only look at payloads
+// — the dashboard, timeline, reports — see it too). An empty attemptID makes
+// this identical to NewEvent, which keeps legacy call sites and old logs valid.
+func NewEventForAttempt(eventType EventType, agentID, storyID, attemptID string, data map[string]any) Event {
+	if attemptID == "" {
+		return NewEvent(eventType, agentID, storyID, data)
+	}
+	stamped := make(map[string]any, len(data)+1)
+	for k, v := range data {
+		stamped[k] = v
+	}
+	stamped["attempt_id"] = attemptID
+	evt := NewEvent(eventType, agentID, storyID, stamped)
+	evt.AttemptID = attemptID
+	return evt
 }

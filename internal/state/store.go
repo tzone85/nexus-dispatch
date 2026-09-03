@@ -7,8 +7,11 @@ type EventFilter struct {
 	Type    EventType
 	AgentID string
 	StoryID string
-	Limit   int
-	After   time.Time
+	// AttemptID, when non-empty, selects only events stamped with that
+	// attempt (see Event.AttemptID). Legacy events with no attempt never match.
+	AttemptID string
+	Limit     int
+	After     time.Time
 }
 
 // EventStore defines the interface for an append-only event log.

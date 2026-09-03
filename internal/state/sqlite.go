@@ -952,7 +952,6 @@ func (s *SQLiteStore) projectAgentStatus(evt Event, payload map[string]any, stat
 	return nil
 }
 
-
 // InsertAgent inserts an agent record directly into the agents table.
 // Convenience for tests and direct seeding; live runs populate the table via
 // the AGENT_SPAWNED projection (projectAgentSpawned).

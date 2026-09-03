@@ -115,6 +115,9 @@ func (fs *FileStore) readAndFilter(filter EventFilter) ([]Event, error) {
 		if filter.StoryID != "" && evt.StoryID != filter.StoryID {
 			continue
 		}
+		if filter.AttemptID != "" && evt.AttemptID != filter.AttemptID {
+			continue
+		}
 		if !filter.After.IsZero() && !evt.Timestamp.After(filter.After) {
 			continue
 		}
