@@ -76,3 +76,65 @@ func TestResume_WiresBudgetGuard(t *testing.T) {
 		}
 	}
 }
+
+// TestResume_WiresApprovalQueue: the human approval queue only gates the
+// pipeline if runResume loads it from the event log, attaches it to the
+// monitor, and reconciles rejected approvals before dispatch.
+func TestResume_WiresApprovalQueue(t *testing.T) {
+	src, err := os.ReadFile("resume.go")
+	if err != nil {
+		t.Fatalf("read resume.go: %v", err)
+	}
+	code := string(src)
+	for _, want := range []string{
+		"approvals.Load(s.Events)",
+		"monitor.SetApprovalQueue(approvalQueue)",
+		"engine.ReconcileRejectedApprovals(approvalQueue, s.Events, s.Proj, reqID)",
+	} {
+		if !strings.Contains(code, want) {
+			t.Errorf("resume.go must wire the approval queue: missing %q", want)
+		}
+	}
+}
+
+// TestResume_WiresWatchdogAutoApprove: without this the watchdog would
+// auto-answer permission prompts of unsandboxed host agents.
+func TestResume_WiresWatchdogAutoApprove(t *testing.T) {
+	src, err := os.ReadFile("resume.go")
+	if err != nil {
+		t.Fatalf("read resume.go: %v", err)
+	}
+	if !strings.Contains(string(src), "AutoApprovePrompts: s.Config.AutoApprovePrompts") {
+		t.Error("resume.go must pass config.AutoApprovePrompts into the WatchdogConfig")
+	}
+}
+
+// TestResume_WiresReviewerDiffCap: review.max_diff_bytes is dead config unless
+// the constructed reviewer receives it.
+func TestResume_WiresReviewerDiffCap(t *testing.T) {
+	src, err := os.ReadFile("resume.go")
+	if err != nil {
+		t.Fatalf("read resume.go: %v", err)
+	}
+	if !strings.Contains(string(src), "WithMaxDiffBytes(s.Config.Review.MaxDiffBytes)") {
+		t.Error("resume.go must apply review.max_diff_bytes to the reviewer")
+	}
+}
+
+// TestResume_CompletedSetMatchesMonitor: a manual resume must use the same
+// "done" rule as the monitor's auto-resume (merged/split only). Counting
+// pr_submitted as complete dispatched dependents against a base branch that
+// lacked their parent's changes.
+func TestResume_CompletedSetMatchesMonitor(t *testing.T) {
+	src, err := os.ReadFile("resume.go")
+	if err != nil {
+		t.Fatalf("read resume.go: %v", err)
+	}
+	code := string(src)
+	if !strings.Contains(code, "completed := engine.CompletedStories(stories)") {
+		t.Error("resume.go must build the completed set with engine.CompletedStories")
+	}
+	if strings.Contains(code, `story.Status == "pr_submitted"`) {
+		t.Error("resume.go must not treat pr_submitted as completed")
+	}
+}

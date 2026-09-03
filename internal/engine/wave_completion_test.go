@@ -209,3 +209,28 @@ func TestDispatchNextWave_StallWithoutOpenPRs(t *testing.T) {
 		t.Fatal("no open PR → no REQ_PENDING_REVIEW")
 	}
 }
+
+// TestCompletedStories is the exported rule `nxd resume` uses to rebuild the
+// completed set: merged and split only.
+func TestCompletedStories(t *testing.T) {
+	got := CompletedStories([]state.Story{
+		{ID: "m", Status: "merged"},
+		{ID: "s", Status: "split"},
+		{ID: "pr", Status: "pr_submitted"},
+		{ID: "mr", Status: "merge_ready"},
+		{ID: "d", Status: "draft"},
+		{ID: "ip", Status: "in_progress"},
+	})
+	want := map[string]bool{"m": true, "s": true}
+	if len(got) != len(want) {
+		t.Fatalf("completed = %v, want %v", got, want)
+	}
+	for id := range want {
+		if !got[id] {
+			t.Errorf("%s must be completed", id)
+		}
+	}
+	if len(CompletedStories(nil)) != 0 {
+		t.Fatal("no stories → empty (non-nil) set")
+	}
+}

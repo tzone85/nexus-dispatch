@@ -88,6 +88,15 @@ func classifyStories(stories []state.Story) waveProgress {
 	return p
 }
 
+// CompletedStories returns the DAG's notion of "done" for a requirement's
+// stories — merged or split — as the completed set the dispatcher expects.
+// `nxd resume` uses it so a manual resume and the monitor's auto-resume agree:
+// a pr_submitted / merge_ready story is NOT complete (its code is not on the
+// base branch yet) and must not unblock its dependents.
+func CompletedStories(stories []state.Story) map[string]bool {
+	return classifyStories(stories).completed
+}
+
 // emitPendingReview records that the requirement is waiting on open PRs.
 // The payload uses req_id (not id) on purpose: REQ_PENDING_REVIEW with an
 // "id" flips the requirement into the plan-approval pending_review status,

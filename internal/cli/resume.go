@@ -8,10 +8,12 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/tzone85/nexus-dispatch/internal/agent"
+	"github.com/tzone85/nexus-dispatch/internal/approvals"
 	"github.com/tzone85/nexus-dispatch/internal/artifact"
 	"github.com/tzone85/nexus-dispatch/internal/codegraph"
 	"github.com/tzone85/nexus-dispatch/internal/config"
@@ -219,6 +221,22 @@ func runResume(cmd *cobra.Command, args []string) error {
 
 	fmt.Fprintf(out, "Resuming requirement: %s (%s)\n", req.Title, req.Status)
 
+	// Human approval queue (conflict resolutions, integration failures,
+	// security findings, gated merges). Rebuilt from the event log so this
+	// process sees decisions made from `nxd approvals` / the dashboard. A
+	// rejected approval on a story that is waiting to merge resets it to
+	// draft here, so it is re-dispatched below instead of parked forever.
+	approvalQueue, err := approvals.Load(s.Events)
+	if err != nil {
+		return fmt.Errorf("load approvals: %w", err)
+	}
+	if reset := engine.ReconcileRejectedApprovals(approvalQueue, s.Events, s.Proj, reqID); len(reset) > 0 {
+		fmt.Fprintf(out, "Approvals: %d rejected — reset to draft: %s\n", len(reset), strings.Join(reset, ", "))
+	}
+	if pending := approvalQueue.Pending(reqID); len(pending) > 0 {
+		fmt.Fprintf(out, "Approvals: %d pending (nxd approvals list --req %s)\n", len(pending), reqID)
+	}
+
 	// Load all stories for this requirement
 	stories, err := s.Proj.ListStories(state.StoryFilter{ReqID: reqID})
 	if err != nil {
@@ -235,13 +253,11 @@ func runResume(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("rebuild dependency graph: %w", err)
 	}
 
-	// Determine completed stories and max wave number.
-	completed := make(map[string]bool)
+	// Determine completed stories (merged/split only — same rule as the
+	// monitor's auto-resume, see engine.CompletedStories) and max wave number.
+	completed := engine.CompletedStories(stories)
 	maxWave := 0
 	for _, story := range stories {
-		if story.Status == "merged" || story.Status == "pr_submitted" {
-			completed[story.ID] = true
-		}
 		if story.Wave > maxWave {
 			maxWave = story.Wave
 		}
@@ -460,7 +476,8 @@ func runResume(cmd *cobra.Command, args []string) error {
 		// Stamp stage="reviewer" so the metrics reporter can isolate review
 		// cost from executor / merger cost.
 		reviewerClient := metrics.LabelStage(llmClient, "reviewer")
-		reviewer = engine.NewReviewer(reviewerClient, seniorModel.Provider, seniorModel.Model, seniorModel.MaxTokens, s.Events, s.Proj)
+		reviewer = engine.NewReviewer(reviewerClient, seniorModel.Provider, seniorModel.Model, seniorModel.MaxTokens, s.Events, s.Proj).
+			WithMaxDiffBytes(s.Config.Review.MaxDiffBytes)
 	}
 
 	qaRunner := engine.NewQA(engine.QAConfig{
@@ -486,14 +503,19 @@ func runResume(cmd *cobra.Command, args []string) error {
 		merger = engine.NewLocalMerger(s.Config.Merge, nxdgit.NewLocalMerger(repoDir), s.Events, s.Proj)
 	}
 
+	// Permission prompts are only auto-answered for runtimes the config
+	// allows (sandbox.auto_approve_prompts, default: sandboxed runtimes only);
+	// otherwise the monitor surfaces the prompt to a human and pauses.
 	watchdog := engine.NewWatchdog(engine.WatchdogConfig{
-		StuckThresholdS: s.Config.Monitor.StuckThresholdS,
+		StuckThresholdS:    s.Config.Monitor.StuckThresholdS,
+		AutoApprovePrompts: s.Config.AutoApprovePrompts,
 	}, s.Events)
 
 	// ctx + cancel created earlier (just before SpawnAll) so cancellation
 	// propagates to native runtime goroutines as well as the monitor.
 
 	monitor := engine.NewMonitor(reg, watchdog, reviewer, qaRunner, merger, s.Config, s.Events, s.Proj)
+	monitor.SetApprovalQueue(approvalQueue)
 
 	// Optional codegraph runner for blast-radius analysis. Only wire if the
 	// binary is available on PATH; the option is nil-safe but we want to log
