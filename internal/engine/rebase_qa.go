@@ -73,7 +73,7 @@ func (m *Monitor) postRebaseGate(ctx context.Context, storyID, attemptID, worktr
 
 	log.Printf("[pipeline] conflicts were resolved during rebase for %s — re-running QA on the rebased tree", storyID)
 	qaStart := time.Now()
-	result, err := m.qa.Run(ctx, storyID, worktreePath)
+	result, err := m.qa.ForAttempt(attemptID).Run(ctx, storyID, worktreePath)
 	if err != nil {
 		EmitStageCompleted(m.eventStore, m.projStore, "monitor", storyID, "qa_post_rebase", "failure", qaStart)
 		m.resetStoryToDraftFor(storyID, attemptID, "qa", fmt.Sprintf("QA error after conflict resolution: %v", err))

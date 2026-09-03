@@ -600,7 +600,7 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 		// Pass git ls-files so reviewer can verify file
 		// existence claims instead of hallucinating about missing files.
 		fileTree := captureFileTree(ag.WorktreePath)
-		result, err := m.reviewer.Review(ctx, storyID, storyTitle, storyAC, diff, blastRadius, fileTree)
+		result, err := m.reviewer.ForAttempt(attemptID).Review(ctx, storyID, storyTitle, storyAC, diff, blastRadius, fileTree)
 		if err != nil {
 			EmitStageCompleted(m.eventStore, m.projStore, "monitor", storyID, "review", "failure", reviewStart)
 			// Transient Ollama capacity/overload (429/503, server busy, no
@@ -676,7 +676,7 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 	// 2. QA
 	if m.qa != nil {
 		qaStart := time.Now()
-		result, err := m.qa.Run(ctx, storyID, ag.WorktreePath)
+		result, err := m.qa.ForAttempt(attemptID).Run(ctx, storyID, ag.WorktreePath)
 		if err != nil {
 			EmitStageCompleted(m.eventStore, m.projStore, "monitor", storyID, "qa", "failure", qaStart)
 			log.Printf("[pipeline] QA error for %s: %v", storyID, err)

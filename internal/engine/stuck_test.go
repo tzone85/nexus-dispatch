@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -279,5 +280,24 @@ func TestController_LastProgressTime_UsesCheckpoints(t *testing.T) {
 	es.Append(later)
 	if got := ctrl.lastProgressTime("s-cp"); !got.Equal(later.Timestamp) {
 		t.Fatalf("lastProgressTime = %s, want later progress %s", got, later.Timestamp)
+	}
+}
+
+// TestPipeline_ReviewAndQAUseAttempt is a source-scan guard: the pipeline
+// must review/QA through ForAttempt(attemptID) so those events are stamped.
+func TestPipeline_ReviewAndQAUseAttempt(t *testing.T) {
+	for file, wants := range map[string][]string{
+		"monitor.go":   {"m.reviewer.ForAttempt(attemptID).Review(", "m.qa.ForAttempt(attemptID).Run("},
+		"rebase_qa.go": {"m.qa.ForAttempt(attemptID).Run("},
+	} {
+		src, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range wants {
+			if !strings.Contains(string(src), want) {
+				t.Errorf("%s must call %s", file, want)
+			}
+		}
 	}
 }

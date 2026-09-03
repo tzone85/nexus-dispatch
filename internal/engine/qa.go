@@ -57,6 +57,17 @@ type QA struct {
 	runner     CommandRunner
 	eventStore state.EventStore
 	projStore  state.ProjectionStore
+	// attemptID stamps the QA events (see ForAttempt); empty = unstamped.
+	attemptID string
+}
+
+// ForAttempt returns a shallow copy of the QA runner whose STORY_QA_STARTED /
+// STORY_QA_PASSED / STORY_QA_FAILED events carry attempt_id. The receiver is
+// not modified; the copy shares the runner and stores.
+func (q *QA) ForAttempt(attemptID string) *QA {
+	c := *q
+	c.attemptID = attemptID
+	return &c
 }
 
 // NewQA creates a QA instance with the given configuration, command runner,
@@ -75,7 +86,7 @@ func NewQA(cfg QAConfig, runner CommandRunner, es state.EventStore, ps state.Pro
 // STORY_QA_PASSED or STORY_QA_FAILED.
 func (q *QA) Run(ctx context.Context, storyID, worktreePath string) (QAResult, error) {
 	// Emit QA started
-	startEvt := state.NewEvent(state.EventStoryQAStarted, "qa", storyID, map[string]any{
+	startEvt := state.NewEventForAttempt(state.EventStoryQAStarted, "qa", storyID, q.attemptID, map[string]any{
 		"worktree_path": worktreePath,
 	})
 	if err := q.eventStore.Append(startEvt); err != nil {
@@ -143,7 +154,7 @@ func (q *QA) Run(ctx context.Context, storyID, worktreePath string) (QAResult, e
 		}
 	}
 
-	resultEvt := state.NewEvent(eventType, "qa", storyID, map[string]any{
+	resultEvt := state.NewEventForAttempt(eventType, "qa", storyID, q.attemptID, map[string]any{
 		"passed":        result.Passed,
 		"total_checks":  len(result.Checks),
 		"failed_checks": failedChecks,

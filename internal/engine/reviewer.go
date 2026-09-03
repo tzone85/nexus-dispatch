@@ -44,6 +44,8 @@ type Reviewer struct {
 	model        string
 	maxTokens    int
 	maxDiffBytes int
+	// attemptID stamps the review events (see ForAttempt); empty = unstamped.
+	attemptID string
 }
 
 // NewReviewer creates a Reviewer wired to the given LLM client, model
@@ -59,6 +61,16 @@ func NewReviewer(client llm.Client, provider, model string, maxTokens int, es st
 		maxTokens:    maxTokens,
 		maxDiffBytes: DefaultMaxDiffBytes,
 	}
+}
+
+// ForAttempt returns a shallow copy of the reviewer whose STORY_REVIEW_PASSED
+// / STORY_REVIEW_FAILED events carry attempt_id, so a stale review of an
+// earlier attempt can never be mistaken for the current one. The receiver is
+// not modified; the copy shares the client and stores.
+func (r *Reviewer) ForAttempt(attemptID string) *Reviewer {
+	c := *r
+	c.attemptID = attemptID
+	return &c
 }
 
 // WithMaxDiffBytes sets the diff byte budget (review.max_diff_bytes) and
@@ -174,7 +186,7 @@ meet acceptance criteria and must be rejected.`, title, acceptanceCriteria, blas
 		eventType = state.EventStoryReviewFailed
 	}
 
-	evt := state.NewEvent(eventType, "reviewer", storyID, map[string]any{
+	evt := state.NewEventForAttempt(eventType, "reviewer", storyID, r.attemptID, map[string]any{
 		"passed":        result.Passed,
 		"comment_count": len(result.Comments),
 		"summary":       result.Summary,
