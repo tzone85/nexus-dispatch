@@ -15,6 +15,7 @@ func newAgentsCmd() *cobra.Command {
 		RunE:  runAgents,
 	}
 	cmd.Flags().String("status", "", "Filter by agent status (active, idle, stuck, terminated)")
+	cmd.Flags().Bool("json", false, "machine-readable JSON output")
 	cmd.SilenceUsage = true
 	return cmd
 }
@@ -34,6 +35,13 @@ func runAgents(cmd *cobra.Command, _ []string) error {
 	agents, err := s.Proj.ListAgents(state.AgentFilter{Status: statusFilter})
 	if err != nil {
 		return fmt.Errorf("list agents: %w", err)
+	}
+
+	if asJSON, _ := cmd.Flags().GetBool("json"); asJSON {
+		if agents == nil {
+			agents = []state.Agent{}
+		}
+		return writeJSON(out, agents)
 	}
 
 	if len(agents) == 0 {

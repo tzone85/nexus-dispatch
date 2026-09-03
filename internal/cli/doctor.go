@@ -24,26 +24,31 @@ func newDoctorCmd() *cobra.Command {
 		Long:  "Runs preflight checks on all NXD dependencies and configuration. Use before your first run.",
 		RunE:  runDoctor,
 	}
+	cmd.Flags().Bool("json", false, "machine-readable JSON output")
 	cmd.SilenceUsage = true
 	return cmd
 }
 
 type checkResult struct {
-	Name    string
-	Status  string // "ok", "warn", "fail"
-	Message string
+	Name    string `json:"name"`
+	Status  string `json:"status"` // "ok", "warn", "fail"
+	Message string `json:"message"`
 }
 
 func runDoctor(cmd *cobra.Command, _ []string) error {
 	out := cmd.OutOrStdout()
-	fmt.Fprintln(out, "NXD Doctor — Preflight Check")
-	fmt.Fprintln(out, "============================")
-	fmt.Fprintln(out)
+	asJSON, _ := cmd.Flags().GetBool("json")
+	if !asJSON {
+		fmt.Fprintln(out, "NXD Doctor — Preflight Check")
+		fmt.Fprintln(out, "============================")
+		fmt.Fprintln(out)
+	}
 
 	var checks []checkResult
 
-	// 1. Go version
-	checks = append(checks, checkGo())
+	// 1. Go toolchain (only required for Go repos; warn elsewhere)
+	cwd, _ := os.Getwd()
+	checks = append(checks, checkGoFor(cwd))
 
 	// 2. Git
 	checks = append(checks, checkGit())
@@ -51,15 +56,16 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 	// 3. tmux
 	checks = append(checks, checkTmux())
 
-	// 4. Ollama
-	checks = append(checks, checkOllamaRunning())
-
-	// 5. Gemma 4 model
-	checks = append(checks, checkGemmaModel())
-
-	// 6. Config
+	// 4. Config (loaded first so the Ollama check can use models.ollama_host)
 	cfgPath, _ := cmd.Flags().GetString("config")
 	cfgCheck, cfg := checkConfig(cfgPath)
+
+	// 5. Ollama
+	checks = append(checks, checkOllamaAt(ollamaHost(cfg.Models.OllamaHost)))
+
+	// 6. Gemma 4 model
+	checks = append(checks, checkGemmaModel())
+
 	checks = append(checks, cfgCheck)
 
 	// 7. State directory
@@ -98,7 +104,21 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 			icon = "✗"
 			failCount++
 		}
-		fmt.Fprintf(out, "  %s %-25s %s\n", icon, c.Name, c.Message)
+		if !asJSON {
+			fmt.Fprintf(out, "  %s %-25s %s\n", icon, c.Name, c.Message)
+		}
+	}
+
+	if asJSON {
+		if err := writeJSON(out, map[string]any{
+			"checks": checks, "passed": okCount, "warnings": warnCount, "failed": failCount,
+		}); err != nil {
+			return err
+		}
+		if failCount > 0 {
+			return fmt.Errorf("%d preflight checks failed", failCount)
+		}
+		return nil
 	}
 
 	fmt.Fprintln(out)
@@ -116,14 +136,32 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-func checkGo() checkResult {
+func checkGo() checkResult { return checkGoFor("") }
+
+// checkGoFor probes the Go toolchain. Missing Go is a hard failure only when
+// dir looks like a Go repository (go.mod present); NXD orchestrates any
+// language, so a Swift or Node repo without Go gets a warning, not a block.
+func checkGoFor(dir string) checkResult {
 	cmd := exec.Command("go", "version")
 	out, err := cmd.Output()
 	if err != nil {
-		return checkResult{"Go", "fail", "Go not found. Install from https://go.dev/dl/"}
+		if isGoRepo(dir) {
+			return checkResult{"Go", "fail", "Go not found but go.mod is present. Install from https://go.dev/dl/"}
+		}
+		return checkResult{"Go", "warn", "Go not found (only needed for Go repositories). Install from https://go.dev/dl/"}
 	}
 	version := strings.TrimSpace(string(out))
 	return checkResult{"Go", "ok", version}
+}
+
+// isGoRepo reports whether dir contains a go.mod. Empty dir means unknown →
+// treated as a Go repo to preserve the strict legacy behaviour.
+func isGoRepo(dir string) bool {
+	if dir == "" {
+		return true
+	}
+	_, err := os.Stat(filepath.Join(dir, "go.mod"))
+	return err == nil
 }
 
 func checkGit() checkResult {
@@ -150,14 +188,42 @@ func checkTmux() checkResult {
 	return checkResult{"tmux", "ok", strings.TrimSpace(string(out))}
 }
 
-func checkOllamaRunning() checkResult {
+// defaultOllamaHost is used when neither OLLAMA_HOST nor models.ollama_host
+// is set.
+const defaultOllamaHost = "http://localhost:11434"
+
+// ollamaHost resolves the Ollama base URL: OLLAMA_HOST env wins, then the
+// configured models.ollama_host, then localhost. A bare "host:port" (or
+// "host") gets an http:// scheme; a trailing slash is trimmed.
+func ollamaHost(configured string) string {
+	host := os.Getenv("OLLAMA_HOST")
+	if host == "" {
+		host = configured
+	}
+	if host == "" {
+		host = defaultOllamaHost
+	}
+	if !strings.Contains(host, "://") {
+		host = "http://" + host
+	}
+	return strings.TrimRight(host, "/")
+}
+
+func checkOllamaRunning() checkResult { return checkOllamaAt(ollamaHost("")) }
+
+// checkOllamaAt probes the Ollama tags endpoint at baseURL.
+func checkOllamaAt(baseURL string) checkResult {
 	client := &http.Client{Timeout: 3 * time.Second}
-	resp, err := client.Get("http://localhost:11434/api/tags")
+	resp, err := client.Get(baseURL + "/api/tags")
 	if err != nil {
-		return checkResult{"Ollama", "fail", "Ollama not running. Start with: ollama serve"}
+		hint := "Start with: ollama serve"
+		if baseURL != defaultOllamaHost {
+			hint = "Check OLLAMA_HOST / models.ollama_host and that the remote server is reachable"
+		}
+		return checkResult{"Ollama", "fail", fmt.Sprintf("Ollama not reachable at %s. %s", baseURL, hint)}
 	}
 	resp.Body.Close()
-	return checkResult{"Ollama", "ok", "running on localhost:11434"}
+	return checkResult{"Ollama", "ok", "running on " + strings.TrimPrefix(strings.TrimPrefix(baseURL, "http://"), "https://")}
 }
 
 func checkGemmaModel() checkResult {

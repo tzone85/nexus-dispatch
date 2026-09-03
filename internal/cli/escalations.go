@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
+	"github.com/tzone85/nexus-dispatch/internal/state"
 )
 
 func newEscalationsCmd() *cobra.Command {
@@ -13,6 +14,7 @@ func newEscalationsCmd() *cobra.Command {
 		Long:  "Lists all escalation events showing story ID, from agent, reason, and status.",
 		RunE:  runEscalations,
 	}
+	cmd.Flags().Bool("json", false, "machine-readable JSON output")
 	cmd.SilenceUsage = true
 	return cmd
 }
@@ -31,6 +33,13 @@ func runEscalations(cmd *cobra.Command, _ []string) error {
 	escalations, err := s.Proj.ListEscalations()
 	if err != nil {
 		return fmt.Errorf("list escalations: %w", err)
+	}
+
+	if asJSON, _ := cmd.Flags().GetBool("json"); asJSON {
+		if escalations == nil {
+			escalations = []state.Escalation{}
+		}
+		return writeJSON(out, escalations)
 	}
 
 	if len(escalations) == 0 {

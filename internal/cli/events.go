@@ -3,12 +3,39 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/tzone85/nexus-dispatch/internal/state"
 )
 
 const defaultEventLimit = 50
+
+// eventJSON is the --json shape of an event: the envelope plus the payload
+// decoded into an object instead of the base64 blob the log stores.
+type eventJSON struct {
+	ID        string          `json:"id"`
+	Type      state.EventType `json:"type"`
+	Timestamp string          `json:"timestamp"`
+	AgentID   string          `json:"agent_id,omitempty"`
+	StoryID   string          `json:"story_id,omitempty"`
+	Payload   map[string]any  `json:"payload,omitempty"`
+}
+
+func eventsForJSON(events []state.Event) []eventJSON {
+	out := make([]eventJSON, 0, len(events))
+	for _, e := range events {
+		var payload map[string]any
+		if len(e.Payload) > 0 {
+			payload = state.DecodePayload(e.Payload)
+		}
+		out = append(out, eventJSON{
+			ID: e.ID, Type: e.Type, Timestamp: e.Timestamp.UTC().Format(time.RFC3339Nano),
+			AgentID: e.AgentID, StoryID: e.StoryID, Payload: payload,
+		})
+	}
+	return out
+}
 
 func newEventsCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -20,6 +47,7 @@ func newEventsCmd() *cobra.Command {
 	cmd.Flags().String("type", "", "Filter by event type (e.g., REQ_SUBMITTED, STORY_CREATED)")
 	cmd.Flags().String("story", "", "Filter by story ID")
 	cmd.Flags().Int("limit", defaultEventLimit, "Maximum number of events to display")
+	cmd.Flags().Bool("json", false, "machine-readable JSON output (newest first, payload decoded)")
 	cmd.SilenceUsage = true
 	return cmd
 }
@@ -48,7 +76,8 @@ func runEvents(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("list events: %w", err)
 	}
 
-	if len(events) == 0 {
+	asJSON, _ := cmd.Flags().GetBool("json")
+	if len(events) == 0 && !asJSON {
 		fmt.Fprintf(out, "No events found.\n")
 		return nil
 	}
@@ -59,6 +88,10 @@ func runEvents(cmd *cobra.Command, _ []string) error {
 	// Apply limit
 	if limit > 0 && len(reversed) > limit {
 		reversed = reversed[:limit]
+	}
+
+	if asJSON {
+		return writeJSON(out, eventsForJSON(reversed))
 	}
 
 	fmt.Fprintf(out, "Events (%d shown of %d total):\n\n", len(reversed), len(events))

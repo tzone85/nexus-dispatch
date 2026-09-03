@@ -163,13 +163,14 @@ If a requirement was submitted from another repo you get:
 List all agents and their current status.
 
 ```bash
-nxd agents [--status <status>]
+nxd agents [--status <status>] [--json]
 ```
 
 **Flags:**
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--status <s>` | (all) | Filter by status: `active`, `idle`, `stuck`, `terminated` |
+| `--json` | false | Emit the agent list as a JSON array |
 
 **Output columns:** ID, Role, Model, Status, Current Story, Session Name
 
@@ -180,10 +181,10 @@ nxd agents [--status <status>]
 List all escalation events.
 
 ```bash
-nxd escalations
+nxd escalations [--json]
 ```
 
-**Output columns:** Story ID, From Role, To Role, Reason, Status, Timestamp
+**Output columns:** Story ID, From Role, To Role, Reason, Status, Timestamp. `--json` emits the list as a JSON array.
 
 ---
 
@@ -248,7 +249,7 @@ nxd timeline <req-id> --json
 Query the event store.
 
 ```bash
-nxd events [--type <type>] [--story <id>] [--limit <n>]
+nxd events [--type <type>] [--story <id>] [--limit <n>] [--json]
 ```
 
 **Flags:**
@@ -257,6 +258,7 @@ nxd events [--type <type>] [--story <id>] [--limit <n>]
 | `--type <type>` | (all) | Filter by event type (e.g., `STORY_MERGED`) |
 | `--story <id>` | (all) | Filter by story ID |
 | `--limit <n>` | 50 | Maximum events to display |
+| `--json` | false | JSON array (newest first) with the payload decoded into an object |
 
 **Events are displayed newest-first.**
 
@@ -498,8 +500,10 @@ nxd merge <story-id>
 Run preflight checks on every NXD dependency and configuration value. Use before the first run on a new machine.
 
 ```bash
-nxd doctor
+nxd doctor [--json]
 ```
+
+`--json` prints `{checks: [...], passed, warnings, failed}` instead of the table (the exit code still reflects failures). The Ollama check honours `OLLAMA_HOST` and `models.ollama_host` (`host:port` accepted), so a remote Ollama server passes. The Go check only fails hard when the repository has a `go.mod`; other languages get a warning.
 
 Checks cover Go, git, tmux, Ollama, the Gemma model, config validity, the state directory, disk/permissions, and optional integrations (MemPalace, Google AI, plugins, devdb). One check, **Projection drift**, compares the SQLite projection's reconciliation watermark against the event-log length: it warns when the projection is behind the log (the desync that a normal command auto-rebuilds on its next open) and reports "in sync" otherwise. The check is read-only — it never rebuilds the projection or creates stores as a side effect.
 
