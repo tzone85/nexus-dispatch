@@ -120,6 +120,7 @@ func DefaultConfig() Config {
 				{Kind: "test_passes", Value: "go test ./..."},
 			},
 		},
+		Review: ReviewConfig{MaxDiffBytes: 200 * 1024},
 		Security: SecurityConfig{
 			// The pipeline gate pauses a build only on CRITICAL findings (leaked
 			// secrets, LLM-confirmed injection/hardcoded credentials) so it is

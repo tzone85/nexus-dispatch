@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"strings"
 
 	"github.com/tzone85/nexus-dispatch/internal/llm"
 	"github.com/tzone85/nexus-dispatch/internal/state"
@@ -26,15 +25,25 @@ type ReviewResult struct {
 	Summary  string          `json:"summary"`
 }
 
+// DefaultMaxDiffBytes is the default byte budget for the diff interpolated
+// into the reviewer prompt (config: review.max_diff_bytes).
+const DefaultMaxDiffBytes = 200 * 1024
+
+// NoStructuredVerdictFeedback is the summary returned when the reviewer model
+// produced neither a tool call nor parseable JSON. The gate fails closed: a
+// verdict that cannot be parsed is not a pass.
+const NoStructuredVerdictFeedback = "reviewer returned no structured verdict"
+
 // Reviewer performs AI-powered code review on story branch diffs using the
 // Senior model.
 type Reviewer struct {
-	llmClient  llm.Client
-	eventStore state.EventStore
-	projStore  state.ProjectionStore
-	provider   string
-	model      string
-	maxTokens  int
+	llmClient    llm.Client
+	eventStore   state.EventStore
+	projStore    state.ProjectionStore
+	provider     string
+	model        string
+	maxTokens    int
+	maxDiffBytes int
 }
 
 // NewReviewer creates a Reviewer wired to the given LLM client, model
@@ -42,13 +51,42 @@ type Reviewer struct {
 // is used to determine whether the model supports native tool calling.
 func NewReviewer(client llm.Client, provider, model string, maxTokens int, es state.EventStore, ps state.ProjectionStore) *Reviewer {
 	return &Reviewer{
-		llmClient:  client,
-		eventStore: es,
-		projStore:  ps,
-		provider:   provider,
-		model:      model,
-		maxTokens:  maxTokens,
+		llmClient:    client,
+		eventStore:   es,
+		projStore:    ps,
+		provider:     provider,
+		model:        model,
+		maxTokens:    maxTokens,
+		maxDiffBytes: DefaultMaxDiffBytes,
 	}
+}
+
+// WithMaxDiffBytes sets the diff byte budget (review.max_diff_bytes) and
+// returns the reviewer for chaining. Non-positive values keep the default.
+func (r *Reviewer) WithMaxDiffBytes(n int) *Reviewer {
+	if n > 0 {
+		r.maxDiffBytes = n
+	}
+	return r
+}
+
+// DiffTruncationMarker is the explicit marker appended to a capped diff so the
+// reviewer model knows how much it did not see.
+func DiffTruncationMarker(remaining int) string {
+	return fmt.Sprintf("[diff truncated: %d more bytes]", remaining)
+}
+
+// TruncateDiffForReview caps diff at maxBytes (DefaultMaxDiffBytes when
+// maxBytes <= 0), appending DiffTruncationMarker when it had to cut. The
+// second result reports whether truncation happened.
+func TruncateDiffForReview(diff string, maxBytes int) (string, bool) {
+	if maxBytes <= 0 {
+		maxBytes = DefaultMaxDiffBytes
+	}
+	if len(diff) <= maxBytes {
+		return diff, false
+	}
+	return diff[:maxBytes] + "\n" + DiffTruncationMarker(len(diff)-maxBytes), true
 }
 
 // Review takes a story ID, title, acceptance criteria, and the git diff of
@@ -83,12 +121,18 @@ func (r *Reviewer) Review(ctx context.Context, storyID, title, acceptanceCriteri
 		fileTreeCtx = "\n\nWorktree files (git ls-files):\n" + extra[1] + "\n"
 	}
 
+	diff, truncated := TruncateDiffForReview(diff, r.maxDiffBytes)
+	truncationNote := ""
+	if truncated {
+		truncationNote = "\nNOTE: the diff was truncated to fit the review budget; the marker at its end says how many bytes were cut. Review what is shown and record the truncation in your summary — do not assume the unseen part is correct.\n"
+	}
+
 	prompt := fmt.Sprintf(`Review this code change for the following story:
 
 Story: %s
 Acceptance Criteria: %s
 %s%s
-Diff:
+Diff:%s
 %s
 
 Review the code for:
@@ -107,7 +151,7 @@ builds or tests, unmet criteria). Record minor and info-level findings
 (naming, comments, style, polish, nice-to-haves) as review comments on a
 PASSING review — never reject solely for minor or info findings. A diff
 that is only placeholders or stubs with no real implementation does NOT
-meet acceptance criteria and must be rejected.`, title, acceptanceCriteria, blastRadiusCtx, fileTreeCtx, diff)
+meet acceptance criteria and must be rejected.`, title, acceptanceCriteria, blastRadiusCtx, fileTreeCtx, truncationNote, diff)
 
 	systemPrompt := "You are a Senior code reviewer. Review code changes and provide structured feedback."
 
@@ -199,31 +243,11 @@ func (r *Reviewer) reviewWithTools(ctx context.Context, systemPrompt, userPrompt
 			return result, nil
 		}
 
-		// Last resort: infer verdict from text content. Some models (e.g.
-		// gemma4 via Ollama) respond with natural language instead of JSON
-		// or tool calls. Scan for explicit rejection signals before deciding.
-		lower := strings.ToLower(resp.Content)
-		rejected := strings.Contains(lower, "reject") ||
-			strings.Contains(lower, "not acceptable") ||
-			strings.Contains(lower, "fail") ||
-			strings.Contains(lower, "does not compile") ||
-			strings.Contains(lower, "does not build") ||
-			strings.Contains(lower, "broken") ||
-			strings.Contains(lower, "critical issue")
-
-		if rejected {
-			log.Printf("[reviewer] text fallback: detected rejection signals in plain text response")
-			return ReviewResult{
-				Passed:  false,
-				Summary: truncateReviewSummary(resp.Content, 500),
-			}, nil
-		}
-
-		log.Printf("[reviewer] WARNING: text fallback — model returned plain text with no rejection signals, treating as pass (degraded review)")
-		return ReviewResult{
-			Passed:  true,
-			Summary: "DEGRADED REVIEW: " + truncateReviewSummary(resp.Content, 500),
-		}, nil
+		// Fail closed: prose without a tool call or JSON verdict is not a pass.
+		// A substring scan for "fail"/"reject" let any non-committal reply
+		// through the gate; the model must produce a structured verdict.
+		log.Printf("[reviewer] model returned plain text with no structured verdict; failing closed")
+		return noStructuredVerdict(), nil
 	}
 
 	return ReviewResult{}, fmt.Errorf("reviewer: no tool calls and empty response")
@@ -253,10 +277,16 @@ Respond with JSON:
 	var result ReviewResult
 	cleaned := extractJSON(resp.Content)
 	if err := json.Unmarshal([]byte(cleaned), &result); err != nil {
-		return ReviewResult{}, fmt.Errorf("parse review response: %w", err)
+		log.Printf("[reviewer] unparseable review response (%v); failing closed", err)
+		return noStructuredVerdict(), nil
 	}
 
 	return result, nil
+}
+
+// noStructuredVerdict is the fail-closed result for an unparseable reply.
+func noStructuredVerdict() ReviewResult {
+	return ReviewResult{Passed: false, Summary: NoStructuredVerdictFeedback}
 }
 
 // convertToolResultToReviewResult maps a ReviewToolResult to the existing
@@ -279,12 +309,4 @@ func convertToolResultToReviewResult(tr ReviewToolResult) ReviewResult {
 		Comments: comments,
 		Summary:  tr.Summary,
 	}
-}
-
-// truncateReviewSummary returns s capped at maxLen characters.
-func truncateReviewSummary(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "..."
 }

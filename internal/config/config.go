@@ -47,6 +47,7 @@ type Config struct {
 	Memory        MemoryConfig             `yaml:"memory"`
 	Investigation InvestigationConfig      `yaml:"investigation"`
 	QA            QAConfig                 `yaml:"qa"`
+	Review        ReviewConfig             `yaml:"review,omitempty"`
 	Security      SecurityConfig           `yaml:"security,omitempty"`
 	Runtimes      map[string]RuntimeConfig `yaml:"runtimes"`
 	Plugins       PluginConfig             `yaml:"plugins"`
@@ -143,6 +144,9 @@ type ModelConfig struct {
 	MaxTokens         int    `yaml:"max_tokens"`
 	GoogleModel       string `yaml:"google_model,omitempty"`
 	FallbackCooldownS int    `yaml:"fallback_cooldown_s,omitempty"`
+	// NumCtx sets the Ollama context window (options.num_ctx) for this role.
+	// 0 leaves the model's default.
+	NumCtx int `yaml:"num_ctx,omitempty"`
 }
 
 // ModelsConfig maps agent roles to their model bindings.
@@ -220,6 +224,14 @@ type MergeConfig struct {
 	BaseBranch        string `yaml:"base_branch"`
 	Mode              string `yaml:"mode"` // "local" or "github"
 	PRTemplate        string `yaml:"pr_template"`
+}
+
+// ReviewConfig tunes the LLM code-review gate.
+type ReviewConfig struct {
+	// MaxDiffBytes caps the diff interpolated into the reviewer prompt. Longer
+	// diffs are cut with an explicit "[diff truncated: N more bytes]" marker
+	// the model is told about. 0 means the default (200 KB).
+	MaxDiffBytes int `yaml:"max_diff_bytes,omitempty"`
 }
 
 // BillingConfig controls cost estimation and client quoting.
