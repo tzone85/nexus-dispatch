@@ -15,80 +15,125 @@ type inlineToolCall struct {
 	Arguments json.RawMessage `json:"arguments"`
 }
 
-// extractInlineToolCalls scans text content for tool-call JSON objects and
-// returns them as structured llm.ToolCall values.
+// knownToolNames returns the set of tool names in defs.
+func knownToolNames(defs []llm.ToolDefinition) map[string]bool {
+	known := make(map[string]bool, len(defs))
+	for _, d := range defs {
+		known[d.Name] = true
+	}
+	return known
+}
+
+// extractInlineToolCalls recovers tool calls that a model emitted as JSON in
+// its text content instead of the structured tool_calls field (LB8: qwen2.5-
+// coder and similar local models do this routinely).
 //
-// Live-test discovery (LB8): qwen2.5-coder and similar local models often
-// emit one or more `{"name": "...", "arguments": {...}}` objects in the
-// response content field rather than populating the OpenAI/Anthropic
-// `tool_calls` field. NXD's runtime expected the structured form and
-// terminated early with "model finished without tool calls".
+// It is deliberately strict, because model text often ECHOES JSON it just
+// read from the repository (a README example, a config file, a test fixture)
+// and executing that would turn file contents into tool invocations:
 //
-// The parser uses depth-aware brace matching so nested arguments don't
-// break extraction. Each balanced JSON object that successfully decodes
-// into the inlineToolCall shape (with non-empty Name) becomes a ToolCall.
+//   - The caller only invokes this when the response carried NO structured
+//     tool calls.
+//   - The entire trimmed message must be tool-call JSON: a single object, a
+//     JSON array of objects, or one or more objects separated only by
+//     whitespace — optionally wrapped in exactly one ``` fence that spans the
+//     whole message. Any prose before or after ⇒ nothing is extracted.
+//   - Every object must decode to {name, arguments} with a name in known
+//     (the registered tool definitions). One unknown or malformed object
+//     rejects the whole message.
 //
-// Returns an empty slice when no tool calls are found.
-func extractInlineToolCalls(content string) []llm.ToolCall {
-	if !strings.Contains(content, "\"name\"") {
+// Returns nil when the message does not qualify.
+func extractInlineToolCalls(content string, known map[string]bool) []llm.ToolCall {
+	body, ok := unwrapSingleFence(strings.TrimSpace(content))
+	if !ok || body == "" || !strings.Contains(body, "\"name\"") {
 		return nil
 	}
-	// Strip code fences first — models often wrap the JSON.
-	content = stripFences(content)
-
-	var calls []llm.ToolCall
-	i := 0
-	for i < len(content) {
-		// Find next opening brace.
-		next := strings.IndexByte(content[i:], '{')
-		if next == -1 {
-			break
-		}
-		start := i + next
-		end := matchBalancedBrace(content, start)
-		if end == -1 {
-			break
-		}
-		candidate := content[start : end+1]
+	objects, ok := splitJSONObjects(body)
+	if !ok {
+		return nil
+	}
+	calls := make([]llm.ToolCall, 0, len(objects))
+	for _, candidate := range objects {
 		var t inlineToolCall
-		if err := json.Unmarshal([]byte(candidate), &t); err == nil && t.Name != "" {
-			args := t.Arguments
-			if len(args) == 0 {
-				args = json.RawMessage(`{}`)
-			}
-			calls = append(calls, llm.ToolCall{
-				ID:        fmt.Sprintf("inline-%d", len(calls)+1),
-				Name:      t.Name,
-				Arguments: args,
-			})
+		if err := json.Unmarshal([]byte(candidate), &t); err != nil || t.Name == "" || !known[t.Name] {
+			return nil
 		}
-		i = end + 1
+		args := t.Arguments
+		if len(args) == 0 {
+			args = json.RawMessage(`{}`)
+		}
+		calls = append(calls, llm.ToolCall{
+			ID:        fmt.Sprintf("inline-%d", len(calls)+1),
+			Name:      t.Name,
+			Arguments: args,
+		})
 	}
 	return calls
 }
 
-// stripFences removes ```...``` code fences when they wrap the entire
-// content or the tool-call JSON section.
-func stripFences(s string) string {
-	for {
-		idx := strings.Index(s, "```")
-		if idx == -1 {
-			return s
-		}
-		rest := s[idx+3:]
-		// Skip optional language tag.
-		if nl := strings.IndexByte(rest, '\n'); nl != -1 {
-			rest = rest[nl+1:]
-		}
-		end := strings.Index(rest, "```")
-		if end == -1 {
-			// Unterminated fence; return what we have before the open fence
-			// plus the inner content unmodified.
-			return s[:idx] + rest
-		}
-		s = s[:idx] + rest[:end] + rest[end+3:]
+// unwrapSingleFence returns the inner text when s is exactly one fenced code
+// block (```[lang]\n ... ```), s itself when it has no fence, and ok=false
+// when fences appear anywhere else (prose + fence, multiple fences).
+func unwrapSingleFence(s string) (string, bool) {
+	if !strings.Contains(s, "```") {
+		return s, true
 	}
+	if !strings.HasPrefix(s, "```") || !strings.HasSuffix(s, "```") || len(s) < 6 {
+		return "", false
+	}
+	inner := s[3 : len(s)-3]
+	// Drop an optional language tag on the opening line.
+	if nl := strings.IndexByte(inner, '\n'); nl != -1 {
+		inner = inner[nl+1:]
+	} else {
+		return "", false // ``` json ``` on one line is not a block
+	}
+	if strings.Contains(inner, "```") {
+		return "", false
+	}
+	return strings.TrimSpace(inner), true
 }
+
+// splitJSONObjects splits body into top-level JSON objects. body must be
+// either a JSON array of objects or a sequence of objects separated only by
+// whitespace; any other character between/around them fails.
+func splitJSONObjects(body string) ([]string, bool) {
+	if strings.HasPrefix(body, "[") {
+		var arr []json.RawMessage
+		if err := json.Unmarshal([]byte(body), &arr); err != nil || len(arr) == 0 {
+			return nil, false
+		}
+		out := make([]string, 0, len(arr))
+		for _, raw := range arr {
+			s := strings.TrimSpace(string(raw))
+			if !strings.HasPrefix(s, "{") {
+				return nil, false
+			}
+			out = append(out, s)
+		}
+		return out, true
+	}
+	var out []string
+	i := 0
+	for i < len(body) {
+		if isJSONSpace(body[i]) {
+			i++
+			continue
+		}
+		if body[i] != '{' {
+			return nil, false
+		}
+		end := matchBalancedBrace(body, i)
+		if end == -1 {
+			return nil, false
+		}
+		out = append(out, body[i:end+1])
+		i = end + 1
+	}
+	return out, len(out) > 0
+}
+
+func isJSONSpace(c byte) bool { return c == ' ' || c == '\n' || c == '\r' || c == '\t' }
 
 // matchBalancedBrace returns the index of the closing `}` matching the `{`
 // at start. Skips braces inside JSON string literals. Returns -1 when no

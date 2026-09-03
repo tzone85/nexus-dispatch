@@ -296,7 +296,7 @@ func (g *GemmaRuntime) Execute(ctx context.Context, workDir, model, systemPrompt
 		// the content looks like one or more tool-call objects, parse them
 		// out and execute as if they were real tool calls.
 		if len(resp.ToolCalls) == 0 {
-			extracted := extractInlineToolCalls(resp.Content)
+			extracted := extractInlineToolCalls(resp.Content, knownToolNames(tools))
 			if len(extracted) > 0 {
 				log.Printf("[gemma] recovered %d inline tool call(s) from text content", len(extracted))
 				resp.ToolCalls = extracted
