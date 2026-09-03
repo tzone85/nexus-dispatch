@@ -138,3 +138,26 @@ func TestResume_CompletedSetMatchesMonitor(t *testing.T) {
 		t.Error("resume.go must not treat pr_submitted as completed")
 	}
 }
+
+// TestResume_WiresRoleLLMOptions: every LLM client built by req/resume/plan/
+// estimate must carry the role's ModelConfig (google_model, num_ctx,
+// fallback_cooldown_s) and models.ollama_host — a provider-name-only call
+// silently drops them.
+func TestResume_WiresRoleLLMOptions(t *testing.T) {
+	for file, wants := range map[string][]string{
+		"resume.go":   {"buildLLMClientFor(llmOptsFor(s.Config.Models.Junior, s.Config.Models))", "buildLLMClientFor(llmOptsFor(s.Config.Models.Senior, s.Config.Models), godmode)"},
+		"req.go":      {"buildLLMClientFor(llmOptsFor(s.Config.Models.TechLead, s.Config.Models), godmode)"},
+		"plan.go":     {"buildLLMClientFor(llmOptsFor(cfg.Models.TechLead, cfg.Models), cfg.Planning.Godmode)"},
+		"estimate.go": {"buildLLMClientFor(llmOptsFor(s.Config.Models.TechLead, s.Config.Models))"},
+	} {
+		src, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("read %s: %v", file, err)
+		}
+		for _, want := range wants {
+			if !strings.Contains(string(src), want) {
+				t.Errorf("%s must build its LLM client with role options: missing %q", file, want)
+			}
+		}
+	}
+}

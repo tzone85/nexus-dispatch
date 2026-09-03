@@ -63,7 +63,7 @@ models:
   ollama_host: 10.0.0.5:11434   # optional; Ollama endpoint for `nxd doctor` / health checks
 ```
 
-**ollama_host** overrides the Ollama endpoint probed by `nxd doctor` and `nxd init`. `host:port` without a scheme is accepted (`http://` is prepended). The `OLLAMA_HOST` environment variable takes precedence when set; unset both and `localhost:11434` is used.
+**ollama_host** overrides the Ollama endpoint probed by `nxd doctor` and `nxd init`. `host:port` without a scheme is accepted (`http://` is prepended). It also sets the endpoint the Ollama LLM clients use for every role. When set it takes precedence over the `OLLAMA_HOST` environment variable (which is used when the key is empty); unset both and `localhost:11434` is used.
 
 Maps each agent role to a specific LLM provider and model.
 

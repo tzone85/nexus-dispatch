@@ -63,7 +63,7 @@ func runPlan(cmd *cobra.Command, args []string) error {
 	defer ps.Close()
 
 	// Build LLM client
-	client, err := buildLLMClient(cfg.Models.TechLead.Provider, cfg.Planning.Godmode)
+	client, err := buildLLMClientFor(llmOptsFor(cfg.Models.TechLead, cfg.Models), cfg.Planning.Godmode)
 	if err != nil {
 		return err
 	}

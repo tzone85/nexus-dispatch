@@ -43,7 +43,7 @@ func runEstimate(cmd *cobra.Command, args []string) error {
 	var lc llm.Client
 	repoPath := ""
 	if !quick {
-		lc, err = buildLLMClient(s.Config.Models.TechLead.Provider)
+		lc, err = buildLLMClientFor(llmOptsFor(s.Config.Models.TechLead, s.Config.Models))
 		if err != nil {
 			return fmt.Errorf("creating LLM client: %w", err)
 		}

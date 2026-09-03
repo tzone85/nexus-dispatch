@@ -16,6 +16,7 @@ import (
 	"github.com/oklog/ulid/v2"
 	"github.com/spf13/cobra"
 	"github.com/tzone85/nexus-dispatch/internal/agent"
+	"github.com/tzone85/nexus-dispatch/internal/config"
 	"github.com/tzone85/nexus-dispatch/internal/engine"
 	"github.com/tzone85/nexus-dispatch/internal/llm"
 	"github.com/tzone85/nexus-dispatch/internal/metrics"
@@ -26,6 +27,20 @@ import (
 // activePluginProviders holds plugin-contributed LLM providers for use by
 // buildLLMClient. Set after loading plugins in runReq or runResume.
 var activePluginProviders map[string]*plugin.SubprocessInfo
+
+// llmBuildOpts carries everything a provider needs beyond its name: the
+// role's model binding (google_model, fallback_cooldown_s, num_ctx) and the
+// project-wide models.ollama_host. Build it with llmOptsFor.
+type llmBuildOpts struct {
+	Provider   string
+	Model      config.ModelConfig
+	OllamaHost string
+}
+
+// llmOptsFor pairs a role's ModelConfig with the shared ModelsConfig knobs.
+func llmOptsFor(mc config.ModelConfig, models config.ModelsConfig) llmBuildOpts {
+	return llmBuildOpts{Provider: mc.Provider, Model: mc, OllamaHost: models.OllamaHost}
+}
 
 // buildLLMClientFunc is the function used to create LLM clients. It defaults
 // to buildLLMClientDefault but can be overridden in tests to inject mock clients.
@@ -133,7 +148,7 @@ func runReq(cmd *cobra.Command, args []string) error {
 	if !godmode {
 		godmode = s.Config.Planning.Godmode
 	}
-	client, err := buildLLMClient(s.Config.Models.TechLead.Provider, godmode)
+	client, err := buildLLMClientFor(llmOptsFor(s.Config.Models.TechLead, s.Config.Models), godmode)
 	if err != nil {
 		return err
 	}
@@ -388,34 +403,66 @@ func resolveRequirement(cmd *cobra.Command, args []string) (string, error) {
 	}
 }
 
-// buildLLMClient creates an LLM client based on the provider name.
-// An optional godmode parameter controls whether permission prompts are skipped
-// on runtimes that support it (e.g., Claude Code, Codex).
-// It delegates to buildLLMClientFunc, which can be overridden in tests.
+// buildLLMClient creates an LLM client from a provider name alone (no role
+// options). Callers that have a role's ModelConfig should use
+// buildLLMClientFor so google_model / fallback_cooldown_s / num_ctx and
+// models.ollama_host apply.
 //
-// H7: every client returned here is wrapped with a SanitizingClient so that
-// LLM-generated content (review feedback, manager diagnoses, etc.) is screened
-// for prompt-injection markers and embedded credentials before downstream
-// consumers see it.
+// It delegates to buildLLMClientFunc, which can be overridden in tests.
 func buildLLMClient(provider string, godmode ...bool) (llm.Client, error) {
-	c, err := buildLLMClientFunc(provider, godmode...)
+	return buildLLMClientFor(llmBuildOpts{Provider: provider}, godmode...)
+}
+
+// buildLLMClientFor creates an LLM client for a role, wrapped in the
+// sanitizing client so provider errors never leak secrets.
+func buildLLMClientFor(o llmBuildOpts, godmode ...bool) (llm.Client, error) {
+	c, err := buildLLMClientFunc(o, godmode...)
 	if err != nil {
 		return nil, err
 	}
-	return llm.NewSanitizingClient(c, provider), nil
+	return llm.NewSanitizingClient(c, o.Provider), nil
+}
+
+// defaultFallbackCooldown applies when models.<role>.fallback_cooldown_s is 0.
+const defaultFallbackCooldown = 60 * time.Second
+
+// fallbackCooldown converts fallback_cooldown_s, defaulting to 60s.
+func fallbackCooldown(mc config.ModelConfig) time.Duration {
+	if mc.FallbackCooldownS <= 0 {
+		return defaultFallbackCooldown
+	}
+	return time.Duration(mc.FallbackCooldownS) * time.Second
+}
+
+// ollamaClientOptions resolves the Ollama endpoint (models.ollama_host wins
+// over OLLAMA_HOST; "host:port" gets http://) and the role's num_ctx.
+func ollamaClientOptions(o llmBuildOpts) []llm.OllamaOption {
+	var opts []llm.OllamaOption
+	if host := ollamaHost(o.OllamaHost); host != defaultOllamaHost {
+		opts = append(opts, llm.WithOllamaBaseURL(host))
+	}
+	if o.Model.NumCtx > 0 {
+		opts = append(opts, llm.WithOllamaNumCtx(o.Model.NumCtx))
+	}
+	return opts
+}
+
+// googleClientOptions pins models.<role>.google_model when set.
+func googleClientOptions(o llmBuildOpts) []llm.GoogleOption {
+	if o.Model.GoogleModel == "" {
+		return nil
+	}
+	return []llm.GoogleOption{llm.WithGoogleModel(o.Model.GoogleModel)}
 }
 
 // buildLLMClientDefault is the production implementation of buildLLMClient.
-func buildLLMClientDefault(provider string, godmode ...bool) (llm.Client, error) {
+func buildLLMClientDefault(o llmBuildOpts, godmode ...bool) (llm.Client, error) {
 	_ = len(godmode) > 0 && godmode[0] // reserved for forward compatibility
+	provider := o.Provider
 
 	switch provider {
 	case "ollama":
-		var opts []llm.OllamaOption
-		if host := os.Getenv("OLLAMA_HOST"); host != "" {
-			opts = append(opts, llm.WithOllamaBaseURL(host))
-		}
-		return llm.NewOllamaClient("", opts...), nil
+		return llm.NewOllamaClient("", ollamaClientOptions(o)...), nil
 	case "anthropic":
 		apiKey := os.Getenv("ANTHROPIC_API_KEY")
 		if apiKey == "" {
@@ -433,13 +480,9 @@ func buildLLMClientDefault(provider string, godmode ...bool) (llm.Client, error)
 		if apiKey == "" {
 			return nil, fmt.Errorf("GOOGLE_AI_API_KEY not set")
 		}
-		return llm.NewGoogleClient(apiKey), nil
+		return llm.NewGoogleClient(apiKey, googleClientOptions(o)...), nil
 	case "google+ollama":
-		var ollamaOpts []llm.OllamaOption
-		if host := os.Getenv("OLLAMA_HOST"); host != "" {
-			ollamaOpts = append(ollamaOpts, llm.WithOllamaBaseURL(host))
-		}
-		ollamaClient := llm.NewOllamaClient("", ollamaOpts...)
+		ollamaClient := llm.NewOllamaClient("", ollamaClientOptions(o)...)
 
 		apiKey := os.Getenv("GOOGLE_AI_API_KEY")
 		if apiKey == "" {
@@ -447,8 +490,8 @@ func buildLLMClientDefault(provider string, godmode ...bool) (llm.Client, error)
 			log.Printf("[config] GOOGLE_AI_API_KEY not set, using Ollama only")
 			return ollamaClient, nil
 		}
-		googleClient := llm.NewGoogleClient(apiKey)
-		return llm.NewFallbackClient(googleClient, ollamaClient, 60*time.Second), nil
+		googleClient := llm.NewGoogleClient(apiKey, googleClientOptions(o)...)
+		return llm.NewFallbackClient(googleClient, ollamaClient, fallbackCooldown(o.Model)), nil
 	default:
 		if activePluginProviders != nil {
 			if provInfo, ok := activePluginProviders[provider]; ok {

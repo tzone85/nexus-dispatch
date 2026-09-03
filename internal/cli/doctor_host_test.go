@@ -19,7 +19,8 @@ func TestOllamaHost(t *testing.T) {
 		{"default", "", "", "http://localhost:11434"},
 		{"config host:port gets scheme", "", "10.0.0.5:11434", "http://10.0.0.5:11434"},
 		{"config with scheme kept", "", "https://ollama.example.com/", "https://ollama.example.com"},
-		{"env wins over config", "gpu-box:11434", "10.0.0.5:11434", "http://gpu-box:11434"},
+		{"config wins over env", "gpu-box:11434", "10.0.0.5:11434", "http://10.0.0.5:11434"},
+		{"env used when config empty", "gpu-box:11434", "", "http://gpu-box:11434"},
 		{"env with scheme", "http://gpu-box:11434/", "", "http://gpu-box:11434"},
 	}
 	for _, tc := range tests {

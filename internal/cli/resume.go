@@ -358,7 +358,7 @@ func runResume(cmd *cobra.Command, args []string) error {
 		nativeClient = llm.NewDryRunClient(100 * time.Millisecond)
 		fmt.Fprintf(out, "[DRY RUN] Using simulated LLM responses\n")
 	} else {
-		nativeClient, err = buildLLMClient(s.Config.Models.Junior.Provider)
+		nativeClient, err = buildLLMClientFor(llmOptsFor(s.Config.Models.Junior, s.Config.Models))
 		if err != nil {
 			return fmt.Errorf("build LLM client for native runtime (provider %q): %w", s.Config.Models.Junior.Provider, err)
 		}
@@ -457,7 +457,7 @@ func runResume(cmd *cobra.Command, args []string) error {
 	if dryRun {
 		llmClient = llm.NewDryRunClient(100 * time.Millisecond)
 	} else {
-		llmClient, llmErr = buildLLMClient(s.Config.Models.Senior.Provider, godmode)
+		llmClient, llmErr = buildLLMClientFor(llmOptsFor(s.Config.Models.Senior, s.Config.Models), godmode)
 	}
 	if llmErr != nil {
 		log.Printf("Warning: LLM client (provider %q) unavailable, skipping code review: %v", s.Config.Models.Senior.Provider, llmErr)

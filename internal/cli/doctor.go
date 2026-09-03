@@ -195,13 +195,14 @@ func checkTmux() checkResult {
 // is set.
 const defaultOllamaHost = "http://localhost:11434"
 
-// ollamaHost resolves the Ollama base URL: OLLAMA_HOST env wins, then the
-// configured models.ollama_host, then localhost. A bare "host:port" (or
-// "host") gets an http:// scheme; a trailing slash is trimmed.
+// ollamaHost resolves the Ollama base URL: the configured models.ollama_host
+// wins (nxd.yaml is the project's source of truth), then the OLLAMA_HOST env
+// var, then localhost. A bare "host:port" (or "host") gets an http:// scheme;
+// a trailing slash is trimmed. Shared by doctor/init and the LLM clients.
 func ollamaHost(configured string) string {
-	host := os.Getenv("OLLAMA_HOST")
+	host := configured
 	if host == "" {
-		host = configured
+		host = os.Getenv("OLLAMA_HOST")
 	}
 	if host == "" {
 		host = defaultOllamaHost

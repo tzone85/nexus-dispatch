@@ -29,7 +29,7 @@ func withMockLLM(t *testing.T, responses ...llm.CompletionResponse) {
 	t.Cleanup(func() { buildLLMClientFunc = original })
 
 	client := llm.NewReplayClient(responses...)
-	buildLLMClientFunc = func(provider string, godmode ...bool) (llm.Client, error) {
+	buildLLMClientFunc = func(_ llmBuildOpts, godmode ...bool) (llm.Client, error) {
 		return client, nil
 	}
 }
