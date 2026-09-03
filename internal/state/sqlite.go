@@ -227,45 +227,59 @@ func (s *SQLiteStore) AckDirectWrite(n int) error {
 	return err
 }
 
+// dbExecer is satisfied by both *sql.DB and *sql.Tx so projection handlers
+// can run inside the caller's transaction.
+type dbExecer interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
 // RebuildFrom truncates the projection tables and replays every event from the
-// event store back through Project, restoring the materialized state to a
-// faithful function of the durable event log. This is the recovery path
-// engine.emitEventOrLog documents: when a Project fails after its Append
+// event store back through the projection handlers, restoring the materialized
+// state to a faithful function of the durable event log. This is the recovery
+// path engine.emitEventOrLog documents: when a Project fails after its Append
 // succeeded, the projection is left desynced until the next open, when
 // loadStores calls RebuildFrom to rebuild it.
 //
-// Truncate-then-replay (rather than in-place upserts) keeps Project simple:
-// every handler runs against empty tables, so plain INSERTs cannot collide.
+// The whole rebuild (DELETEs + replay + watermark) runs in ONE transaction
+// under the write mutex, so a concurrent reader never observes a half-empty
+// projection and a failure mid-replay leaves the previous projection intact.
 func (s *SQLiteStore) RebuildFrom(ctx context.Context, es EventStore) error {
 	events, err := es.List(EventFilter{})
 	if err != nil {
 		return fmt.Errorf("rebuild: list events: %w", err)
 	}
-	if err := s.truncateProjection(); err != nil {
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("rebuild: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if err := truncateProjectionTx(tx); err != nil {
 		return fmt.Errorf("rebuild: %w", err)
 	}
 	for _, evt := range events {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := s.Project(evt); err != nil {
+		if err := s.projectLocked(tx, evt); err != nil {
 			return fmt.Errorf("rebuild: project %s (%s): %w", evt.Type, evt.ID, err)
 		}
 	}
-	return nil
+	if _, err := tx.Exec(
+		`UPDATE projection_meta SET value = ? WHERE key = ?`, len(events), appliedCountKey,
+	); err != nil {
+		return fmt.Errorf("rebuild: set watermark: %w", err)
+	}
+	return tx.Commit()
 }
 
-// truncateProjection empties every projection table and resets the watermark to
-// zero so the subsequent replay repopulates both from scratch.
-func (s *SQLiteStore) truncateProjection() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	tx, err := s.db.Begin()
-	if err != nil {
-		return fmt.Errorf("truncate: begin: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
+// truncateProjectionTx empties every projection table and resets the
+// watermark to zero inside the given transaction.
+func truncateProjectionTx(tx dbExecer) error {
 	for _, table := range projectionTables {
 		if _, err := tx.Exec("DELETE FROM " + table); err != nil {
 			return fmt.Errorf("truncate %s: %w", table, err)
@@ -276,53 +290,59 @@ func (s *SQLiteStore) truncateProjection() error {
 	); err != nil {
 		return fmt.Errorf("truncate: reset watermark: %w", err)
 	}
-	return tx.Commit()
+	return nil
 }
 
 // Project applies a domain event to the projection tables, updating the
-// materialized state accordingly. On success it advances the reconciliation
-// watermark (applied_event_count) so an interrupted projection can be detected
-// and rebuilt on the next open.
+// materialized state accordingly. The handler and the watermark bump
+// (applied_event_count) run in one transaction: either both land or neither,
+// so an interrupted projection is detected and rebuilt on the next open and a
+// multi-row handler (story + deps, escalation + tier) can never half-apply.
 func (s *SQLiteStore) Project(evt Event) error {
 	// H6: serialize all writes through a single mutex. SQLite's own locking
 	// produces SQLITE_BUSY under contention; this avoids those errors and
 	// the noisy retry loops they trigger.
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.projectLocked(evt); err != nil {
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("project: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if err := s.projectLocked(tx, evt); err != nil {
 		return err
 	}
-	// Advance the watermark only after the projection write succeeded. A
-	// failed Project leaves the watermark behind the event-log length, which
-	// is exactly the signal RebuildFrom keys off on next open.
-	_, err := s.db.Exec(
-		`UPDATE projection_meta SET value = value + 1 WHERE key = ?`,
-		appliedCountKey,
-	)
-	return err
+	if _, err := tx.Exec(
+		`UPDATE projection_meta SET value = value + 1 WHERE key = ?`, appliedCountKey,
+	); err != nil {
+		return fmt.Errorf("project: advance watermark: %w", err)
+	}
+	return tx.Commit()
 }
 
 // projectLocked routes a single event to its projection handler. The caller
 // must hold s.mu.
-func (s *SQLiteStore) projectLocked(evt Event) error {
+func (s *SQLiteStore) projectLocked(x dbExecer, evt Event) error {
 	payload := s.decodePayload(evt)
 
 	switch evt.Type {
 	case EventReqSubmitted:
-		return s.projectReqSubmitted(payload)
+		return s.projectReqSubmitted(x, payload)
 	case EventReqAnalyzed:
-		return s.updateReqStatus(payload, "analyzed")
+		return s.updateReqStatus(x, payload, "analyzed")
 	case EventReqPlanned:
-		return s.updateReqStatus(payload, "planned")
+		return s.updateReqStatus(x, payload, "planned")
 	case EventReqPaused:
-		return s.updateReqStatus(payload, "paused")
+		return s.updateReqStatus(x, payload, "paused")
 	case EventReqResumed:
-		return s.updateReqStatus(payload, "planned")
+		return s.updateReqStatus(x, payload, "planned")
 	case EventReqCompleted:
-		return s.updateReqStatus(payload, "completed")
+		return s.updateReqStatus(x, payload, "completed")
 
 	case EventReqBlocked:
-		return s.updateReqStatus(payload, "blocked")
+		return s.updateReqStatus(x, payload, "blocked")
 
 	case EventReqClassified:
 		reqID, _ := payload["req_id"].(string)
@@ -332,52 +352,52 @@ func (s *SQLiteStore) projectLocked(evt Event) error {
 		if isExisting {
 			isExistingInt = 1
 		}
-		_, err := s.db.Exec(`UPDATE requirements SET req_type = ?, is_existing = ? WHERE id = ?`, reqType, isExistingInt, reqID)
+		_, err := x.Exec(`UPDATE requirements SET req_type = ?, is_existing = ? WHERE id = ?`, reqType, isExistingInt, reqID)
 		return err
 
 	case EventInvestigationCompleted:
 		reqID, _ := payload["req_id"].(string)
 		reportJSON, _ := payload["report"].(string)
-		_, err := s.db.Exec(`UPDATE requirements SET investigation_report_json = ? WHERE id = ?`, reportJSON, reqID)
+		_, err := x.Exec(`UPDATE requirements SET investigation_report_json = ? WHERE id = ?`, reportJSON, reqID)
 		return err
 
 	case EventReqPendingReview:
-		return s.updateReqStatus(payload, "pending_review")
+		return s.updateReqStatus(x, payload, "pending_review")
 	case EventReqRejected:
-		return s.updateReqStatus(payload, "rejected")
+		return s.updateReqStatus(x, payload, "rejected")
 
 	case EventStoryCreated:
-		return s.projectStoryCreated(payload)
+		return s.projectStoryCreated(x, payload)
 	case EventAgentSpawned:
-		return s.projectAgentSpawned(evt, payload)
+		return s.projectAgentSpawned(x, evt, payload)
 	case EventAgentTerminated:
-		return s.projectAgentStatus(evt, payload, "terminated")
+		return s.projectAgentStatus(x, evt, payload, "terminated")
 	case EventAgentStuck:
-		return s.projectAgentStatus(evt, payload, "stuck")
+		return s.projectAgentStatus(x, evt, payload, "stuck")
 	case EventAgentResumed:
-		return s.projectAgentStatus(evt, payload, "active")
+		return s.projectAgentStatus(x, evt, payload, "active")
 	case EventStoryEstimated:
-		return s.updateStoryStatus(evt.StoryID, "estimated")
+		return s.updateStoryStatus(x, evt.StoryID, "estimated")
 	case EventStoryAssigned:
-		return s.projectStoryAssigned(evt.StoryID, payload)
+		return s.projectStoryAssigned(x, evt.StoryID, payload)
 	case EventStoryStarted:
-		return s.updateStoryStatus(evt.StoryID, "in_progress")
+		return s.updateStoryStatus(x, evt.StoryID, "in_progress")
 	case EventStoryProgress:
 		return nil // progress events are informational only
 	case EventStoryCompleted:
-		return s.updateStoryStatus(evt.StoryID, "review")
+		return s.updateStoryStatus(x, evt.StoryID, "review")
 	case EventStoryReviewRequested:
-		return s.updateStoryStatus(evt.StoryID, "review")
+		return s.updateStoryStatus(x, evt.StoryID, "review")
 	case EventStoryReviewPassed:
-		return s.updateStoryStatus(evt.StoryID, "qa")
+		return s.updateStoryStatus(x, evt.StoryID, "qa")
 	case EventStoryReviewFailed:
-		return s.updateStoryStatus(evt.StoryID, "draft")
+		return s.updateStoryStatus(x, evt.StoryID, "draft")
 	case EventStoryQAStarted:
-		return s.updateStoryStatus(evt.StoryID, "qa")
+		return s.updateStoryStatus(x, evt.StoryID, "qa")
 	case EventStoryQAPassed:
-		return s.updateStoryStatus(evt.StoryID, "pr_submitted")
+		return s.updateStoryStatus(x, evt.StoryID, "pr_submitted")
 	case EventStoryQAFailed:
-		return s.updateStoryStatus(evt.StoryID, "draft")
+		return s.updateStoryStatus(x, evt.StoryID, "draft")
 	case EventStorySecurityPassed, EventStorySecurityFailed:
 		// Informational: the security gate's pass/fail is recorded in the event
 		// log; pausing on failure is handled by the pipeline (REQ_PAUSED).
@@ -387,35 +407,35 @@ func (s *SQLiteStore) projectLocked(evt Event) error {
 		// recorded in the event log; no projection state to mutate.
 		return nil
 	case EventStoryPRCreated:
-		return s.projectStoryPRCreated(evt.StoryID, payload)
+		return s.projectStoryPRCreated(x, evt.StoryID, payload)
 	case EventStoryMerged:
-		return s.projectStoryMerged(evt)
+		return s.projectStoryMerged(x, evt)
 
 	case EventStoryMergeReady:
-		return s.updateStoryStatus(evt.StoryID, "merge_ready")
+		return s.updateStoryStatus(x, evt.StoryID, "merge_ready")
 	case EventStoryRecovery:
 		newStatus, _ := payload["new_status"].(string)
 		if newStatus != "" {
-			return s.updateStoryStatus(evt.StoryID, newStatus)
+			return s.updateStoryStatus(x, evt.StoryID, newStatus)
 		}
 		return nil
 
 	case EventStoryEscalated:
-		return s.projectStoryEscalated(evt, payload)
+		return s.projectStoryEscalated(x, evt, payload)
 	case EventStoryRewritten:
-		return s.projectStoryRewritten(evt.StoryID, payload)
+		return s.projectStoryRewritten(x, evt.StoryID, payload)
 	case EventStorySplit:
-		return s.updateStoryStatus(evt.StoryID, "split")
+		return s.updateStoryStatus(x, evt.StoryID, "split")
 
 	case EventStoryReset:
-		return s.updateStoryStatus(evt.StoryID, "draft")
+		return s.updateStoryStatus(x, evt.StoryID, "draft")
 
 	case EventStoryDBCreated:
-		return s.projectStoryDBCreated(evt, payload)
+		return s.projectStoryDBCreated(x, evt, payload)
 	case EventStoryDBFailed:
-		return s.projectStoryDBFailed(evt, payload)
+		return s.projectStoryDBFailed(x, evt, payload)
 	case EventStoryDBDeleted:
-		return s.projectStoryDBDeleted(evt, payload)
+		return s.projectStoryDBDeleted(x, evt, payload)
 
 	case EventStoryConflictBinary, EventStoryConflictBinaryRemoved, EventStoryConflictEscalated:
 		// Conflict resolution events are informational; they are read from the
@@ -756,8 +776,8 @@ func (s *SQLiteStore) decodePayload(evt Event) map[string]any {
 	return m
 }
 
-func (s *SQLiteStore) projectReqSubmitted(payload map[string]any) error {
-	_, err := s.db.Exec(
+func (s *SQLiteStore) projectReqSubmitted(x dbExecer, payload map[string]any) error {
+	_, err := x.Exec(
 		`INSERT INTO requirements (id, title, description, status, repo_path) VALUES (?, ?, ?, 'pending', ?)`,
 		payloadStr(payload, "id"),
 		payloadStr(payload, "title"),
@@ -767,16 +787,16 @@ func (s *SQLiteStore) projectReqSubmitted(payload map[string]any) error {
 	return err
 }
 
-func (s *SQLiteStore) updateReqStatus(payload map[string]any, status string) error {
+func (s *SQLiteStore) updateReqStatus(x dbExecer, payload map[string]any, status string) error {
 	id := payloadStr(payload, "id")
-	_, err := s.db.Exec(
+	_, err := x.Exec(
 		`UPDATE requirements SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
 		status, id,
 	)
 	return err
 }
 
-func (s *SQLiteStore) projectStoryCreated(payload map[string]any) error {
+func (s *SQLiteStore) projectStoryCreated(x dbExecer, payload map[string]any) error {
 	complexity := payloadInt(payload, "complexity")
 	storyID := payloadStr(payload, "id")
 
@@ -794,7 +814,7 @@ func (s *SQLiteStore) projectStoryCreated(payload map[string]any) error {
 
 	splitDepth := payloadInt(payload, "split_depth")
 
-	_, err := s.db.Exec(
+	_, err := x.Exec(
 		`INSERT INTO stories (id, req_id, title, description, acceptance_criteria, complexity, status, owned_files, wave_hint, split_depth)
 		 VALUES (?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?)`,
 		storyID,
@@ -816,7 +836,7 @@ func (s *SQLiteStore) projectStoryCreated(payload map[string]any) error {
 		if depSlice, ok := deps.([]any); ok {
 			for _, dep := range depSlice {
 				if depStr, ok := dep.(string); ok && depStr != "" {
-					_, err := s.db.Exec(
+					_, err := x.Exec(
 						`INSERT OR IGNORE INTO story_deps (story_id, depends_on_id) VALUES (?, ?)`,
 						storyID, depStr,
 					)
@@ -830,36 +850,36 @@ func (s *SQLiteStore) projectStoryCreated(payload map[string]any) error {
 	return nil
 }
 
-func (s *SQLiteStore) projectStoryAssigned(storyID string, payload map[string]any) error {
+func (s *SQLiteStore) projectStoryAssigned(x dbExecer, storyID string, payload map[string]any) error {
 	agentID := payloadStr(payload, "agent_id")
 	wave := payloadInt(payload, "wave")
-	_, err := s.db.Exec(
+	_, err := x.Exec(
 		`UPDATE stories SET status = 'assigned', agent_id = ?, wave = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
 		agentID, wave, storyID,
 	)
 	return err
 }
 
-func (s *SQLiteStore) projectStoryPRCreated(storyID string, payload map[string]any) error {
+func (s *SQLiteStore) projectStoryPRCreated(x dbExecer, storyID string, payload map[string]any) error {
 	prNumber := payloadInt(payload, "pr_number")
 	prURL := payloadStr(payload, "pr_url")
-	_, err := s.db.Exec(
+	_, err := x.Exec(
 		`UPDATE stories SET status = 'pr_submitted', pr_url = ?, pr_number = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
 		prURL, prNumber, storyID,
 	)
 	return err
 }
 
-func (s *SQLiteStore) projectStoryMerged(evt Event) error {
-	_, err := s.db.Exec(
+func (s *SQLiteStore) projectStoryMerged(x dbExecer, evt Event) error {
+	_, err := x.Exec(
 		`UPDATE stories SET status = 'merged', merged_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
 		evt.Timestamp, evt.StoryID,
 	)
 	return err
 }
 
-func (s *SQLiteStore) updateStoryStatus(storyID, status string) error {
-	_, err := s.db.Exec(
+func (s *SQLiteStore) updateStoryStatus(x dbExecer, storyID, status string) error {
+	_, err := x.Exec(
 		`UPDATE stories SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
 		status, storyID,
 	)
@@ -891,10 +911,10 @@ func (s *SQLiteStore) BackfillAcceptanceCriteria(events []Event) {
 // every consumer of ListAgents (`nxd agents`, the dashboard agents panel, and
 // crash recovery's session→story map) sees nothing. Idempotent so projection
 // replay is safe.
-func (s *SQLiteStore) projectAgentSpawned(evt Event, payload map[string]any) error {
+func (s *SQLiteStore) projectAgentSpawned(x dbExecer, evt Event, payload map[string]any) error {
 	role := payloadStr(payload, "role")
 	sessionName := payloadStr(payload, "session_name")
-	_, err := s.db.Exec(
+	_, err := x.Exec(
 		`INSERT INTO agents (id, type, status, current_story_id, session_name)
 		 VALUES (?, ?, 'idle', ?, ?)
 		 ON CONFLICT(id) DO UPDATE SET
@@ -923,7 +943,7 @@ func (s *SQLiteStore) projectAgentSpawned(evt Event, payload map[string]any) err
 //   - AgentID set    → the dashboard killed a specific agent by id.
 //   - otherwise      → the watchdog's AGENT_STUCK carries only the tmux
 //     session name in its payload.
-func (s *SQLiteStore) projectAgentStatus(evt Event, payload map[string]any, status string) error {
+func (s *SQLiteStore) projectAgentStatus(x dbExecer, evt Event, payload map[string]any, status string) error {
 	// A terminated agent also clears current_story_id so crash recovery's
 	// session→story map (buildSessionStoryMap) drops the dead session instead
 	// of trying to reconcile an already-killed tmux session.
@@ -946,12 +966,11 @@ func (s *SQLiteStore) projectAgentStatus(evt Event, payload map[string]any, stat
 		}
 		query = `UPDATE agents SET ` + setClause + ` WHERE session_name = ?`
 	}
-	if _, err := s.db.Exec(query, status, key); err != nil {
+	if _, err := x.Exec(query, status, key); err != nil {
 		return fmt.Errorf("project agent status %q: %w", status, err)
 	}
 	return nil
 }
-
 
 // InsertAgent inserts an agent record directly into the agents table.
 // Convenience for tests and direct seeding; live runs populate the table via
@@ -982,12 +1001,12 @@ func (s *SQLiteStore) ArchiveStoriesByReq(reqID string) error {
 	return err
 }
 
-func (s *SQLiteStore) projectStoryEscalated(evt Event, payload map[string]any) error {
+func (s *SQLiteStore) projectStoryEscalated(x dbExecer, evt Event, payload map[string]any) error {
 	fromTier := payloadInt(payload, "from_tier")
 	toTier := payloadInt(payload, "to_tier")
 	reason := payloadStr(payload, "reason")
 
-	if _, err := s.db.Exec(
+	if _, err := x.Exec(
 		`UPDATE stories SET escalation_tier = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
 		toTier, evt.StoryID,
 	); err != nil {
@@ -995,7 +1014,7 @@ func (s *SQLiteStore) projectStoryEscalated(evt Event, payload map[string]any) e
 	}
 
 	id := ulid.MustNew(ulid.Timestamp(evt.Timestamp), rand.Reader)
-	_, err := s.db.Exec(
+	_, err := x.Exec(
 		`INSERT INTO escalations (id, story_id, from_agent, reason, status, from_tier, to_tier, created_at)
 		 VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)`,
 		id.String(), evt.StoryID, evt.AgentID, reason, fromTier, toTier, evt.Timestamp,
@@ -1003,24 +1022,24 @@ func (s *SQLiteStore) projectStoryEscalated(evt Event, payload map[string]any) e
 	return err
 }
 
-func (s *SQLiteStore) projectStoryRewritten(storyID string, payload map[string]any) error {
+func (s *SQLiteStore) projectStoryRewritten(x dbExecer, storyID string, payload map[string]any) error {
 	changes := payloadMap(payload, "changes")
 
 	// Propagate field-update errors rather than silently dropping them — a
 	// failed UPDATE here means the rewrite only partially applied, and the
 	// caller must know so it doesn't treat the story as successfully rewritten.
 	if title, ok := changes["title"].(string); ok && title != "" {
-		if _, err := s.db.Exec(`UPDATE stories SET title = ? WHERE id = ?`, title, storyID); err != nil {
+		if _, err := x.Exec(`UPDATE stories SET title = ? WHERE id = ?`, title, storyID); err != nil {
 			return fmt.Errorf("rewrite title: %w", err)
 		}
 	}
 	if desc, ok := changes["description"].(string); ok && desc != "" {
-		if _, err := s.db.Exec(`UPDATE stories SET description = ? WHERE id = ?`, desc, storyID); err != nil {
+		if _, err := x.Exec(`UPDATE stories SET description = ? WHERE id = ?`, desc, storyID); err != nil {
 			return fmt.Errorf("rewrite description: %w", err)
 		}
 	}
 	if ac, ok := changes["acceptance_criteria"].(string); ok && ac != "" {
-		if _, err := s.db.Exec(`UPDATE stories SET acceptance_criteria = ? WHERE id = ?`, ac, storyID); err != nil {
+		if _, err := x.Exec(`UPDATE stories SET acceptance_criteria = ? WHERE id = ?`, ac, storyID); err != nil {
 			return fmt.Errorf("rewrite acceptance_criteria: %w", err)
 		}
 	}
@@ -1033,13 +1052,13 @@ func (s *SQLiteStore) projectStoryRewritten(storyID string, payload map[string]a
 			cval, valid = c, true
 		}
 		if valid {
-			if _, err := s.db.Exec(`UPDATE stories SET complexity = ? WHERE id = ?`, cval, storyID); err != nil {
+			if _, err := x.Exec(`UPDATE stories SET complexity = ? WHERE id = ?`, cval, storyID); err != nil {
 				return fmt.Errorf("rewrite complexity: %w", err)
 			}
 		}
 	}
 
-	_, err := s.db.Exec(
+	_, err := x.Exec(
 		`UPDATE stories SET escalation_tier = 0, status = 'draft', updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
 		storyID,
 	)
@@ -1102,8 +1121,8 @@ func payloadMap(m map[string]any, key string) map[string]any {
 	return sub
 }
 
-func (s *SQLiteStore) projectStoryDBCreated(evt Event, payload map[string]any) error {
-	_, err := s.db.Exec(
+func (s *SQLiteStore) projectStoryDBCreated(x dbExecer, evt Event, payload map[string]any) error {
+	_, err := x.Exec(
 		`INSERT OR REPLACE INTO story_databases
 		 (story_id, db_id, db_name, provider, status, template, conn_string_hash, created_at)
 		 VALUES (?, ?, ?, ?, 'created', ?, ?, ?)`,
@@ -1118,8 +1137,8 @@ func (s *SQLiteStore) projectStoryDBCreated(evt Event, payload map[string]any) e
 	return err
 }
 
-func (s *SQLiteStore) projectStoryDBFailed(evt Event, payload map[string]any) error {
-	_, err := s.db.Exec(
+func (s *SQLiteStore) projectStoryDBFailed(x dbExecer, evt Event, payload map[string]any) error {
+	_, err := x.Exec(
 		`INSERT OR REPLACE INTO story_databases
 		 (story_id, db_id, db_name, provider, status, error, created_at)
 		 VALUES (?, ?, ?, ?, 'failed', ?, ?)`,
@@ -1133,14 +1152,14 @@ func (s *SQLiteStore) projectStoryDBFailed(evt Event, payload map[string]any) er
 	return err
 }
 
-func (s *SQLiteStore) projectStoryDBDeleted(evt Event, payload map[string]any) error {
+func (s *SQLiteStore) projectStoryDBDeleted(x dbExecer, evt Event, payload map[string]any) error {
 	status := payloadStr(payload, "status")
 	if status == "" {
 		status = "deleted"
 	}
 	dur := payloadFloat(payload, "duration_seconds")
 	bytes := payloadInt(payload, "bytes_used")
-	_, err := s.db.Exec(
+	_, err := x.Exec(
 		`UPDATE story_databases
 		 SET status = ?, deleted_at = ?, duration_seconds = ?, bytes_used = ?
 		 WHERE story_id = ? AND db_id = ?`,
