@@ -4,7 +4,7 @@ This file is the entry-point for agents (Claude Code, Gemini CLI, Codex, etc.) o
 
 ## Source of truth
 
-All architecture, conventions, package map, current state, coverage numbers, test infrastructure, and event catalogue live in **[CLAUDE.md](CLAUDE.md)**. AGENTS.md used to mirror that content and drift was repeatedly catching reviewers off-guard (see F10 in the 2026-06 deep-scan remediation). Read CLAUDE.md first.
+All architecture, conventions, package map and current state live in **[CLAUDE.md](CLAUDE.md)**; historical dated sections are archived in `docs/history/claude-md-current-state-archive.md` and release notes in `CHANGELOG.md`. AGENTS.md used to mirror that content and drift was repeatedly catching reviewers off-guard (see F10 in the 2026-06 deep-scan remediation). Read CLAUDE.md first.
 
 Other guides that supplement CLAUDE.md:
 

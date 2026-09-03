@@ -7,7 +7,17 @@ Thanks for your interest in contributing to NXD! This guide will help you get st
 NXD is a public repo. Two foot-guns to avoid:
 
 1. **Use a personal commit identity, not a work email.** Run `git config user.email <personal-email>` and `git config user.name <name>` in your clone. Commit author lives in git forever and is searchable.
-2. **Run `bash scripts/check-leaks.sh` before pushing.** It blocks merge if private terms (client names, internal hostnames, personal `$HOME` paths) slip in. Add new forbidden terms to the script as you discover them — never relax the existing ones.
+2. **Run `bash scripts/check-leaks.sh` (or `make leak-check`) before pushing.** It blocks merge if private terms (client names, internal hostnames, personal `$HOME` paths) slip in. The terms themselves are deliberately not in the repo: the script reads them from the git-ignored `scripts/.leak-terms` (one `<extended-regex>|<description>` per line, `#` comments allowed) and, in CI, from the `LEAK_TERMS` repository secret in the same format. Maintainers keep the list locally; a fresh clone without it prints a "check skipped" warning instead of silently passing. Add new terms as you discover them — never relax the existing ones — and never paste a term into a commit, issue or PR (describe it instead).
+
+## Repo layout notes
+
+A few top-level directories are tooling, not product code:
+
+- `specs/` and `.specify/` — [spec-kit](https://github.com/github/spec-kit) feature specs and templates used when planning larger changes; edit them through spec-kit, not by hand.
+- `stats/` — weekly GitHub traffic snapshots committed by `.github/workflows/traffic-stats.yml`; never edit manually.
+- `docs/history/` — point-in-time reports and archived `CLAUDE.md` sections; not maintained.
+- `migrations/001_init.sql` — generated from `internal/state/sqlite.go` by `scripts/check-schema-drift.sh --write`; CI fails on drift.
+- `nxd.config.example.yaml` — generated from `config.DefaultYAML()` (`go test ./internal/config -update-example -run TestExampleYAMLMatchesDefault`); a test fails on drift.
 
 ## Development Setup
 
