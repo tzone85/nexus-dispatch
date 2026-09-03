@@ -2,17 +2,71 @@ version: 2
 
 project_name: nxd
 
+# ---------------------------------------------------------------------------
+# cgo is REQUIRED: internal/state/sqlite.go imports mattn/go-sqlite3, which
+# compiles the SQLite amalgamation with the host C compiler. CGO_ENABLED=0
+# produced a binary whose `sql.Open("sqlite3", …)` failed at runtime
+# ("sql: unknown driver"), so every release was broken.
+#
+# Cross-compiling cgo for darwin from Linux needs osxcross, which is not
+# "simple and correct". Instead the release job (.github/workflows/ci.yml)
+# runs goreleaser once per runner OS: the Linux runner builds linux/amd64
+# natively and linux/arm64 with the aarch64-linux-gnu cross gcc; the macOS
+# runner builds darwin/arm64 and darwin/amd64 natively (Apple clang links
+# both). Each build below is skipped unless it is running on its own OS
+# (`.Runtime.Goos`), the two runs upload into the same GitHub release
+# (release.mode keep-existing) and the checksum file is suffixed per OS so
+# the uploads never collide. The Dockerfile builds with CGO_ENABLED=1 too.
+# ---------------------------------------------------------------------------
 builds:
-  - main: ./cmd/nxd
+  - id: linux-amd64
+    main: ./cmd/nxd
     binary: nxd
+    goos: [linux]
+    goarch: [amd64]
+    skip: '{{ ne .Runtime.Goos "linux" }}'
     env:
-      - CGO_ENABLED=0
-    goos:
-      - linux
-      - darwin
-    goarch:
-      - amd64
-      - arm64
+      - CGO_ENABLED=1
+    flags: [-trimpath]
+    ldflags:
+      # cmd/nxd/main.go declares `var version = "dev"` in package main.
+      - -s -w -X main.version={{.Version}}
+
+  - id: linux-arm64
+    main: ./cmd/nxd
+    binary: nxd
+    goos: [linux]
+    goarch: [arm64]
+    skip: '{{ ne .Runtime.Goos "linux" }}'
+    env:
+      - CGO_ENABLED=1
+      - CC=aarch64-linux-gnu-gcc
+      - CXX=aarch64-linux-gnu-g++
+    flags: [-trimpath]
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+  - id: darwin-arm64
+    main: ./cmd/nxd
+    binary: nxd
+    goos: [darwin]
+    goarch: [arm64]
+    skip: '{{ ne .Runtime.Goos "darwin" }}'
+    env:
+      - CGO_ENABLED=1
+    flags: [-trimpath]
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+  - id: darwin-amd64
+    main: ./cmd/nxd
+    binary: nxd
+    goos: [darwin]
+    goarch: [amd64]
+    skip: '{{ ne .Runtime.Goos "darwin" }}'
+    env:
+      - CGO_ENABLED=1
+    flags: [-trimpath]
     ldflags:
       - -s -w -X main.version={{.Version}}
 
@@ -23,6 +77,11 @@ archives:
     format_overrides:
       - goos: darwin
         format: zip
+
+checksum:
+  # One checksum file per runner OS so the linux and darwin runs do not
+  # both try to upload nxd_<version>_checksums.txt.
+  name_template: '{{ .ProjectName }}_{{ .Version }}_checksums_{{ .Runtime.Goos }}.txt'
 
 changelog:
   sort: asc
@@ -36,3 +95,6 @@ release:
   github:
     owner: tzone85
     name: nexus-dispatch
+  # The second runner finds the release the first one created and only adds
+  # its assets; it must not replace the body or fail on "already exists".
+  mode: keep-existing

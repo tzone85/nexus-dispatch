@@ -94,15 +94,30 @@ nxd init && nxd doctor
 
 | Command | What it does |
 |---|---|
-| `nxd init` | Create `~/.nxd/`, generate `nxd.yaml`, check Ollama |
+| `nxd init [--local-state]` | Create the state dir, generate `nxd.yaml`, check Ollama. `--local-state` keeps state in a git-ignored `./.nxd` per repo (recommended) |
 | `nxd req "<requirement>"` | Submit a requirement; planning + dispatch |
 | `nxd req --background` | Same, but self-daemonize; tail with `nxd req-logs` |
+| `nxd resume <req-id>` | Continue a paused/planned requirement (after an approval, a fix, or a merged PR) |
 | `nxd status` | Requirements + stories overview |
 | `nxd dashboard [--web]` | Live TUI / browser dashboard |
 | `nxd timeline [req-id]` | Chronological requirement history with per-story durations |
-| `nxd doctor` | Preflight checks (Go, git, tmux, Ollama, config, projection drift) |
+| `nxd approvals list\|approve\|reject` | Human approval queue — decide pending conflict/integration/security/merge items |
+| `nxd cancel <req-id\|story-id>` | Stop a story (reset + kill its agent) or pause a whole requirement |
+| `nxd state check\|repair\|compact\|rebuild` | Inspect and repair the event log / SQLite projection |
+| `nxd doctor [--json]` | Preflight checks (Go, git, tmux, Ollama, config, sandbox, projection drift) |
+| `nxd version` | Build version (same as `--version`) |
+
+Every command accepts `--config <path>` and `--state-dir <path>` to target another project's config or state for one invocation.
 
 Long runs can also push **notifications** (Slack-compatible webhook + macOS desktop) on completion/blocks/pauses, and a **budget guard** pauses a requirement before metered LLM spend exceeds `billing.budget_usd` — see [Configuration](docs/guides/configuration.md).
+
+### Sandboxing
+
+Commands that agents and QA run on your behalf — the native runtime's `run_command`, `command_succeeds`/`test_passes` criteria, the investigator's shell tool — go through a **command sandbox**. When Docker is available they execute in a throwaway container (`docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges`, worktree mounted at `/work`); otherwise they run on the host as a plain argv exec (no shell) with a one-time warning. Control it with `sandbox.mode: auto|docker|host` plus `sandbox.image`, `sandbox.network`, `sandbox.cpus`/`memory`. Every command is also checked against an argv-aware `command_allowlist`, and CLI agents (Claude Code, Codex, aider) can be confined with `runtimes.<name>.runner: docker|ssh`. `nxd doctor` reports where commands will run.
+
+### Approvals
+
+Risky decisions are not auto-resolved. An LLM-resolved rebase conflict, a post-merge integration build failure, a security-gate finding — and, if you opt in, every merge — create an **approval item** that pauses the requirement and blocks the story's merge until a human decides with `nxd approvals approve|reject <item-id> [--note ...]` or the dashboard's **Approvals** panel, followed by `nxd resume <req-id>`. Which kinds wait for you is `approvals.require_for` in `nxd.yaml`; items are persisted as `APPROVAL_REQUESTED` / `APPROVAL_RESOLVED` events, so every process sees the same queue.
 
 Full CLI reference: [`docs/reference/cli-reference.md`](docs/reference/cli-reference.md).
 
@@ -129,11 +144,12 @@ internal/agent/    Role definitions, prompts, complexity scoring
 internal/cli/      Cobra command implementations
 internal/config/   YAML loader + validation
 internal/dashboard/ TUI (Bubbletea), web (WebSocket)
-internal/engine/   Planner, dispatcher, reviewer, QA, merger, watchdog
+internal/approvals/ Human approval queue (event-sourced)
+internal/engine/   Planner, dispatcher, reviewer, QA, merger, watchdog, gates
 internal/git/      Worktrees, branches, local merge, GitHub PRs
-internal/llm/      Ollama / Anthropic / OpenAI clients
-internal/runtime/  Pluggable runtimes (gemma native, Aider, Claude Code, Codex)
-internal/state/    Event store (JSONL) + SQLite projections
+internal/llm/      Ollama / Anthropic / OpenAI / Google clients
+internal/runtime/  Pluggable runtimes (gemma native, Aider, Claude Code, Codex), command sandbox, docker/ssh runners
+internal/state/    Event store (JSONL) + SQLite projections + maintenance
 internal/tmux/     Session lifecycle
 ```
 

@@ -4,9 +4,21 @@ on:
   issues:
     types: [labeled]
 
+# DISABLED (2026-09-03). This workflow cannot work as written on a hosted
+# runner: it pulls gemma4:26b (~16 GB) onto a 7 GB-RAM CPU-only
+# ubuntu-latest box and expects a full plan → dispatch → merge pipeline to
+# finish in 20 minutes, and it installed Ollama via an unpinned
+# `curl … | sh`. Rather than pretend it is a working automation, the job is
+# gated on `if: false` until a self-hosted GPU runner exists. To re-enable:
+#   1. add a self-hosted runner label with a GPU + a pre-pulled model, set
+#      `runs-on` to it and pick a model that fits (the default config uses
+#      gemma4:e4b);
+#   2. install Ollama from a pinned release asset with a checksum instead of
+#      the install script, or pre-install it on the runner image;
+#   3. drop `if: false` below.
 jobs:
   nxd-automate:
-    if: github.event.label.name == 'nxd'
+    if: false  # see header comment — was: github.event.label.name == 'nxd'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -21,7 +33,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
-          go-version: '1.23'
+          go-version: '1.26.5'  # must match go.mod (go 1.26)
 
       - name: Build NXD
         run: go build -o ./nxd ./cmd/nxd/

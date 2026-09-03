@@ -19,6 +19,10 @@ Welcome to the NXD (Nexus Dispatch) training guides. Whether you're a first-time
 | [CLI Reference](reference/cli-reference.md) | Complete command, flag, and option reference |
 | [Event Reference](reference/event-reference.md) | All 65 event types with payloads and state transitions |
 
+## History
+
+Point-in-time reports and the archived `CLAUDE.md` "Current State" sections live in [history/](history/README.md). They are not maintained.
+
 ## Demo
 
 Generate an animated GIF of the full NXD workflow with [VHS](https://github.com/charmbracelet/vhs):

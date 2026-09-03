@@ -105,7 +105,7 @@ have been a behaviour-changing rewrite, not a bounded refactor.
 ## The performance baseline
 
 Full numbers, commands, and the value/effort ranking live in the State
-performance baseline (`docs/perf-baseline-state.md`) — not restated here. The
+performance baseline (`docs/history/perf-baseline-state.md`) — not restated here. The
 headline: `List`/`Count` cost is linear in the whole log, and a `Limit=50` tail
 read pays the same scan as a full read (the limit bounds the returned slice,
 not the work). The benchmarks are in `filestore_bench_test.go`.
@@ -164,7 +164,7 @@ command first and it auto-heals, and `doctor` then reports "in sync".
 ## How to measure
 
 The performance numbers are reproduced by the benchmark commands in the State
-performance baseline (`docs/perf-baseline-state.md`), each figure printed beside
+performance baseline (`docs/history/perf-baseline-state.md`), each figure printed beside
 the exact `go test -bench` invocation that produced it. The short version:
 
 ```

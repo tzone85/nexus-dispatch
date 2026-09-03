@@ -13,6 +13,10 @@ RUN go mod download
 
 COPY . .
 
+# cgo is mandatory (mattn/go-sqlite3) — this must agree with .goreleaser.yml,
+# which also builds every release binary with CGO_ENABLED=1. The builder
+# stage installs gcc + musl-dev + sqlite-dev for exactly that reason.
+#
 # RELEASE flag controls whether debug symbols are stripped. Default is to
 # KEEP symbols so crash dumps are useful. Pass `--build-arg RELEASE=1`
 # (set by `make release`) to strip for the smaller release binary.
