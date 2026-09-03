@@ -204,7 +204,17 @@ func DefaultYAML() ([]byte, error) {
 // never complete — so unknown projects get no criteria rather than the
 // wrong ones.
 func DefaultYAMLFor(dir string) ([]byte, string, error) {
+	return DefaultYAMLForWith(dir, nil)
+}
+
+// DefaultYAMLForWith is DefaultYAMLFor with a hook that can adjust the config
+// before it is marshalled (e.g. `nxd init --local-state` pointing
+// workspace.state_dir at a repo-relative directory). mutate may be nil.
+func DefaultYAMLForWith(dir string, mutate func(*Config)) ([]byte, string, error) {
 	cfg := DefaultConfig()
+	if mutate != nil {
+		mutate(&cfg)
+	}
 	profile := DetectProject(dir)
 	cfg.QA.SuccessCriteria = profile.Criteria
 	if len(profile.AllowlistExtras) > 0 {

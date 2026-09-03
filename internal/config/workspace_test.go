@@ -3,6 +3,7 @@ package config_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/tzone85/nexus-dispatch/internal/config"
@@ -109,5 +110,19 @@ func TestLoadFromFile_OllamaHost(t *testing.T) {
 	}
 	if cfg.Models.OllamaHost != "10.0.0.5:11434" {
 		t.Errorf("OllamaHost = %q", cfg.Models.OllamaHost)
+	}
+}
+
+func TestDefaultYAMLForWith_AppliesMutation(t *testing.T) {
+	data, _, err := config.DefaultYAMLForWith(t.TempDir(), func(c *config.Config) { c.Workspace.StateDir = ".nxd" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "state_dir: .nxd") {
+		t.Errorf("mutation not applied:\n%s", data)
+	}
+	plain, _, _ := config.DefaultYAMLForWith(t.TempDir(), nil)
+	if !strings.Contains(string(plain), "state_dir: ~/.nxd") {
+		t.Errorf("nil mutate should keep defaults")
 	}
 }
