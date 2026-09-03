@@ -267,6 +267,22 @@ In local mode: `{ "pr_number": 0, "pr_url": "local://merged", "merged_sha": "abc
 **Producer:** Security gate
 **Payload:** `{ "rule": "kb-014", "title": "Unparameterised SQL in repository layer" }`
 
+## Human Approval Events
+
+The approval queue (`internal/approvals`, `nxd approvals`, dashboard **Approvals** panel) is event-sourced: the in-memory queue is rebuilt from these two events on every load.
+
+### APPROVAL_REQUESTED
+**When:** The pipeline needs a human decision — an LLM conflict resolution to sign off, a post-merge integration build that failed on the mainline, a security-gate finding, or an explicitly gated merge (kinds listed in `approvals.require_for`)
+**Producer:** Approval queue (via the engine's approval hooks)
+**Payload:** `{ "id": "01J…", "req_id": "req-01", "story_id": "story-03", "kind": "conflict_resolution", "summary": "conflict resolution on 2 file(s) needs review", "details": "a.go\nb.go", "created_at": "2026-09-03T12:00:00Z" }`
+**Projection:** Item is `pending`; the story's merge is blocked and the requirement pauses (`approvals.timeout_action: pause`) until resolved
+
+### APPROVAL_RESOLVED
+**When:** A human approves or rejects a pending item (`nxd approvals approve|reject <id>` or the dashboard)
+**Producer:** Approval queue
+**Payload:** `{ "id": "01J…", "req_id": "req-01", "kind": "conflict_resolution", "status": "approved", "decided_by": "thando", "decided_at": "2026-09-03T12:05:00Z", "note": "looks right" }`
+**Projection:** Item leaves the pending set; `approved` unblocks the merge on the next `nxd resume`, `rejected` resets the story instead of merging
+
 ## Supervisor Events
 
 ### SUPERVISOR_CHECK
