@@ -7,6 +7,7 @@ import (
 	"log"
 	"os/exec"
 
+	"github.com/tzone85/nexus-dispatch/internal/approvals"
 	"github.com/tzone85/nexus-dispatch/internal/sanitize"
 	"github.com/tzone85/nexus-dispatch/internal/state"
 )
@@ -57,6 +58,10 @@ func (s *Server) HandleCommand(action string, payload json.RawMessage) WSRespons
 		return s.handleRejectRequirement(payload)
 	case "merge_story":
 		return s.handleMergeStory(payload)
+	case "approve_approval":
+		return s.handleDecideApproval(action, approvals.StatusApproved, payload)
+	case "reject_approval":
+		return s.handleDecideApproval(action, approvals.StatusRejected, payload)
 	default:
 		return WSResponse{Type: "command_result", Action: action, Success: false, Message: "unknown command"}
 	}
@@ -113,7 +118,9 @@ func (s *Server) handlePause(payload json.RawMessage) WSResponse {
 	if err := s.eventStore.Append(evt); err != nil {
 		return WSResponse{Type: "command_result", Action: action, Success: false, Message: fmt.Sprintf("event error: %v", err)}
 	}
-	if err := s.projStore.Project(evt); err != nil { log.Printf("[ws] project %s: %v", evt.Type, err) }
+	if err := s.projStore.Project(evt); err != nil {
+		log.Printf("[ws] project %s: %v", evt.Type, err)
+	}
 
 	return WSResponse{Type: "command_result", Action: action, Success: true, Message: "Requirement paused"}
 }
@@ -144,7 +151,9 @@ func (s *Server) handleResume(payload json.RawMessage) WSResponse {
 	if err := s.eventStore.Append(evt); err != nil {
 		return WSResponse{Type: "command_result", Action: action, Success: false, Message: fmt.Sprintf("event error: %v", err)}
 	}
-	if err := s.projStore.Project(evt); err != nil { log.Printf("[ws] project %s: %v", evt.Type, err) }
+	if err := s.projStore.Project(evt); err != nil {
+		log.Printf("[ws] project %s: %v", evt.Type, err)
+	}
 
 	return WSResponse{Type: "command_result", Action: action, Success: true, Message: "Requirement resumed"}
 }
@@ -396,7 +405,9 @@ func (s *Server) handleApproveRequirement(payload json.RawMessage) WSResponse {
 	if err := s.eventStore.Append(evt); err != nil {
 		return WSResponse{Type: "command_result", Action: action, Success: false, Message: fmt.Sprintf("event error: %v", err)}
 	}
-	if err := s.projStore.Project(evt); err != nil { log.Printf("[ws] project %s: %v", evt.Type, err) }
+	if err := s.projStore.Project(evt); err != nil {
+		log.Printf("[ws] project %s: %v", evt.Type, err)
+	}
 
 	return WSResponse{Type: "command_result", Action: action, Success: true, Message: "Requirement approved"}
 }
@@ -427,7 +438,9 @@ func (s *Server) handleRejectRequirement(payload json.RawMessage) WSResponse {
 	if err := s.eventStore.Append(evt); err != nil {
 		return WSResponse{Type: "command_result", Action: action, Success: false, Message: fmt.Sprintf("event error: %v", err)}
 	}
-	if err := s.projStore.Project(evt); err != nil { log.Printf("[ws] project %s: %v", evt.Type, err) }
+	if err := s.projStore.Project(evt); err != nil {
+		log.Printf("[ws] project %s: %v", evt.Type, err)
+	}
 
 	return WSResponse{Type: "command_result", Action: action, Success: true, Message: "Requirement rejected"}
 }
@@ -457,7 +470,9 @@ func (s *Server) handleMergeStory(payload json.RawMessage) WSResponse {
 	if err := s.eventStore.Append(evt); err != nil {
 		return WSResponse{Type: "command_result", Action: action, Success: false, Message: fmt.Sprintf("event error: %v", err)}
 	}
-	if err := s.projStore.Project(evt); err != nil { log.Printf("[ws] project %s: %v", evt.Type, err) }
+	if err := s.projStore.Project(evt); err != nil {
+		log.Printf("[ws] project %s: %v", evt.Type, err)
+	}
 
 	return WSResponse{Type: "command_result", Action: action, Success: true, Message: "Story merged"}
 }

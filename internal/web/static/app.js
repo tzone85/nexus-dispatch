@@ -101,6 +101,7 @@ function renderState(data) {
   renderMetrics(data.metrics);
   renderMemPalaceStatus(data.mempalace_status);
   renderReviewGates(data.review_gates);
+  renderApprovals(data.approvals);
   renderInvestigations(data.investigations);
   renderRecoveryLog(data.recovery_log);
   renderSuggestions(data.suggestions);
@@ -742,6 +743,77 @@ function renderReviewGates(gates) {
       item.appendChild(mergeBtn);
     }
 
+    list.appendChild(item);
+  });
+}
+
+// Render the human Approvals panel (internal/approvals). Every server value
+// goes through textContent — never innerHTML — and buttons use
+// addEventListener (the CSP forbids inline handlers).
+function renderApprovals(items) {
+  var section = document.getElementById("approvals");
+  var list = document.getElementById("approvals-list");
+  if (!section || !list) return;
+  if (!items || items.length === 0) {
+    section.style.display = "none";
+    return;
+  }
+  section.style.display = "";
+  list.textContent = "";
+  items.forEach(function (a) {
+    var item = document.createElement("div");
+    item.className = "approval-item";
+
+    var head = document.createElement("div");
+    head.className = "approval-head";
+
+    var badge = document.createElement("span");
+    badge.className = "badge badge-" + String(a.kind).replace(/[^a-z_]/g, "");
+    badge.textContent = a.kind;
+    head.appendChild(badge);
+
+    var title = document.createElement("strong");
+    title.textContent = a.summary || "(no summary)";
+    head.appendChild(title);
+
+    var meta = document.createElement("span");
+    meta.className = "gate-id";
+    meta.textContent = (a.req_id || "") + (a.story_id ? " / " + a.story_id : "") + " · " + a.id;
+    head.appendChild(meta);
+
+    var note = document.createElement("input");
+    note.type = "text";
+    note.className = "approval-note";
+    note.placeholder = "note (optional)";
+    note.maxLength = 2000;
+    head.appendChild(note);
+
+    var approveBtn = document.createElement("button");
+    approveBtn.className = "btn-approve";
+    approveBtn.textContent = "Approve";
+    approveBtn.addEventListener("click", function () {
+      sendCommand("approve_approval", { item_id: a.id, note: note.value });
+    });
+    head.appendChild(approveBtn);
+
+    var rejectBtn = document.createElement("button");
+    rejectBtn.className = "btn-reject";
+    rejectBtn.textContent = "Reject";
+    rejectBtn.addEventListener("click", function () {
+      confirmAction("Reject approval " + a.id + "? The story will be reset instead of merged.", function () {
+        sendCommand("reject_approval", { item_id: a.id, note: note.value });
+      });
+    });
+    head.appendChild(rejectBtn);
+
+    item.appendChild(head);
+
+    if (a.details) {
+      var details = document.createElement("pre");
+      details.className = "approval-details";
+      details.textContent = a.details;
+      item.appendChild(details);
+    }
     list.appendChild(item);
   });
 }

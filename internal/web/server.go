@@ -188,6 +188,7 @@ func (s *Server) Start(ctx context.Context) error {
 	// container/k8s liveness + readiness probes and external load balancers.
 	mux.HandleFunc("/healthz", s.handleHealthz)
 	mux.HandleFunc("/readyz", s.handleReadyz)
+	mux.HandleFunc("/api/approvals", s.handleApprovalsAPI) // human approval queue (auth-gated)
 
 	addr := fmt.Sprintf("localhost:%d", s.port)
 	listener, err := net.Listen("tcp", addr)
