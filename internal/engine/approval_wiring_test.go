@@ -472,3 +472,42 @@ func TestCheckIntegration_RecordsApproval(t *testing.T) {
 		}
 	})
 }
+
+// approvalRequestFailStore refuses APPROVAL_REQUESTED appends so the hooks'
+// "queue error" branches can be exercised: the pipeline must still pause /
+// reset with the plain reason instead of failing the story on a queue error.
+type approvalRequestFailStore struct{ state.EventStore }
+
+func (s approvalRequestFailStore) Append(e state.Event) error {
+	if e.Type == state.EventApprovalRequested {
+		return errors.New("disk full")
+	}
+	return s.EventStore.Append(e)
+}
+
+func TestApprovalHooks_QueueErrorFallsBackToPlainReason(t *testing.T) {
+	f := newApprovalFixture(t, nil)
+	q, err := approvals.Load(approvalRequestFailStore{f.es})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.m.SetApprovalQueue(q)
+
+	f.m.pauseOnSecurityFinding(f.story, f.req, "critical: RCE")
+	if reason := f.lastPauseReason(t); strings.Contains(reason, "approval") || !strings.Contains(reason, "critical: RCE") {
+		t.Fatalf("security reason = %q", reason)
+	}
+	tooLarge := fmt.Errorf("resolve: %w", &ConflictTooLargeError{File: "big.go", Size: 9, Limit: 1})
+	if got := f.m.handleMergeFailure(f.story, "a1", f.req, tooLarge); got.String() != "paused" {
+		t.Fatalf("outcome = %s", got)
+	}
+	if reason := f.lastPauseReason(t); !strings.Contains(reason, "big.go") || strings.Contains(reason, "pending") {
+		t.Fatalf("conflict reason = %q", reason)
+	}
+	if got := f.m.integrationPauseReason(f.story, errors.New("undefined: Foo")); !strings.Contains(got, "fix the base branch") {
+		t.Fatalf("integration reason = %q", got)
+	}
+	if len(f.events(t, state.EventApprovalRequested)) != 0 {
+		t.Fatal("no approval must have been persisted")
+	}
+}
