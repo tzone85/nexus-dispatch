@@ -40,3 +40,13 @@ nxd.yaml
 # Environment
 .env
 .env.local
+
+# Firecrawl scrape cache
+.firecrawl/
+
+# Deletion staging + tarballs
+_to_delete/
+*.tgz
+
+# Private leak-check term list (see CONTRIBUTING.md)
+scripts/.leak-terms
