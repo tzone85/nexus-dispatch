@@ -506,6 +506,15 @@ nxd approvals reject  <item-id> [--note "<text>"]
 The decider is taken from `$NXD_USER`, else the OS user. Item IDs are ULIDs
 (time-sortable). `nxd approve <req-id>` (plan approval) is a separate command.
 
+**What a decision does.** *Approve*: the story proceeds at the next gate —
+a story parked as `merge_ready` by a pending approval is merged with
+`nxd merge <story-id>`, then `nxd resume <req-id>` continues the waves; a
+conflict or integration approval means "carry on from the mainline as it
+is" (fix the branch/mainline yourself first if needed). *Reject*: the story
+is reset to draft with the rejection (and your `--note`) as retry feedback —
+immediately if the pipeline is running, otherwise on the next
+`nxd resume <req-id>` (`STORY_RESET`, payload `approval_id`).
+
 **Output columns (`list`):** ID, Status, Kind, Req, Story, Summary
 
 ---

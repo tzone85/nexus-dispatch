@@ -397,7 +397,7 @@ sandbox:
 | `network` | `none` | Container network. `none` blocks all egress (module downloads must already be vendored/cached inside the worktree); `bridge` allows outbound access. |
 | `cpus`, `memory` | `2`, `2g` | Resource limits passed to `docker run`. |
 | `extra_mounts` | `[]` | Additional bind mounts. Sources are validated to be **worktree-relative** (no absolute paths, `~` or `..`); destinations must be absolute container paths; the only option is `ro`. |
-| `auto_approve_prompts` | unset | Whether the watchdog answers `Y` to a CLI agent's permission prompt. Unset ⇒ `true` for runtimes whose `runner` is docker/ssh, `false` on the host. |
+| `auto_approve_prompts` | unset | Whether the watchdog answers `Y` to a CLI agent's permission prompt. Unset ⇒ `true` for runtimes whose `runner` is docker/ssh, `false` on the host. When not auto-approved the agent is left waiting at its prompt and the monitor emits `HUMAN_REVIEW_NEEDED` once per prompt and pauses the requirement; answer in tmux (`tmux attach -t <session>`) and `nxd resume`. |
 
 `coverage_above` criteria still run on the host (they need a coverage profile in a temp directory outside the worktree). `nxd doctor` reports the effective mode.
 
