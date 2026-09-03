@@ -35,9 +35,9 @@ type Controller struct {
 	eventStore state.EventStore
 	projStore  state.ProjectionStore
 
-	mu            sync.Mutex
-	lastActionAt  time.Time
-	cancelFuncs   map[string]context.CancelFunc // storyID -> cancel for native runtimes
+	mu           sync.Mutex
+	lastActionAt time.Time
+	cancelFuncs  map[string]context.CancelFunc // storyID -> cancel for native runtimes
 }
 
 // NewController creates a Controller. The supervisor may be nil if LLM-based
@@ -163,17 +163,26 @@ func (c *Controller) tick(ctx context.Context) {
 		}))
 }
 
+// lastProgressTime returns the most recent progress signal for a story:
+// STORY_PROGRESS (native agents) or AGENT_CHECKPOINT (the monitor emits one
+// when a tmux agent's pane output changes), whichever is later. Falls back
+// to STORY_STARTED when no progress has been recorded, and the zero time
+// when the story never started.
 func (c *Controller) lastProgressTime(storyID string) time.Time {
-	// Check STORY_PROGRESS events first, then fall back to STORY_STARTED.
-	events, _ := c.eventStore.List(state.EventFilter{
-		Type:    state.EventStoryProgress,
-		StoryID: storyID,
-	})
-	if len(events) > 0 {
-		return events[len(events)-1].Timestamp
+	var latest time.Time
+	for _, typ := range []state.EventType{state.EventStoryProgress, state.EventAgentCheckpoint} {
+		events, _ := c.eventStore.List(state.EventFilter{Type: typ, StoryID: storyID})
+		if len(events) > 0 {
+			if ts := events[len(events)-1].Timestamp; ts.After(latest) {
+				latest = ts
+			}
+		}
+	}
+	if !latest.IsZero() {
+		return latest
 	}
 
-	events, _ = c.eventStore.List(state.EventFilter{
+	events, _ := c.eventStore.List(state.EventFilter{
 		Type:    state.EventStoryStarted,
 		StoryID: storyID,
 	})

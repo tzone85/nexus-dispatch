@@ -342,8 +342,10 @@ func (m *Monitor) pollOnce(ctx context.Context, wg *sync.WaitGroup, active map[s
 			continue
 		}
 
-		// Watchdog check (handles permission prompts, stuck detection)
-		m.watchdog.Check(sessionName, rt)
+		// Watchdog check (permission prompts, stuck detection). Output changes
+		// surface as AGENT_CHECKPOINT so the controller sees tmux progress;
+		// a stall surfaces as one AGENT_STUCK per episode (see stuck.go).
+		m.observeAgent(sessionName, rt, ag)
 
 		// Check if agent is done
 		status, err := rt.DetectStatus(sessionName)
