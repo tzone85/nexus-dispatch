@@ -618,44 +618,11 @@ func safePath(relPath, workDir string) (string, error) {
 	return cleaned, nil
 }
 
-// isCommandAllowed checks whether a command is permitted by the allowlist.
-// It extracts the binary name from the command (first whitespace-delimited token)
-// and validates that the full command starts with an allowlisted prefix followed
-// by either a space, end-of-string, or the exact match. Shell metacharacters
-// (;, |, &, $, `, \n, \r, \t, NUL, <, >) are rejected outright to prevent
-// command chaining, redirection, expansion, and substitution.
+// isCommandAllowed is the two-argument compatibility wrapper around the
+// argv-aware matcher in allowlist.go (see CheckCommand). With no worktree
+// supplied, absolute paths, "~" and any ".." component are rejected.
 func isCommandAllowed(command string, allowlist []string) bool {
-	command = strings.TrimSpace(command)
-	if command == "" {
-		return false
-	}
-
-	// H9: reject any shell metacharacter that could chain commands, redirect
-	// I/O, or escape the allowlist. ContainsAny over a canonical set is
-	// faster than per-pattern substring scans AND closes the gaps the prior
-	// list left open — bare tab (was only "\t&"), NUL byte (would otherwise
-	// pass the metachar check and then fail the prefix match, but better
-	// rejected loudly), and `\` (escapes).
-	const forbidden = ";&|$`<>\n\r\t\x00\\"
-	if strings.ContainsAny(command, forbidden) {
-		return false
-	}
-
-	for _, pattern := range allowlist {
-		pattern = strings.TrimSpace(pattern)
-		if pattern == "" {
-			continue
-		}
-		if command == pattern {
-			return true
-		}
-		// Allow if command starts with pattern followed by a space
-		// (e.g., pattern "go test" matches "go test ./..." but not "go testevil").
-		if strings.HasPrefix(command, pattern+" ") {
-			return true
-		}
-	}
-	return false
+	return IsCommandAllowed(command, allowlist, "")
 }
 
 // execReadFile reads a file relative to the working directory.
