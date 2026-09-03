@@ -37,16 +37,33 @@ workspace:
   log_level: info              # debug, info, warn, error
   log_format: text             # "text" (default) or "json" (structured/slog)
   log_retention_days: 30       # How long to keep session logs
+  max_event_bytes: 1048576     # Cap on one events.jsonl line (default 1 MiB)
+  fsync_events: true           # fsync after every appended event (default true)
 ```
 
-**state_dir** is expanded from `~` at runtime. All NXD state lives here: events.jsonl, nxd.db, logs/, worktrees/, improvements.json.
+**state_dir** semantics:
+- `~` is expanded and the path is made **absolute at load time**, so every consumer (CLI, engine, reports) sees the same directory.
+- A **relative** value (e.g. `.nxd`) is resolved against the directory containing the config file — not the working directory. This is what `nxd init --local-state` writes, giving each repo its own `./.nxd`.
+- The global `--state-dir <path>` flag overrides the config value for one invocation (relative paths resolve against the working directory).
+- All NXD state lives here: events.jsonl, nxd.db, nxd.lock, logs/, worktrees/, improvements.json.
 
 > [!WARNING]
-> **Use a separate `state_dir` per project.** Two projects sharing `~/.nxd` will fight over `nxd.lock` and corrupt each other's events. Recommended convention: `~/.nxd-<projectname>`.
+> **Use a separate `state_dir` per project.** Two projects sharing `~/.nxd` will fight over `nxd.lock` and corrupt each other's events. Use `nxd init --local-state` (repo-local `./.nxd`, git-ignored) or the convention `~/.nxd-<projectname>`.
+
+**max_event_bytes** caps the encoded size of a single event line. QA payloads can embed whole test logs; a line above the cap has its longest string values truncated (suffix `…[truncated N bytes]`, payload key `truncated: true`) until it fits. The event itself is never dropped. Readers accept lines up to 16 MiB regardless. `0` means the default.
+
+**fsync_events** flushes each append to stable storage before the command continues. The event log is the source of truth — a lost tail after a crash desyncs every derived view — so leave this on; set `false` only for throwaway benchmarks. A torn final line left by a crash is skipped by readers and quarantined on the next append (see `nxd state check`).
 
 **log_format** = `"json"` switches the stdlib + slog output to one JSON object per line — useful when piping into a log aggregator. Override at runtime via `NXD_LOG_FORMAT=json` env var. Same goes for `log_level` via `NXD_LOG_LEVEL=debug`.
 
 ### models
+
+```yaml
+models:
+  ollama_host: 10.0.0.5:11434   # optional; Ollama endpoint for `nxd doctor` / health checks
+```
+
+**ollama_host** overrides the Ollama endpoint probed by `nxd doctor` and `nxd init`. `host:port` without a scheme is accepted (`http://` is prepended). The `OLLAMA_HOST` environment variable takes precedence when set; unset both and `localhost:11434` is used.
 
 Maps each agent role to a specific LLM provider and model.
 

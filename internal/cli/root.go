@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -10,20 +11,43 @@ import (
 	"github.com/tzone85/nexus-dispatch/internal/update"
 )
 
-var version = "0.1.0"
+// version is the build version shown by `nxd --version`. cmd/nxd/main.go
+// receives the real value via -ldflags "-X main.version=..." and forwards it
+// with SetVersion; "dev" is what an un-stamped `go build` reports.
+var version = "dev"
 
 var rootCmd = &cobra.Command{
-	Use:   "nxd",
-	Short: "Nexus Dispatch -- AI agent orchestrator",
-	Long:  "NXD orchestrates autonomous AI agents through the full software development lifecycle.\nHand off a requirement, walk away, come back to merged PRs.",
+	Use:     "nxd",
+	Short:   "Nexus Dispatch -- AI agent orchestrator",
+	Long:    "NXD orchestrates autonomous AI agents through the full software development lifecycle.\nHand off a requirement, walk away, come back to merged PRs.",
 	Version: version,
+	// Errors are printed exactly once, by main (or the caller of Execute).
+	// Without this Cobra prints "Error: ..." and main prints "error: ..." too.
+	SilenceErrors: true,
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
+		if dir, _ := cmd.Flags().GetString("state-dir"); dir != "" {
+			stateDirOverride = dir
+		}
 		checkForModelUpdates(cmd)
 	},
 }
 
+// SetVersion sets the version reported by `nxd --version` / `nxd version`.
+// Called by main with the ldflags-injected build version.
+func SetVersion(v string) {
+	if v == "" {
+		return
+	}
+	version = v
+	rootCmd.Version = v
+}
+
+// Version returns the version string currently reported by the CLI.
+func Version() string { return version }
+
 func init() {
 	rootCmd.PersistentFlags().String("config", "nxd.yaml", "Path to config file")
+	rootCmd.PersistentFlags().String("state-dir", "", "Override workspace.state_dir for this invocation (per-project state)")
 
 	rootCmd.AddCommand(newInitCmd())
 	rootCmd.AddCommand(newReqCmd())
@@ -58,10 +82,27 @@ func init() {
 	rootCmd.AddCommand(newImproveCmd())
 	rootCmd.AddCommand(newDBCmd())
 	rootCmd.AddCommand(newTimelineCmd())
+	rootCmd.AddCommand(newStateCmd())
+	rootCmd.AddCommand(newCancelCmd())
+	rootCmd.AddCommand(newVersionCmd())
+}
+
+// newVersionCmd prints the build version (same value as --version).
+func newVersionCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Print the nxd build version",
+		Args:  cobra.NoArgs,
+		Run: func(cmd *cobra.Command, _ []string) {
+			fmt.Fprintf(cmd.OutOrStdout(), "nxd %s\n", Version())
+		},
+	}
 }
 
 func Execute() error {
-	return rootCmd.Execute()
+	err := rootCmd.Execute()
+	waitForUpdateCheck()
+	return err
 }
 
 // checkForModelUpdates prints cached update notices and, if the cache is stale,
@@ -95,7 +136,13 @@ func checkForModelUpdates(cmd *cobra.Command) {
 	}
 
 	if update.IsStale(cached, cfg.Workspace.UpdateIntervalHours) {
+		// Best-effort: the refresh runs in the background with its own
+		// timeout, and cobra's PersistentPostRun waits for it only up to
+		// updateCheckMaxWait so a short command (status, events) still gets a
+		// chance to write the cache instead of being abandoned at exit.
+		updateCheckDone = make(chan struct{})
 		go func() {
+			defer close(updateCheckDone)
 			ollamaModels, googleModels := collectConfiguredModels(cfg)
 
 			opts := []update.CheckerOption{}
@@ -113,5 +160,24 @@ func checkForModelUpdates(cmd *cobra.Command) {
 			result := checker.RunCheck(ctx, ollamaModels, googleModels)
 			_ = update.WriteCache(cachePath, result)
 		}()
+	}
+}
+
+// updateCheckDone is closed when the background update refresh finishes.
+// Nil when no refresh was started this process.
+var updateCheckDone chan struct{}
+
+// updateCheckMaxWait bounds how long Execute waits for the refresh on exit.
+var updateCheckMaxWait = 1500 * time.Millisecond
+
+// waitForUpdateCheck blocks until the background refresh completes or the
+// bounded wait elapses. No-op when no refresh was started.
+func waitForUpdateCheck() {
+	if updateCheckDone == nil {
+		return
+	}
+	select {
+	case <-updateCheckDone:
+	case <-time.After(updateCheckMaxWait):
 	}
 }

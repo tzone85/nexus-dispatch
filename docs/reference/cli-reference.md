@@ -7,7 +7,8 @@ Complete reference for all NXD commands, flags, and options.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--config <path>` | `nxd.yaml` | Path to configuration file |
-| `--version` | | Show version and exit |
+| `--state-dir <path>` | (from config) | Override `workspace.state_dir` for this invocation. Relative paths resolve against the working directory. Use it to point a command at another project's state without editing `nxd.yaml`. |
+| `--version` | | Show version and exit (the release stamped at build time; `dev` for local builds). `nxd version` prints the same. |
 | `--help` | | Show help for any command |
 
 ## Commands
@@ -17,20 +18,29 @@ Complete reference for all NXD commands, flags, and options.
 Initialize an NXD workspace.
 
 ```bash
-nxd init
+nxd init                # shared state in ~/.nxd (or wherever workspace.state_dir points)
+nxd init --local-state  # per-project state in ./.nxd, added to .gitignore
 ```
 
+**Flags:**
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--local-state` | false | Write `workspace.state_dir: .nxd` into the generated `nxd.yaml` (repo-relative, resolved against the config file's directory) and append `.nxd/` to `.gitignore`. Recommended whenever you run NXD in more than one repo. |
+
 **What it does:**
-1. Creates `~/.nxd/` directory with `logs/` and `worktrees/` subdirs
-2. Copies `nxd.config.example.yaml` to `nxd.yaml` (if not present)
-3. Initializes the event store (`~/.nxd/events.jsonl`)
-4. Initializes the projection database (`~/.nxd/nxd.db`)
-5. Checks if Ollama is accessible at `localhost:11434`
+1. Generates `nxd.yaml` from defaults tailored to the detected project type (if not present)
+2. Creates the state directory with `logs/` and `worktrees/` subdirs — `~/.nxd` by default, `./.nxd` with `--local-state`, or whatever an existing `nxd.yaml` names in `workspace.state_dir`
+3. Initializes the event store (`<state_dir>/events.jsonl`)
+4. Initializes the projection database (`<state_dir>/nxd.db`)
+5. Prints which mode was used (`shared` vs `local`)
+6. Checks if Ollama is accessible
 
 **Output example:**
 ```
-Initialized NXD workspace at /Users/you/.nxd
-  Config: nxd.yaml
+Created nxd.yaml with default configuration (project type: Go)
+Initialized NXD workspace at /Users/you/project/.nxd (state mode: local)
+  Event store:      /Users/you/project/.nxd/events.jsonl
+  Projection store: /Users/you/project/.nxd/nxd.db
 Ollama detected and running.
 ```
 
@@ -120,18 +130,31 @@ Resume a paused requirement pipeline.
 
 ```bash
 nxd resume <req-id>
+nxd resume <req-id> --repo /path/to/repo
 ```
 
 **Arguments:**
 | Argument | Required | Description |
 |----------|----------|-------------|
-| `<req-id>` | Yes | Requirement ID to resume |
+| `<req-id>` | No | Requirement ID to resume (auto-selected when exactly one active requirement exists) |
+
+**Flags:**
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--repo <path>` | cwd | Repository to run in. `resume` refuses to run when the requirement's recorded `repo_path` does not match the current repository root (symlinks resolved); pass `--repo` with the recorded path to run from elsewhere. |
+| `--force` | false | Clear a stale `nxd.lock` whose holder process is dead (or whose contents are unreadable). Refuses when the holder is still alive. |
+| `--godmode` | false | Skip permission prompts on LLM calls |
+| `--dry-run` | false | Simulate LLM responses |
 
 **What it does:**
-1. Loads existing state for the requirement
-2. Rebuilds the dependency graph
-3. Identifies stories with all dependencies satisfied
-4. Dispatches the next wave of ready stories
+1. Takes the pipeline lock, then loads state (rebuilding the projection if it is behind the log)
+2. Verifies the requirement belongs to this repository
+3. Rebuilds the dependency graph
+4. Identifies stories with all dependencies satisfied
+5. Dispatches the next wave of ready stories
+
+If a requirement was submitted from another repo you get:
+`requirement <id> belongs to /path/a; run from that repo or pass --repo /path/a`.
 
 ---
 
@@ -479,6 +502,53 @@ nxd doctor
 ```
 
 Checks cover Go, git, tmux, Ollama, the Gemma model, config validity, the state directory, disk/permissions, and optional integrations (MemPalace, Google AI, plugins, devdb). One check, **Projection drift**, compares the SQLite projection's reconciliation watermark against the event-log length: it warns when the projection is behind the log (the desync that a normal command auto-rebuilds on its next open) and reports "in sync" otherwise. The check is read-only — it never rebuilds the projection or creates stores as a side effect.
+
+---
+
+### nxd state
+
+Inspect and repair the per-project event log and SQLite projection.
+
+```bash
+nxd state check            # read-only health report
+nxd state repair           # quarantine bad lines, rewrite the log, keep a .bak
+nxd state compact          # archive informational events of completed requirements
+nxd state rebuild          # replay events.jsonl into nxd.db
+nxd state <sub> --json     # machine-readable output
+```
+
+| Subcommand | Lock | What it does |
+|------------|------|--------------|
+| `check` | none | Scans `events.jsonl`: line/valid counts, size, last event time, whether the final line is a **torn write** (crash mid-append, no trailing newline) and which lines are **malformed**. Exits non-zero when unhealthy (except with `--json`). |
+| `repair` | pipeline | Moves malformed lines and any torn tail to `events.quarantine.jsonl`, rewrites the log atomically (temp file + rename) and leaves `events.jsonl.bak`. Nothing is ever deleted. |
+| `compact` | pipeline | Removes only `STORY_PROGRESS` and `AGENT_CHECKPOINT` events whose requirement has reached `REQ_COMPLETED`; the removed lines go to `events.archive-<timestamp>.jsonl` and the original is kept as `.bak`. Refuses to run on an unhealthy log. |
+| `rebuild` | pipeline | Truncates the projection tables and replays the whole log in one transaction. Use after a repair/compact, or when a read-only command logged `projection N events behind; pipeline running, skipping rebuild`. |
+
+Commands that take the pipeline lock refuse to run while `nxd req` / `nxd resume` is active. Readers tolerate a torn final line automatically (it is skipped and logged once); every other malformed line is an error unless `NXD_EVENTS_LENIENT=1` is set, in which case the bad lines are moved to `events.quarantine.jsonl` instead of being dropped.
+
+---
+
+### nxd cancel
+
+Stop work on a story or a whole requirement.
+
+```bash
+nxd cancel <story-id> [--reason "why"]
+nxd cancel <req-id>   [--reason "why"]
+```
+
+| Target | Events emitted | Side effects |
+|--------|----------------|--------------|
+| story (`assigned`, `in_progress`, `review`, `qa`, `merge_ready`) | `STORY_RESET` (→ `draft`, payload `reason`, `previous_status`) then `AGENT_TERMINATED` | Kills the agent's tmux session if alive |
+| requirement (not `completed`/`archived`) | the above for every active story, then `REQ_PAUSED` with reason `cancelled by operator` (`stories_cancelled` in payload) | Status becomes `paused`; `nxd resume <req-id>` continues later |
+
+`--reason` is appended to the recorded reason (`cancelled by operator: <reason>`). Cancelling a draft/merged story or a completed requirement is refused with a clear error and emits nothing.
+
+---
+
+### nxd version
+
+Print the build version (`nxd <version>`), identical to `nxd --version`.
 
 ---
 

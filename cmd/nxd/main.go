@@ -18,8 +18,13 @@ func main() {
 	// startup messages (version-check, plugin loader, etc.) honour
 	// NXD_LOG_LEVEL / NXD_LOG_FORMAT environment overrides immediately.
 	nlog.Setup(os.Getenv("NXD_LOG_LEVEL"), os.Getenv("NXD_LOG_FORMAT"))
-	_ = version // kept reachable for goreleaser ldflags
 
+	// Thread the ldflags-injected version through to the CLI so
+	// `nxd --version` reports the release, not the compiled-in placeholder.
+	cli.SetVersion(version)
+
+	// rootCmd has SilenceErrors set, so this is the single place errors are
+	// printed.
 	if err := cli.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
