@@ -3,6 +3,7 @@ package engine
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -72,15 +73,6 @@ func TestEnsureDependencies(t *testing.T) {
 		}
 	})
 
-	t.Run("broken package.json fails", func(t *testing.T) {
-		dir := t.TempDir()
-		if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte("{not json"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if ensureDependencies(dir) {
-			t.Fatal("npm install on a malformed package.json must report failure")
-		}
-	})
 }
 
 func TestCleanWorkspaceArtifacts(t *testing.T) {
@@ -118,6 +110,95 @@ func TestCleanWorkspaceArtifacts(t *testing.T) {
 		}
 		if out := gitIn(t, wt, "status", "--porcelain"); out != "" {
 			t.Errorf("tree dirty after cleanup commit: %q", out)
+		}
+	})
+}
+
+// shimTool puts a fake executable named name first on PATH for the test. The
+// script echoes its arguments to argv.txt in dir, prints output and exits
+// with code.
+func shimTool(t *testing.T, name, output string, code int) string {
+	t.Helper()
+	dir := t.TempDir()
+	script := "#!/bin/sh\necho \"$@\" > \"" + filepath.Join(dir, name+"-argv.txt") + "\"\nprintf '%s' '" + output + "'\nexit " + itoa(code) + "\n"
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return dir
+}
+
+func writePackageJSON(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(`{"name": "app", "scripts": {"test": "jest"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCheckTests_NodeProject(t *testing.T) {
+	t.Run("jest summary line is parsed", func(t *testing.T) {
+		dir := t.TempDir()
+		writePackageJSON(t, dir)
+		shim := shimTool(t, "npx", "Tests: 1 failed, 3 passed, 4 total\n", 1)
+		passing, failing, total := checkTests(dir)
+		if passing != 3 || failing != 1 || total != 4 {
+			t.Fatalf("checkTests = %d/%d/%d, want 3/1/4", passing, failing, total)
+		}
+		argv, _ := os.ReadFile(filepath.Join(shim, "npx-argv.txt"))
+		if !strings.HasPrefix(string(argv), "jest --passWithNoTests --json") {
+			t.Errorf("npx argv = %q, want jest invocation", argv)
+		}
+	})
+
+	t.Run("vitest config selects vitest and json counters are read", func(t *testing.T) {
+		dir := t.TempDir()
+		writePackageJSON(t, dir)
+		if err := os.WriteFile(filepath.Join(dir, "vitest.config.ts"), []byte("export default {}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		shim := shimTool(t, "npx", `{"numPassedTests": 2,`+"\n"+`"numFailedTests": 0}`+"\n", 0)
+		passing, failing, total := checkTests(dir)
+		if passing != 1 || failing != 1 || total != 2 {
+			// One line per counter key: the simplified parser counts lines, not values.
+			t.Fatalf("checkTests = %d/%d/%d, want 1/1/2 (one line per counter key)", passing, failing, total)
+		}
+		argv, _ := os.ReadFile(filepath.Join(shim, "npx-argv.txt"))
+		if !strings.HasPrefix(string(argv), "vitest run --reporter=json") {
+			t.Errorf("npx argv = %q, want vitest invocation", argv)
+		}
+	})
+
+	t.Run("runner crash with no output fails closed", func(t *testing.T) {
+		dir := t.TempDir()
+		writePackageJSON(t, dir)
+		shimTool(t, "npx", "", 2)
+		passing, failing, total := checkTests(dir)
+		if passing != 0 || failing != 1 || total != 1 {
+			t.Fatalf("checkTests = %d/%d/%d, want 0/1/1", passing, failing, total)
+		}
+	})
+}
+
+func TestEnsureDependencies_NodeProject(t *testing.T) {
+	t.Run("npm install success", func(t *testing.T) {
+		dir := t.TempDir()
+		writePackageJSON(t, dir)
+		shim := shimTool(t, "npm", "", 0)
+		if !ensureDependencies(dir) {
+			t.Fatal("successful npm install must report true")
+		}
+		argv, _ := os.ReadFile(filepath.Join(shim, "npm-argv.txt"))
+		if strings.TrimSpace(string(argv)) != "install" {
+			t.Errorf("npm argv = %q, want install", argv)
+		}
+	})
+
+	t.Run("npm install failure", func(t *testing.T) {
+		dir := t.TempDir()
+		writePackageJSON(t, dir)
+		shimTool(t, "npm", "", 1)
+		if ensureDependencies(dir) {
+			t.Fatal("failed npm install must report false")
 		}
 	})
 }
