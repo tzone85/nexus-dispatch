@@ -28,7 +28,7 @@ func (m *mockRuntime) ReadOutput(_ string, _ int) (string, error) { return m.out
 func (m *mockRuntime) DetectStatus(_ string) (runtime.AgentStatus, error) {
 	return m.status, nil
 }
-func (m *mockRuntime) Name() string            { return m.name }
+func (m *mockRuntime) Name() string              { return m.name }
 func (m *mockRuntime) SupportedModels() []string { return nil }
 
 func TestWatchdog_DetectsPermissionPrompt(t *testing.T) {

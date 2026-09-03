@@ -11,7 +11,8 @@ Every action in NXD produces an immutable event. NXD currently emits **65 event 
   "timestamp": "2026-03-10T14:30:00Z",
   "agent_id": "tech_lead-req01-1",
   "story_id": "story-01",
-  "payload": { "title": "Add User model", "complexity": 2 }
+  "attempt_id": "story-01-a01J9…",
+  "payload": { "title": "Add User model", "complexity": 2, "attempt_id": "story-01-a01J9…" }
 }
 ```
 
@@ -22,7 +23,12 @@ Every action in NXD produces an immutable event. NXD currently emits **65 event 
 | `timestamp` | ISO 8601 | UTC time of event creation |
 | `agent_id` | string | Agent that produced the event |
 | `story_id` | string | Related story (empty for system events) |
+| `attempt_id` | string | *(optional)* The story attempt (one dispatch = one agent run) the event belongs to — see below |
 | `payload` | JSON | Event-specific data |
+
+### Story attempts (`attempt_id`)
+
+A story can be dispatched several times (review reset, QA failure, manager retry, crash recovery). Each dispatch is one **attempt**: the dispatcher mints a unique id of the form `<story_id>-a<ULID>` and every event emitted for that agent run carries it — on the `attempt_id` field *and* duplicated in the payload as `"attempt_id"` for consumers that only read payloads. Stamped events: `AGENT_SPAWNED`, `STORY_ASSIGNED`, `STORY_STARTED`, `STORY_PROGRESS`, `STORY_COMPLETED`, `AGENT_CHECKPOINT`, `AGENT_STUCK`, and the monitor's `STORY_QA_FAILED`, `STORY_REVIEW_FAILED`, `STORY_ESCALATED`, `STORY_INTEGRATION_FAILED`. The monitor only treats a `STORY_COMPLETED` as finishing the attempt it is polling, so a stale completion from an earlier attempt can no longer end a later one. Events written before attempts existed (and story-level events such as `STORY_CREATED`) have no `attempt_id`; the field is omitted from JSON when empty and all projections ignore it.
 
 ## Requirement Events
 
@@ -210,19 +216,22 @@ In local mode: `{ "pr_number": 0, "pr_url": "local://merged", "merged_sha": "abc
 **Projection:** Creates row in `agents` table
 
 ### AGENT_CHECKPOINT
-**When:** Agent saves intermediate state
-**Payload:** `{ "message": "Tests passing, moving to next subtask" }`
+**When:** Agent saves intermediate state; the monitor also emits one (at most one per poll per agent) when the watchdog sees a tmux agent's pane output change, so the controller has a progress signal for CLI runtimes that never emit `STORY_PROGRESS`
+**Producer:** Agent / Monitor (`"source": "watchdog"`)
+**Payload:** `{ "message": "Tests passing, moving to next subtask" }` or `{ "source": "watchdog", "session_name": "nxd-req01-junior-1", "message": "pane output changed", "attempt_id": "…" }`
 
 ### AGENT_RESUMED
 **When:** Previously paused agent resumes work
 **Payload:** `{ "reason": "pipeline resumed" }`
 
 ### AGENT_STUCK
-**When:** Watchdog detects no progress
+**When:** Watchdog detects no progress — the pane output has been unchanged for `stuck_threshold_s`. Emitted **once per stuck episode** (not once per poll); a later output change ends the episode and a new stall emits again
+**Producer:** Watchdog (via the monitor, which supplies `agent_id`, `story_id` and `attempt_id`)
 **Payload:**
 ```json
-{ "session_name": "nxd-req01-junior-1", "stuck_for_s": 180 }
+{ "session_name": "nxd-req01-junior-1", "stuck_for_s": 180, "attempt_id": "story-01-a01J9…" }
 ```
+**Projection:** Agent status → `stuck`
 
 ### AGENT_TERMINATED
 **When:** Agent session ends (success or forced)
@@ -351,14 +360,14 @@ expanded coverage. Each is a one-line summary — for the producer / payload
 shape, grep `internal/engine/` or `internal/state/events.go`.
 
 ### Pipeline / staging
-- **STAGE_COMPLETED** — coarse timing marker for each pipeline stage (executor, reviewer, QA, merger) with duration and outcome
+- **STAGE_COMPLETED** — coarse timing marker for each pipeline stage (executor, reviewer, QA, merger) with duration and outcome; stage `qa_post_rebase` is the QA re-run on the rebased tree after the conflict resolver changed files
 - **STORY_REWRITTEN** — Manager rewrote the story (title / description / acceptance criteria / complexity) after diagnosis
 - **STORY_SPLIT** — Tech Lead replaced one story with N replacements; payload includes child_story_ids
-- **STORY_RESET** — story sent back to draft status by the monitor (post-failure retry path)
+- **STORY_RESET** — story sent back to draft status without counting as a review failure: crash recovery, and the Manager's `retry` action (payload `to_tier`, `source: "manager"`), so a granted retry does not consume its own retry budget
 - **STORY_RECOVERY** — controller reset a stuck story to draft
 - **STORY_MERGE_READY** — review + QA both passed; merger may proceed
 - **STORY_ESCALATED** — story bumped to a higher escalation tier (junior → intermediate → senior, etc.)
-- **STORY_INTEGRATION_FAILED** — post-merge integration build failed; tech-lead fixer dispatched
+- **STORY_INTEGRATION_FAILED** — post-merge build of the base branch failed after a story merged. Emitted twice: by the monitor at detection (`error`, `paused` — true when `qa.pause_on_integration_failure` paused the requirement, the default) and by the Tech Lead fixer once its diagnosis finishes (`build_error`, `trigger_story`, and either `fix_hint` with the suggested fix or `fix_error` when the LLM call failed)
 
 ### Requirement-level
 - **REQ_PLANNING_STARTED** — Tech Lead began decomposition (kicks off planner stage timing)
@@ -367,7 +376,7 @@ shape, grep `internal/engine/` or `internal/state/events.go`.
 - **REQ_PAUSED** — pipeline paused (billing exhaustion, manual hold, or unrecoverable stall)
 - **REQ_RESUMED** — paused requirement resumed
 - **REQ_REJECTED** — requirement rejected (planner declined, prompt-injection detected, or budget exceeded)
-- **REQ_PENDING_REVIEW** — requirement awaiting human approval before dispatch
+- **REQ_PENDING_REVIEW** — (a) requirement awaiting human plan approval before dispatch (payload `id`, projects status `pending_review`); (b) emitted by the monitor between waves when the only unfinished stories are `pr_submitted` / `merge_ready` — i.e. the requirement is waiting on open PRs, not complete (payload `req_id`, `open_pr_story_ids`, optional `blocked_story_ids`; requirement status unchanged). Merge the PRs, then `nxd resume`
 - **REQ_BLOCKED** — monitor marked the requirement blocked: it cannot reach green without intervention (payload: `{ "id": "req-01" }`)
 
 ### Investigation

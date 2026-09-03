@@ -25,7 +25,7 @@ func pollTestEventStore(t *testing.T) state.EventStore {
 // This is the "agent still running" path.
 func TestNativeAgentCompleted_FalseOnEmptyStore(t *testing.T) {
 	es := pollTestEventStore(t)
-	if nativeAgentCompleted(es, "STORY-X") {
+	if nativeAgentCompleted(es, "STORY-X", "") {
 		t.Fatal("want false on empty store")
 	}
 }
@@ -39,7 +39,7 @@ func TestNativeAgentCompleted_TrueAfterEventAppended(t *testing.T) {
 	if err := es.Append(evt); err != nil {
 		t.Fatalf("append: %v", err)
 	}
-	if !nativeAgentCompleted(es, "STORY-Y") {
+	if !nativeAgentCompleted(es, "STORY-Y", "") {
 		t.Fatal("want true after STORY_COMPLETED appended")
 	}
 }
@@ -53,7 +53,7 @@ func TestNativeAgentCompleted_FilteredByStoryID(t *testing.T) {
 	if err := es.Append(evt); err != nil {
 		t.Fatalf("append: %v", err)
 	}
-	if nativeAgentCompleted(es, "STORY-MINE") {
+	if nativeAgentCompleted(es, "STORY-MINE", "") {
 		t.Fatal("must not report completion when only an unrelated story completed")
 	}
 }

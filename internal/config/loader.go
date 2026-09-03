@@ -123,6 +123,7 @@ func DefaultConfig() Config {
 				{Kind: "command_succeeds", Value: "go vet ./..."},
 				{Kind: "test_passes", Value: "go test ./..."},
 			},
+			PauseOnIntegrationFailure: true,
 		},
 		Security: SecurityConfig{
 			// The pipeline gate pauses a build only on CRITICAL findings (leaked

@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -73,6 +74,10 @@ type Monitor struct {
 	// techLeadFixer dispatches a focused fix story when the post-merge
 	// integration build fails on main.
 	techLeadFixer *TechLeadFixer
+
+	// integrationBuild runs the post-merge build of the base branch; nil
+	// means runIntegrationBuild. Tests inject a fake (see integration_gate.go).
+	integrationBuild func(repoDir string) error
 
 	// securityGate runs the security agent (scanners + LLM threat-model review)
 	// on each story after QA and before merge, pausing the requirement when a
@@ -342,8 +347,10 @@ func (m *Monitor) pollOnce(ctx context.Context, wg *sync.WaitGroup, active map[s
 			continue
 		}
 
-		// Watchdog check (handles permission prompts, stuck detection)
-		m.watchdog.Check(sessionName, rt)
+		// Watchdog check (permission prompts, stuck detection). Output changes
+		// surface as AGENT_CHECKPOINT so the controller sees tmux progress;
+		// a stall surfaces as one AGENT_STUCK per episode (see stuck.go).
+		m.observeAgent(sessionName, rt, ag)
 
 		// Check if agent is done
 		status, err := rt.DetectStatus(sessionName)
@@ -361,10 +368,11 @@ func (m *Monitor) pollOnce(ctx context.Context, wg *sync.WaitGroup, active map[s
 		log.Printf("[monitor] agent %s finished (status: %s)", ag.Assignment.AgentID, status)
 
 		// Emit story completed
-		completedEvt := state.NewEvent(
+		completedEvt := state.NewEventForAttempt(
 			state.EventStoryCompleted,
 			ag.Assignment.AgentID,
 			ag.Assignment.StoryID,
+			ag.Assignment.AttemptID,
 			map[string]any{
 				"status": status.String(),
 			},
@@ -395,19 +403,6 @@ func (m *Monitor) pollOnce(ctx context.Context, wg *sync.WaitGroup, active map[s
 	}
 }
 
-// nativeAgentCompleted is a pure check: "does the event store contain at
-// least one STORY_COMPLETED event for this story id?" Extracted from
-// pollNativeAgent so tests can exercise the detection logic without invoking
-// the post-execution pipeline goroutine.
-func nativeAgentCompleted(es state.EventStore, storyID string) bool {
-	events, err := es.List(state.EventFilter{
-		Type:    state.EventStoryCompleted,
-		StoryID: storyID,
-		Limit:   1, // we only need to know whether ANY exist; perf win on long-lived stores
-	})
-	return err == nil && len(events) > 0
-}
-
 // pollNativeAgent checks whether a native runtime agent (e.g. Gemma) has
 // finished by looking for a STORY_COMPLETED event. Native agents run as
 // in-process goroutines and emit completion events directly to the store.
@@ -415,7 +410,7 @@ func nativeAgentCompleted(es state.EventStore, storyID string) bool {
 // removing the entry from the `active` map after the range loop finishes.
 func (m *Monitor) pollNativeAgent(ctx context.Context, wg *sync.WaitGroup, sessionName string, ag ActiveAgent, repoDir string) bool {
 	_ = sessionName // retained for log clarity in future iterations; currently unused
-	if !nativeAgentCompleted(m.eventStore, ag.Assignment.StoryID) {
+	if !nativeAgentCompleted(m.eventStore, ag.Assignment.StoryID, ag.Assignment.AttemptID) {
 		return false
 	}
 
@@ -434,6 +429,7 @@ func (m *Monitor) pollNativeAgent(ctx context.Context, wg *sync.WaitGroup, sessi
 func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, repoDir string) {
 	storyID := ag.Assignment.StoryID
 	branch := ag.Assignment.Branch
+	attemptID := ag.Assignment.AttemptID
 
 	// Capture the parent context BEFORE shadowing so the devdb release defer
 	// can tell "graceful shutdown" (parent canceled) from "pipeline timed out"
@@ -507,7 +503,7 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 	// half-merged file produces useless output.
 	if conflicted := validateNoConflictMarkers(ag.WorktreePath); len(conflicted) > 0 {
 		log.Printf("[pipeline] %s has unresolved conflict markers in %v — resetting", storyID, conflicted)
-		m.resetStoryToDraft(storyID, "monitor", fmt.Sprintf("unresolved conflict markers in %d file(s)", len(conflicted)))
+		m.resetStoryToDraftFor(storyID, attemptID, "monitor", fmt.Sprintf("unresolved conflict markers in %d file(s)", len(conflicted)))
 		return
 	}
 
@@ -530,10 +526,10 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 	// Distinguish between git infrastructure errors (which count toward
 	// the retry limit) and genuinely empty diffs so that broken worktrees
 	// don't loop forever.
-	diff, err := gitDiff(ag.WorktreePath)
+	diff, err := gitDiff(ag.WorktreePath, m.baseBranch(repoDir))
 	if err != nil {
 		log.Printf("[pipeline] git diff error for %s: %v", storyID, err)
-		m.resetStoryToDraft(storyID, "monitor", fmt.Sprintf("git diff error: %v", err))
+		m.resetStoryToDraftFor(storyID, attemptID, "monitor", fmt.Sprintf("git diff error: %v", err))
 		return
 	}
 	if diff == "" {
@@ -550,7 +546,7 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 			return
 		}
 		log.Printf("[pipeline] no changes produced for %s, resetting to draft for re-dispatch", storyID)
-		m.resetStoryToDraft(storyID, "monitor", "agent produced no code changes")
+		m.resetStoryToDraftFor(storyID, attemptID, "monitor", "agent produced no code changes")
 		return
 	}
 
@@ -571,7 +567,7 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 
 	// Mine the story diff to MemPalace for future agent context.
 	if m.mempalace != nil && m.mempalace.IsAvailable() {
-		statDiff := captureStoryDiff(repoDir, branch)
+		statDiff := captureStoryDiff(repoDir, m.baseBranch(repoDir), branch)
 		if statDiff != "" {
 			repoName := filepath.Base(repoDir)
 			summary := fmt.Sprintf("Story %s (%s) completed. Changes:\n%s", storyID, storyTitle, truncateDiff(statDiff, 2000))
@@ -622,7 +618,7 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 				return
 			}
 			log.Printf("[pipeline] review error for %s: %v", storyID, err)
-			m.resetStoryToDraft(storyID, "reviewer", fmt.Sprintf("review error: %v", err))
+			m.resetStoryToDraftFor(storyID, attemptID, "reviewer", fmt.Sprintf("review error: %v", err))
 			return
 		}
 
@@ -664,7 +660,7 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 				log.Printf("[pipeline] review advisory-only for %s (criteria authoritative): %s", storyID, result.Summary)
 			} else {
 				EmitStageCompleted(m.eventStore, m.projStore, "monitor", storyID, "review", "failure", reviewStart)
-				m.resetStoryToDraft(storyID, "reviewer", fmt.Sprintf("review rejected: %s", result.Summary))
+				m.resetStoryToDraftFor(storyID, attemptID, "reviewer", fmt.Sprintf("review rejected: %s", result.Summary))
 				return
 			}
 		} else {
@@ -680,7 +676,7 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 		if err != nil {
 			EmitStageCompleted(m.eventStore, m.projStore, "monitor", storyID, "qa", "failure", qaStart)
 			log.Printf("[pipeline] QA error for %s: %v", storyID, err)
-			m.resetStoryToDraft(storyID, "qa", fmt.Sprintf("QA error: %v", err))
+			m.resetStoryToDraftFor(storyID, attemptID, "qa", fmt.Sprintf("QA error: %v", err))
 			return
 		}
 
@@ -712,7 +708,7 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 				"QA FAILURE — fix this error:\n\n%s\n\nHint: %s\n\nMake the minimal change to fix this. Do not rewrite files.",
 				qaOutput, hint,
 			)
-			feedbackEvt := state.NewEvent(state.EventStoryQAFailed, "monitor", storyID, map[string]any{
+			feedbackEvt := state.NewEventForAttempt(state.EventStoryQAFailed, "monitor", storyID, attemptID, map[string]any{
 				"feedback": retryFeedback,
 				"source":   "qa_failure",
 			})
@@ -737,7 +733,7 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 			// also emits a STORY_REVIEW_FAILED carrying the retry feedback as its
 			// reason, which is what latestReviewFeedback delivers to the
 			// re-spawned agent.
-			m.resetStoryToDraft(storyID, "qa", retryFeedback)
+			m.resetStoryToDraftFor(storyID, attemptID, "qa", retryFeedback)
 			return
 		}
 		EmitStageCompleted(m.eventStore, m.projStore, "monitor", storyID, "qa", "success", qaStart)
@@ -786,10 +782,15 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 		m.mergeMu.Lock()
 		defer m.mergeMu.Unlock()
 		mergeStart := time.Now()
-		result, err := m.rebaseAndMerge(ctx, storyID, branch, repoDir, ag.WorktreePath)
+		result, err := m.rebaseAndMerge(ctx, storyID, attemptID, branch, repoDir, ag.WorktreePath)
 
 		if err != nil {
 			EmitStageCompleted(m.eventStore, m.projStore, "monitor", storyID, "merge", "failure", mergeStart)
+			// Post-rebase QA already reset the story with feedback.
+			if errors.Is(err, errPostRebaseQA) {
+				log.Printf("[pipeline] %s not merged: %v", storyID, err)
+				return
+			}
 			// Transient Ollama capacity/overload during LLM conflict
 			// resolution — pause cleanly without burning an escalation tier.
 			if m.pauseIfCapacity(storyID, "merge/conflict-resolution", err) {
@@ -805,7 +806,7 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 				return
 			}
 			log.Printf("[pipeline] merge error for %s: %v", storyID, err)
-			m.resetStoryToDraft(storyID, "merger", fmt.Sprintf("merge/rebase error: %v", err))
+			m.resetStoryToDraftFor(storyID, attemptID, "merger", fmt.Sprintf("merge/rebase error: %v", err))
 			return
 		}
 		EmitStageCompleted(m.eventStore, m.projStore, "monitor", storyID, "merge", "success", mergeStart)
@@ -822,20 +823,11 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 				log.Printf("[pipeline] remote branch cleanup for %s: %v", storyID, err)
 			}
 
-			// Post-merge integration build: validate that main still compiles
-			// after squash-merging this story's branch. This catches cross-story
-			// incompatibilities that per-story QA (run in the worktree) cannot
-			// detect — e.g. story A exposes an interface, story B calls a method
-			// that doesn't exist yet on that interface.
-			if m.techLeadFixer != nil {
-				if buildErr := runIntegrationBuild(repoDir); buildErr != nil {
-					log.Printf("[pipeline] POST-MERGE BUILD FAILED for %s on main: %v", storyID, buildErr)
-					emitEventOrLog(m.eventStore, m.projStore,
-						state.NewEvent(state.EventStoryIntegrationFailed, "monitor", storyID, map[string]any{
-							"error": buildErr.Error(),
-						}))
-					m.techLeadFixer.DispatchIntegrationFix(ctx, storyID, repoDir, buildErr.Error())
-				}
+			// Post-merge integration build (see integration_gate.go). A red
+			// mainline pauses the requirement (qa.pause_on_integration_failure)
+			// so the next wave is not branched from broken code.
+			if m.checkIntegration(ctx, storyID, attemptID, repoDir) {
+				return
 			}
 		}
 	}
@@ -856,13 +848,8 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 //
 // If a ConflictResolver is configured, rebase conflicts are automatically
 // resolved via LLM instead of failing immediately.
-func (m *Monitor) rebaseAndMerge(ctx context.Context, storyID, branch, repoDir, worktreePath string) (MergeResult, error) {
-	baseBranch := m.config.Merge.BaseBranch
-	if baseBranch == "" {
-		// Detect the repo's real default branch (master vs main) rather than
-		// assuming main — a hardcoded main fails every merge on older repos.
-		baseBranch = nxdgit.DetectDefaultBranch(repoDir)
-	}
+func (m *Monitor) rebaseAndMerge(ctx context.Context, storyID, attemptID, branch, repoDir, worktreePath string) (MergeResult, error) {
+	baseBranch := m.baseBranch(repoDir)
 
 	log.Printf("[pipeline] fetching %s and rebasing %s for %s", baseBranch, branch, storyID)
 
@@ -882,6 +869,7 @@ func (m *Monitor) rebaseAndMerge(ctx context.Context, storyID, branch, repoDir, 
 		upstream = baseBranch
 	}
 
+	resolvedBefore := conflictsResolvedCount(m.eventStore, storyID)
 	if m.conflictResolver != nil {
 		// Use LLM-powered conflict resolution during rebase.
 		if err := m.conflictResolver.RebaseWithResolution(ctx, storyID, worktreePath, upstream); err != nil {
@@ -892,6 +880,12 @@ func (m *Monitor) rebaseAndMerge(ctx context.Context, storyID, branch, repoDir, 
 		if err := nxdgit.RebaseOnto(worktreePath, upstream); err != nil {
 			return MergeResult{}, fmt.Errorf("rebase onto %s: %w", baseBranch, err)
 		}
+	}
+
+	// If the resolver rewrote files, the tree QA approved is gone — re-verify
+	// before merging (rebase_qa.go). A clean rebase skips this.
+	if err := m.postRebaseGate(ctx, storyID, attemptID, worktreePath, resolvedBefore); err != nil {
+		return MergeResult{}, err
 	}
 
 	log.Printf("[pipeline] rebase succeeded for %s, proceeding to merge", storyID)
@@ -1096,56 +1090,6 @@ func (m *Monitor) emitHumanReviewNeeded(story state.Story, reason string) {
 	}
 }
 
-// resetStoryToDraft uses the EscalationMachine to decide whether the story
-// should be retried at the current tier, escalated to the next tier, or
-// paused (all tiers exhausted). It emits the appropriate events so the
-// dispatcher picks the story back up with the correct routing.
-func (m *Monitor) resetStoryToDraft(storyID, fromAgent, reason string) {
-	shouldEsc, nextTier, err := m.escalation.ShouldEscalate(storyID)
-	if err != nil {
-		log.Printf("[pipeline] escalation check error for %s: %v", storyID, err)
-	}
-
-	if shouldEsc {
-		currentTier, _ := m.escalation.CurrentTier(storyID)
-		if nextTier >= 4 {
-			m.pauseRequirement(storyID, fmt.Sprintf(
-				"story exhausted all escalation tiers (%d): %s", currentTier, reason,
-			))
-			return
-		}
-		log.Printf("[pipeline] escalating %s from tier %d to tier %d: %s", storyID, currentTier, nextTier, reason)
-		emitEventOrLog(m.eventStore, m.projStore,
-			state.NewEvent(state.EventStoryEscalated, fromAgent, storyID, map[string]any{
-				"from_tier": currentTier,
-				"to_tier":   nextTier,
-				"reason":    reason,
-			}))
-
-		// Record Bayesian outcome: escalation is a failure for the current role.
-		m.recordBayesianEscalation(storyID, currentTier)
-
-		// Also reset to draft so the dispatcher picks it up at the new tier.
-		emitEventOrLog(m.eventStore, m.projStore,
-			state.NewEvent(state.EventStoryReviewFailed, fromAgent, storyID, map[string]any{
-				"reason": fmt.Sprintf("escalated to tier %d: %s", nextTier, reason),
-			}))
-		return
-	}
-
-	// Normal reset within current tier.
-	retryCount, _ := m.escalation.RetryCountAtCurrentTier(storyID)
-	currentTier, _ := m.escalation.CurrentTier(storyID)
-	maxRetries := m.escalation.MaxRetriesForTier(currentTier)
-	log.Printf("[pipeline] reset %s to draft (attempt %d/%d at tier %d): %s",
-		storyID, retryCount+1, maxRetries, currentTier, reason)
-
-	emitEventOrLog(m.eventStore, m.projStore,
-		state.NewEvent(state.EventStoryReviewFailed, fromAgent, storyID, map[string]any{
-			"reason": reason,
-		}))
-}
-
 // dispatchNextWave determines which stories are now ready (dependencies met)
 // and dispatches a new wave of agents. Returns the newly spawned ActiveAgents.
 func (m *Monitor) dispatchNextWave(ctx context.Context, rc *RunContext, repoDir string) []ActiveAgent {
@@ -1164,89 +1108,32 @@ func (m *Monitor) dispatchNextWave(ctx context.Context, rc *RunContext, repoDir 
 		return nil
 	}
 
-	completed := make(map[string]bool)
-	allDone := true
-	for _, s := range stories {
-		if s.Status == "merged" || s.Status == "pr_submitted" || s.Status == "split" {
-			completed[s.ID] = true
-		} else {
-			allDone = false
-		}
-	}
+	progress := classifyStories(stories)
+	completed := progress.completed
 
-	if allDone {
-		log.Printf("[auto-resume] all %d stories complete for requirement %s", len(stories), rc.ReqID)
-
-		// Generate/update README + docs/ (SVG diagrams, training guide, ADRs,
-		// index) as the final step, before the tree is verified.
-		if m.docClient != nil {
-			storyTitles := make([]string, len(stories))
-			for i, s := range stories {
-				storyTitles[i] = "- " + s.Title
-			}
-			reqTitle := rc.ReqID
-			if req, reqErr := m.projStore.GetRequirement(rc.ReqID); reqErr == nil {
-				reqTitle = req.Title
-			}
-			generateDocumentation(ctx, repoDir, reqTitle, storyTitles, m.docClient, m.docModel)
-		}
-
-		// Pull merged changes into the local checkout FIRST so verification
-		// runs against the true composed mainline (all merged stories), not a
-		// stale checkout. Without this the gate would verify the wrong tree.
-		pullBaseAfterMerge(repoDir, m.config.Merge.BaseBranch)
-
-		// Leave the workspace neat: remove dangling branches (and their open
-		// PRs) from stories that never merged. Merged branches are already gone.
-		m.cleanupDanglingBranches(rc.ReqID, repoDir)
-
-		// Completion gate: verify the composed mainline (build + tests) and
-		// auto-fix a red build up to a bounded number of cycles. Only emit
-		// REQ_COMPLETED when verification is green; otherwise emit REQ_BLOCKED
-		// so a requirement is never reported complete on code that does not
-		// compile. Falls back to the legacy advisory path when no gate is wired.
-		if m.completionGate != nil {
-			if m.completionGate.Run(ctx, rc.ReqID, repoDir) {
-				emitEventOrLog(m.eventStore, m.projStore,
-					state.NewEvent(state.EventReqCompleted, "monitor", "", map[string]any{"id": rc.ReqID}))
-			} else {
-				log.Printf("[gate] %s: completion blocked — see .nxd-fix-gaps.md; run 'nxd resume %s --godmode' after addressing the gaps", rc.ReqID, rc.ReqID)
-				emitEventOrLog(m.eventStore, m.projStore,
-					state.NewEvent(state.EventReqBlocked, "monitor", "", map[string]any{"id": rc.ReqID}))
-			}
-			return nil
-		}
-
-		// Legacy advisory verification (no gate wired): check build/tests and
-		// write a fix-gaps file, but complete the requirement regardless.
-		verifyResult := RunVerificationLoop(ctx, repoDir, 1)
-		if ShouldRunFixCycle(verifyResult) {
-			log.Printf("[verify] cycle 1 found %d gaps — generating fix requirement", len(verifyResult.Gaps))
-			if fixReq := GapsToRequirement(verifyResult.Gaps, filepath.Base(repoDir)); fixReq != "" {
-				fixPath := filepath.Join(repoDir, ".nxd-fix-gaps.md")
-				if err := os.WriteFile(fixPath, []byte(fixReq), 0o600); err != nil {
-					log.Printf("[verify] failed to write fix requirement to %s: %v", fixPath, err)
-				} else {
-					log.Printf("[verify] fix requirement written to %s — run 'nxd req --file .nxd-fix-gaps.md --godmode' to auto-fix", fixPath)
-				}
-			}
-		} else {
-			log.Printf("[verify] cycle 1 clean — no critical gaps found")
-		}
-
-		// Mark requirement complete.
-		emitEventOrLog(m.eventStore, m.projStore,
-			state.NewEvent(state.EventReqCompleted, "monitor", "", map[string]any{"id": rc.ReqID}))
+	if progress.allMerged() {
+		m.completeRequirement(ctx, rc, repoDir, stories)
 		return nil
 	}
+	if progress.onlyAwaitingMerge() {
+		// Every remaining story has an open PR (or is waiting for a human merge
+		// decision). Nothing to dispatch and the requirement is NOT done: the
+		// code is not on the base branch yet.
+		m.emitPendingReview(rc.ReqID, progress.awaitingMerge, nil)
+		return nil
+	}
+	// Stories awaiting merge are neither done nor dispatchable: hide them
+	// from the dispatcher (and the tier interception below) without marking
+	// them complete, so their dependents stay blocked.
+	dispatchStories := progress.dispatchable(rc.PlannedStories)
 
 	// Pre-dispatch interception: handle tier 2+ stories inline before
 	// they reach the dispatcher. Tier 2 goes to the Manager for LLM
 	// diagnosis; tier 3 goes to the tech-lead re-plan path.
 	if m.manager != nil {
 		readyIDs := rc.DAG.ReadyNodes(completed)
-		storyLookup := make(map[string]PlannedStory, len(rc.PlannedStories))
-		for _, ps := range rc.PlannedStories {
+		storyLookup := make(map[string]PlannedStory, len(dispatchStories))
+		for _, ps := range dispatchStories {
 			storyLookup[ps.ID] = ps
 		}
 
@@ -1267,6 +1154,9 @@ func (m *Monitor) dispatchNextWave(ctx context.Context, rc *RunContext, repoDir 
 
 			story, ok := storyLookup[id]
 			if !ok {
+				if progress.isAwaitingMerge(id) {
+					continue // open PR — nothing for the manager to do
+				}
 				log.Printf("[auto-resume] story %s not found in planned stories", id)
 				continue
 			}
@@ -1291,7 +1181,7 @@ func (m *Monitor) dispatchNextWave(ctx context.Context, rc *RunContext, repoDir 
 
 	rc.WaveNumber++
 	dispatchStart := time.Now()
-	assignments, err := m.dispatcher.DispatchWave(rc.DAG, completed, rc.ReqID, rc.PlannedStories, rc.WaveNumber)
+	assignments, err := m.dispatcher.DispatchWave(rc.DAG, completed, rc.ReqID, dispatchStories, rc.WaveNumber)
 	if err != nil {
 		EmitStageCompleted(m.eventStore, m.projStore, "auto-resume", "", "dispatch", "failure", dispatchStart)
 		log.Printf("[auto-resume] dispatch error: %v", err)
@@ -1299,26 +1189,7 @@ func (m *Monitor) dispatchNextWave(ctx context.Context, rc *RunContext, repoDir 
 	}
 	EmitStageCompleted(m.eventStore, m.projStore, "auto-resume", "", "dispatch", "success", dispatchStart)
 	if len(assignments) == 0 {
-		// Stall detection: check if stories remain but none are dispatchable
-		pendingCount := 0
-		for _, s := range stories {
-			if s.Status != "merged" && s.Status != "split" && s.Status != "pr_submitted" {
-				pendingCount++
-			}
-		}
-		if pendingCount > 0 {
-			log.Printf("[STALL] requirement %s has %d unfinished stories but none are dispatchable — all escalation tiers exhausted or dependencies unmet", rc.ReqID, pendingCount)
-			log.Printf("[STALL] run 'nxd status --req %s' to inspect, then 'nxd resume %s --godmode' to retry", rc.ReqID, rc.ReqID)
-			emitEventOrLog(m.eventStore, m.projStore,
-				state.NewEvent("PIPELINE_STALLED", "monitor", "", map[string]any{
-					"req_id":        rc.ReqID,
-					"pending_count": pendingCount,
-					"total_stories": len(stories),
-					"reason":        "no dispatchable stories — escalation tiers exhausted",
-				}))
-		} else {
-			log.Printf("[auto-resume] no stories ready for next wave (dependencies not met)")
-		}
+		m.reportNoDispatch(rc, progress, stories)
 		return nil
 	}
 
@@ -1429,9 +1300,16 @@ func (m *Monitor) executeRetryAction(storyID string, action ManagerAction, workt
 			"reason":    "manager retry: " + action.Diagnosis,
 		}))
 
+	// Reset to draft with STORY_RESET, not a synthetic STORY_REVIEW_FAILED:
+	// RetryCountAtCurrentTier counts review failures after the last
+	// escalation, so a fake failure here would silently consume one of the
+	// retries the manager just granted.
 	emitEventOrLog(m.eventStore, m.projStore,
-		state.NewEvent(state.EventStoryReviewFailed, "manager", storyID, map[string]any{
-			"reason": "manager retry with fixes",
+		state.NewEvent(state.EventStoryReset, "manager", storyID, map[string]any{
+			"reason":   "manager retry with fixes",
+			"to_tier":  resetTier,
+			"source":   "manager",
+			"decision": action.Diagnosis,
 		}))
 }
 
@@ -1899,124 +1777,6 @@ func ensureGitignorePatterns(worktreePath string) {
 	if err := os.WriteFile(giPath, append(existing, []byte(appendix)...), 0o644); err != nil {
 		log.Printf("[pipeline] update .gitignore at %s: %v", giPath, err)
 	}
-}
-
-// gitDiff returns the git diff for committed changes in a worktree.
-// It tries multiple merge-base candidates so it works with local-only
-// repos that have no "origin/main".
-//
-// Performance note (B1.5): probe `git remote` once to skip the origin/*
-// candidates entirely on local-only repos (common after LB7). Saves
-// 2 fork+exec'd git processes per pipeline pass; ScanRepo runs hundreds
-// of times during a multi-story run.
-func gitDiff(worktreePath string) (string, error) {
-	// Probe whether `origin` exists before trying origin/* refs.
-	hasOrigin := false
-	if remoteCmd := exec.Command("git", "remote"); remoteCmd != nil {
-		remoteCmd.Dir = worktreePath
-		if out, err := remoteCmd.Output(); err == nil {
-			hasOrigin = strings.Contains(string(out), "origin")
-		}
-	}
-
-	candidates := []string{"main", "master"}
-	if hasOrigin {
-		candidates = []string{"origin/main", "origin/master", "main", "master"}
-	}
-	var mbOut []byte
-	var mbErr error
-	for _, ref := range candidates {
-		mbCmd := exec.Command("git", "merge-base", "HEAD", ref)
-		mbCmd.Dir = worktreePath
-		mbOut, mbErr = mbCmd.Output()
-		if mbErr == nil {
-			break
-		}
-	}
-	if mbErr != nil {
-		// No merge-base found -- fall back to the root commit of the
-		// current branch so we diff all changes since the initial commit.
-		rootCmd := exec.Command("git", "rev-list", "--max-parents=0", "HEAD")
-		rootCmd.Dir = worktreePath
-		rootOut, rootErr := rootCmd.Output()
-		if rootErr != nil {
-			return "", fmt.Errorf("git diff: cannot find merge-base or root commit: %w", rootErr)
-		}
-		mbOut = rootOut
-	}
-
-	mergeBase := strings.TrimSpace(string(mbOut))
-	cmd := exec.Command("git", "diff", mergeBase, "HEAD")
-	cmd.Dir = worktreePath
-	out, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("git diff: %w", err)
-	}
-
-	// Filter out diffs that only touch .gitignore (written by
-	// ensureGitignorePatterns before this check). A diff limited to
-	// .gitignore means the agent produced no real code changes.
-	if isGitignoreOnlyDiff(worktreePath, mergeBase) {
-		return "", nil
-	}
-
-	return string(out), nil
-}
-
-// nxdArtifactPatterns are files created by NXD infrastructure, not by the
-// agent's actual work.
-var nxdArtifactPatterns = []string{
-	".gitignore",
-	"CLAUDE.md",
-	".nxd-prompts/",
-	".serena/",
-}
-
-func isArtifactFile(path string) bool {
-	for _, pattern := range nxdArtifactPatterns {
-		if path == pattern || strings.HasPrefix(path, pattern) {
-			return true
-		}
-	}
-	return false
-}
-
-// isGitignoreOnlyDiff returns true when the only files changed between
-// mergeBase and HEAD are NXD infrastructure artifacts (not real code).
-func isGitignoreOnlyDiff(worktreePath, mergeBase string) bool {
-	cmd := exec.Command("git", "diff", "--name-only", mergeBase, "HEAD")
-	cmd.Dir = worktreePath
-	out, err := cmd.Output()
-	if err != nil {
-		return false
-	}
-	files := strings.TrimSpace(string(out))
-	if files == "" {
-		return false
-	}
-	for _, f := range strings.Split(files, "\n") {
-		f = strings.TrimSpace(f)
-		if f == "" {
-			continue
-		}
-		if !isArtifactFile(f) {
-			return false
-		}
-	}
-	return true
-}
-
-// captureStoryDiff returns a compact --stat summary of changes between main
-// and the given branch. Returns an empty string on any error so callers can
-// skip mining without disrupting the pipeline.
-func captureStoryDiff(repoDir, branch string) string {
-	cmd := exec.Command("git", "diff", "main..."+branch, "--stat")
-	cmd.Dir = repoDir
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(out))
 }
 
 // truncateDiff returns s unchanged when it fits within max bytes, otherwise

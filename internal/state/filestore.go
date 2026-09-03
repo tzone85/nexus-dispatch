@@ -289,6 +289,9 @@ func matchesFilter(evt Event, filter EventFilter) bool {
 	if filter.StoryID != "" && evt.StoryID != filter.StoryID {
 		return false
 	}
+	if filter.AttemptID != "" && evt.AttemptID != filter.AttemptID {
+		return false
+	}
 	if !filter.After.IsZero() && !evt.Timestamp.After(filter.After) {
 		return false
 	}

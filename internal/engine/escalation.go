@@ -22,8 +22,16 @@ func NewEscalationMachine(es state.EventStore, routing config.RoutingConfig) *Es
 	return &EscalationMachine{eventStore: es, routing: routing}
 }
 
-// CurrentTier returns the highest to_tier from STORY_ESCALATED events for
-// the given story. Returns 0 if no escalation events exist.
+// CurrentTier returns the story's current escalation tier: the to_tier of
+// the most recent STORY_ESCALATED event (latest timestamp; append order breaks
+// ties). Returns 0 if no escalation events exist.
+//
+// "Latest" — not "highest" — is deliberate. A manager retry de-escalates a
+// story by emitting STORY_ESCALATED with to_tier 0; taking the maximum tier
+// ever reached made that a no-op and the story was intercepted for manager
+// diagnosis on every subsequent wave. The projection (stories.escalation_tier)
+// has always used latest-wins, so this also removes a disagreement between
+// the two views of the same history.
 func (e *EscalationMachine) CurrentTier(storyID string) (int, error) {
 	events, err := e.eventStore.List(state.EventFilter{
 		Type:    state.EventStoryEscalated,
@@ -32,15 +40,28 @@ func (e *EscalationMachine) CurrentTier(storyID string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	return latestEscalationTier(events), nil
+}
 
-	maxTier := 0
+// latestEscalationTier picks the to_tier from the most recent well-formed
+// STORY_ESCALATED event in events. Events without a numeric to_tier are
+// ignored. Shared by the EscalationMachine and the Dispatcher so both agree
+// on what "current tier" means.
+func latestEscalationTier(events []state.Event) int {
+	tier := 0
+	var latest time.Time
 	for _, evt := range events {
 		payload := state.DecodePayload(evt.Payload)
-		if toTier, ok := payload["to_tier"].(float64); ok && int(toTier) > maxTier {
-			maxTier = int(toTier)
+		toTier, ok := payload["to_tier"].(float64)
+		if !ok {
+			continue
+		}
+		if latest.IsZero() || !evt.Timestamp.Before(latest) {
+			latest = evt.Timestamp
+			tier = int(toTier)
 		}
 	}
-	return maxTier, nil
+	return tier
 }
 
 // lastEscalationTime returns the timestamp of the most recent
@@ -65,8 +86,10 @@ func (e *EscalationMachine) lastEscalationTime(storyID string) time.Time {
 }
 
 // RetryCountAtCurrentTier counts STORY_REVIEW_FAILED events that occurred
-// after the most recent escalation. This scopes retry counts to the
-// current tier so that failures from prior tiers are not double-counted.
+// after the most recent escalation (in either direction — a manager retry
+// that lowers the tier also opens a fresh retry budget). This scopes retry
+// counts to the current tier so that failures from prior tiers are not
+// double-counted.
 func (e *EscalationMachine) RetryCountAtCurrentTier(storyID string) (int, error) {
 	after := e.lastEscalationTime(storyID)
 	return e.eventStore.Count(state.EventFilter{

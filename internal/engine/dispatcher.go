@@ -27,6 +27,9 @@ type Assignment struct {
 	SessionName  string
 	WorktreePath string
 	Branch       string
+	// AttemptID uniquely identifies this dispatch of the story (see
+	// attempts.go). Every event emitted for the run is stamped with it.
+	AttemptID string
 }
 
 // Dispatcher routes ready stories to agent roles based on complexity and
@@ -100,6 +103,7 @@ func (d *Dispatcher) DispatchWave(dag *graph.DAG, completed map[string]bool, req
 		agentID := fmt.Sprintf("%s-%s-%d", role, reqID, agentCounter)
 		sessionName := fmt.Sprintf("nxd-%s-%s-%d", reqID, role, agentCounter)
 		branch := fmt.Sprintf("nxd/%s", story.ID)
+		attemptID := newAttemptID(story.ID)
 
 		assignment := Assignment{
 			StoryID:     story.ID,
@@ -108,11 +112,12 @@ func (d *Dispatcher) DispatchWave(dag *graph.DAG, completed map[string]bool, req
 			AgentID:     agentID,
 			SessionName: sessionName,
 			Branch:      branch,
+			AttemptID:   attemptID,
 		}
 		assignments = append(assignments, assignment)
 
 		// Emit spawn event
-		spawnEvt := state.NewEvent(state.EventAgentSpawned, agentID, story.ID, map[string]any{
+		spawnEvt := state.NewEventForAttempt(state.EventAgentSpawned, agentID, story.ID, attemptID, map[string]any{
 			"role":         string(role),
 			"session_name": sessionName,
 		})
@@ -124,7 +129,7 @@ func (d *Dispatcher) DispatchWave(dag *graph.DAG, completed map[string]bool, req
 		}
 
 		// Emit assignment event
-		assignEvt := state.NewEvent(state.EventStoryAssigned, agentID, story.ID, map[string]any{
+		assignEvt := state.NewEventForAttempt(state.EventStoryAssigned, agentID, story.ID, attemptID, map[string]any{
 			"agent_id": agentID,
 			"wave":     waveNumber,
 		})
@@ -230,7 +235,9 @@ func (d *Dispatcher) hasFileConflict(story PlannedStory, claimed map[string]bool
 }
 
 // routeStory determines the agent role for a story.
-// It reads STORY_ESCALATED events to find the highest escalation tier reached:
+// It reads STORY_ESCALATED events to find the story's current tier (the
+// latest to_tier, matching EscalationMachine.CurrentTier — so a manager retry
+// back to tier 0 really does route by complexity again):
 //   - Tier 0 (no escalation): route by complexity via RouteByComplexity
 //   - Tier 1: route to RoleSenior
 //   - Tier 2+: defensive fallback to RoleSenior with a warning (these should
@@ -241,18 +248,12 @@ func (d *Dispatcher) routeStory(story PlannedStory) agent.Role {
 		StoryID: story.ID,
 	})
 	if err == nil && len(events) > 0 {
-		maxTier := 0
-		for _, evt := range events {
-			payload := state.DecodePayload(evt.Payload)
-			if toTier, ok := payload["to_tier"].(float64); ok && int(toTier) > maxTier {
-				maxTier = int(toTier)
-			}
-		}
+		tier := latestEscalationTier(events)
 		switch {
-		case maxTier >= 2:
-			log.Printf("[dispatcher] WARNING: story %s at tier %d reached routeStory, expected monitor interception", story.ID, maxTier)
+		case tier >= 2:
+			log.Printf("[dispatcher] WARNING: story %s at tier %d reached routeStory, expected monitor interception", story.ID, tier)
 			return agent.RoleSenior
-		case maxTier == 1:
+		case tier == 1:
 			return agent.RoleSenior
 		}
 	}
