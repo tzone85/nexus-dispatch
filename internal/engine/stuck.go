@@ -19,9 +19,10 @@ import (
 // agentIdentity extracts the watchdog identity from an active agent.
 func agentIdentity(ag ActiveAgent) AgentIdentity {
 	return AgentIdentity{
-		AgentID:   ag.Assignment.AgentID,
-		StoryID:   ag.Assignment.StoryID,
-		AttemptID: ag.Assignment.AttemptID,
+		AgentID:     ag.Assignment.AgentID,
+		StoryID:     ag.Assignment.StoryID,
+		AttemptID:   ag.Assignment.AttemptID,
+		RuntimeName: ag.RuntimeName,
 	}
 }
 
@@ -36,6 +37,9 @@ func (m *Monitor) observeAgent(sessionName string, rt runtime.Runtime, ag Active
 				"session_name": sessionName,
 				"message":      "pane output changed",
 			}))
+	}
+	if result.PromptEpisodeStarted {
+		m.pauseForPermissionPrompt(sessionName, ag)
 	}
 	return result
 }

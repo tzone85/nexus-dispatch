@@ -19,16 +19,33 @@ type Fingerprint struct {
 	// StuckReported is true once AGENT_STUCK has been emitted for the current
 	// frozen-output episode; cleared when the output changes.
 	StuckReported bool
+	// PromptReported is true once the current permission-prompt episode has
+	// been surfaced to the monitor (CheckResult.PromptEpisodeStarted); cleared
+	// as soon as the agent leaves the prompt.
+	PromptReported bool
 }
 
 // WatchdogConfig holds thresholds for the watchdog monitor.
 type WatchdogConfig struct {
 	StuckThresholdS int
+	// AutoApprovePrompts decides, per runtime, whether the watchdog answers a
+	// CLI agent's permission prompt itself ("Y"). It is
+	// config.Config.AutoApprovePrompts: explicit sandbox.auto_approve_prompts
+	// wins, otherwise only sandboxed (docker/ssh) runtimes are auto-approved.
+	// Nil never auto-approves — an unattended host agent must not be granted
+	// permissions by the orchestrator; the prompt is surfaced to a human.
+	AutoApprovePrompts func(runtimeName string) bool
+}
+
+// autoApprove reports whether prompts of runtimeName may be auto-answered.
+func (c WatchdogConfig) autoApprove(runtimeName string) bool {
+	return c.AutoApprovePrompts != nil && c.AutoApprovePrompts(runtimeName)
 }
 
 // Watchdog monitors agent sessions for stuck states and permission prompts.
 // It fingerprints pane output to detect when an agent stops making progress,
-// and auto-bypasses permission prompts and plan mode.
+// escapes plan mode, and either auto-answers permission prompts (sandboxed
+// runtimes / explicit config) or surfaces them to the monitor.
 type Watchdog struct {
 	config       WatchdogConfig
 	eventStore   state.EventStore
@@ -54,13 +71,15 @@ type AgentIdentity struct {
 	AgentID   string
 	StoryID   string
 	AttemptID string
+	// RuntimeName selects the sandbox.auto_approve_prompts decision.
+	RuntimeName string
 }
 
 // CheckResult describes the outcome of a single watchdog check.
 type CheckResult struct {
 	SessionName string
 	Status      runtime.AgentStatus
-	Action      string // "none", "permission_bypass", "plan_escape", "stuck_detected"
+	Action      string // "none", "permission_bypass", "permission_prompt", "plan_escape", "stuck_detected"
 	// OutputChanged is true when the pane output differs from the previous
 	// poll — a cheap progress signal for agents that emit no events.
 	OutputChanged bool
@@ -70,6 +89,10 @@ type CheckResult struct {
 	// StuckEpisodeStarted is true on the single poll where the stuck
 	// threshold is first crossed for the current frozen-output episode.
 	StuckEpisodeStarted bool
+	// PromptEpisodeStarted is true on the single poll where an agent that is
+	// NOT auto-approved was first seen waiting at a permission prompt; the
+	// monitor surfaces it to a human exactly once per episode.
+	PromptEpisodeStarted bool
 }
 
 // Check inspects a session's status and takes corrective action if needed.
@@ -94,8 +117,17 @@ func (w *Watchdog) CheckAgent(sessionName string, rt runtime.Runtime, id AgentId
 	}
 	result.Status = status
 
+	if status != runtime.StatusPermissionPrompt {
+		w.endPromptEpisode(sessionName)
+	}
+
 	switch status {
 	case runtime.StatusPermissionPrompt:
+		if !w.config.autoApprove(id.RuntimeName) {
+			result.Action = "permission_prompt"
+			result.PromptEpisodeStarted = w.startPromptEpisode(sessionName)
+			return result
+		}
 		_ = rt.SendInput(sessionName, "Y")
 		result.Action = "permission_bypass"
 
@@ -116,6 +148,27 @@ func (w *Watchdog) CheckAgent(sessionName string, rt runtime.Runtime, id AgentId
 	}
 
 	return result
+}
+
+// startPromptEpisode marks the session as waiting at a permission prompt and
+// reports whether this is the first poll of the episode.
+func (w *Watchdog) startPromptEpisode(sessionName string) bool {
+	fp := w.fingerprints[sessionName]
+	if fp.PromptReported {
+		return false
+	}
+	fp.PromptReported = true
+	w.fingerprints[sessionName] = fp
+	return true
+}
+
+// endPromptEpisode clears the prompt flag once the agent has moved on, so the
+// next prompt is surfaced again.
+func (w *Watchdog) endPromptEpisode(sessionName string) {
+	if fp, ok := w.fingerprints[sessionName]; ok && fp.PromptReported {
+		fp.PromptReported = false
+		w.fingerprints[sessionName] = fp
+	}
 }
 
 // fingerprintWorking updates the session's output fingerprint and fills the

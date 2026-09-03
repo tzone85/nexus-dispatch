@@ -39,7 +39,10 @@ func TestWatchdog_DetectsPermissionPrompt(t *testing.T) {
 	}
 	defer es.Close()
 
-	wd := engine.NewWatchdog(engine.WatchdogConfig{StuckThresholdS: 120}, es)
+	wd := engine.NewWatchdog(engine.WatchdogConfig{
+		StuckThresholdS:    120,
+		AutoApprovePrompts: func(string) bool { return true },
+	}, es)
 	rt := &mockRuntime{status: runtime.StatusPermissionPrompt, output: "Allow? [Y/n]"}
 
 	result := wd.Check("test-session", rt)
