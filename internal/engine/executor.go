@@ -354,6 +354,12 @@ func (e *Executor) spawn(ctx context.Context, repoDir string, a Assignment, stor
 		return result
 	}
 
+	// Hand the tmux session to the controller so a stuck-agent cancel can
+	// kill the process, not just emit an event.
+	if e.controller != nil {
+		e.controller.RegisterSession(a.StoryID, a.SessionName, rt)
+	}
+
 	// Emit STORY_STARTED event with tier and role so AttemptTracker can
 	// reconstruct attempt history without reverse-engineering roles.
 	startEvt := state.NewEventForAttempt(state.EventStoryStarted, a.AgentID, a.StoryID, a.AttemptID, map[string]any{

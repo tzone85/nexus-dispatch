@@ -10,6 +10,18 @@ import (
 	"github.com/tzone85/nexus-dispatch/internal/state"
 )
 
+// sessionTerminator is the slice of runtime.Runtime the controller needs to
+// kill a CLI agent's tmux session. Kept minimal so tests can use a fake.
+type sessionTerminator interface {
+	Terminate(sessionID string) error
+}
+
+// agentSession is a live CLI (tmux) agent the controller can terminate.
+type agentSession struct {
+	sessionName string
+	runtime     sessionTerminator
+}
+
 // ControlActionKind identifies the type of control action taken.
 type ControlActionKind string
 
@@ -38,6 +50,7 @@ type Controller struct {
 	mu           sync.Mutex
 	lastActionAt time.Time
 	cancelFuncs  map[string]context.CancelFunc // storyID -> cancel for native runtimes
+	sessions     map[string]agentSession       // storyID -> tmux session for CLI runtimes
 }
 
 // NewController creates a Controller. The supervisor may be nil if LLM-based
@@ -49,7 +62,26 @@ func NewController(cfg config.ControllerConfig, sup *Supervisor, es state.EventS
 		eventStore:  es,
 		projStore:   ps,
 		cancelFuncs: make(map[string]context.CancelFunc),
+		sessions:    make(map[string]agentSession),
 	}
+}
+
+// RegisterSession records the tmux session (and the runtime that owns it)
+// for a CLI-runtime story so cancelStory can actually kill the agent — a
+// native cancel func cannot reach a process living in tmux. A story has at
+// most one live session, so re-dispatch overwrites the previous entry; the
+// map is bounded by the number of stories, and cancel consumes the entry.
+func (c *Controller) RegisterSession(storyID, sessionName string, rt sessionTerminator) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.sessions[storyID] = agentSession{sessionName: sessionName, runtime: rt}
+}
+
+// DeregisterSession forgets a story's tmux session (normal completion).
+func (c *Controller) DeregisterSession(storyID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.sessions, storyID)
 }
 
 // RegisterCancel stores a cancel function for a native runtime story, enabling
@@ -246,6 +278,10 @@ func (c *Controller) cancelStory(storyID string) {
 	if ok {
 		delete(c.cancelFuncs, storyID)
 	}
+	sess, hasSession := c.sessions[storyID]
+	if hasSession {
+		delete(c.sessions, storyID)
+	}
 	c.mu.Unlock()
 
 	if ok {
@@ -253,10 +289,21 @@ func (c *Controller) cancelStory(storyID string) {
 		log.Printf("[controller] cancelled native runtime for %s", storyID)
 	}
 
+	payload := map[string]any{
+		"reason": "controller cancelled stuck agent",
+	}
+	if hasSession {
+		payload["session_name"] = sess.sessionName
+		if err := sess.runtime.Terminate(sess.sessionName); err != nil {
+			log.Printf("[controller] terminate tmux session %s for %s: %v", sess.sessionName, storyID, err)
+			payload["terminate_error"] = err.Error()
+		} else {
+			log.Printf("[controller] terminated tmux session %s for %s", sess.sessionName, storyID)
+		}
+	}
+
 	emitEventOrLog(c.eventStore, c.projStore,
-		state.NewEvent(state.EventAgentTerminated, "controller", storyID, map[string]any{
-			"reason": "controller cancelled stuck agent",
-		}))
+		state.NewEvent(state.EventAgentTerminated, "controller", storyID, payload))
 }
 
 func (c *Controller) resetStoryToDraft(storyID, reason string) {
