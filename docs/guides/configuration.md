@@ -295,6 +295,8 @@ billing:
   budget_warn_pct: 80        # emit REQ_BUDGET_WARNING at this % of the cap (default 80)
 ```
 
+Rates are resolved per model deterministically: an exact key match first, then the **longest** key that is a prefix of the model name (`claude-sonnet` prices `claude-sonnet-4-20250514`), then a `default` key when you define one. A model that matches none of these is **unpriced**: its spend is not counted, and the budget guard and `nxd report` log an "unpriced model" warning so you can add a rate.
+
 The guard prices the requirement's **actual** token usage (`metrics.jsonl`) with your configured rates before each story's post-execution pipeline. Crossing the warning threshold emits `REQ_BUDGET_WARNING` once; reaching the cap emits `REQ_BUDGET_EXCEEDED` and pauses the requirement so no further tokens burn. Raise the budget (or accept the spend) and `nxd resume` to continue. In `mode: subscription` spend is always $0 and the guard never trips — it exists for metered API keys, not local Ollama.
 
 ### notifications

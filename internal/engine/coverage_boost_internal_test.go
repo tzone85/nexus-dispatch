@@ -608,12 +608,12 @@ func TestSumTokenUsage_WithMetricsFile(t *testing.T) {
 	cfg.Workspace.StateDir = dir
 
 	rb := NewReportBuilder(es, ps, cfg)
-	inputTokens, outputTokens := rb.sumTokenUsage()
-	if inputTokens != 300 {
-		t.Errorf("expected 300 input tokens, got %d", inputTokens)
+	usage := rb.sumTokenUsage("r1")
+	if usage.TokensIn != 300 {
+		t.Errorf("expected 300 input tokens, got %d", usage.TokensIn)
 	}
-	if outputTokens != 125 {
-		t.Errorf("expected 125 output tokens, got %d", outputTokens)
+	if usage.TokensOut != 125 {
+		t.Errorf("expected 125 output tokens, got %d", usage.TokensOut)
 	}
 }
 
@@ -628,9 +628,9 @@ func TestSumTokenUsage_EmptyStateDir(t *testing.T) {
 	cfg.Workspace.StateDir = ""
 
 	rb := NewReportBuilder(es, ps, cfg)
-	in, out := rb.sumTokenUsage()
-	if in != 0 || out != 0 {
-		t.Errorf("empty state dir: expected (0,0), got (%d,%d)", in, out)
+	usage := rb.sumTokenUsage("r1")
+	if usage.TokensIn != 0 || usage.TokensOut != 0 {
+		t.Errorf("empty state dir: expected (0,0), got (%d,%d)", usage.TokensIn, usage.TokensOut)
 	}
 }
 
