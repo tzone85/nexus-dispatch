@@ -3,7 +3,6 @@ package engine
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -14,6 +13,7 @@ import (
 	"time"
 
 	"github.com/tzone85/nexus-dispatch/internal/agent"
+	"github.com/tzone85/nexus-dispatch/internal/approvals"
 	"github.com/tzone85/nexus-dispatch/internal/artifact"
 	"github.com/tzone85/nexus-dispatch/internal/codegraph"
 	"github.com/tzone85/nexus-dispatch/internal/config"
@@ -93,6 +93,10 @@ type Monitor struct {
 	// REQ_COMPLETED and runs a bounded auto-fix loop on a red build. Nil falls
 	// back to the legacy advisory verification (gaps logged, never blocking).
 	completionGate *CompletionGate
+
+	// approvals is the human approval queue (approval_wiring.go). Nil means
+	// approvals are not wired and every hook is a no-op.
+	approvals *approvals.Queue
 
 	// budgetGuard enforces billing.budget_usd: warns once at the threshold
 	// and pauses the requirement when actual LLM spend reaches the cap. Nil
@@ -759,7 +763,7 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 			log.Printf("[pipeline] security review error for %s (continuing to merge): %v", storyID, secErr)
 		case !passed:
 			log.Printf("[pipeline] security gate FLAGGED %s: %s", storyID, summary)
-			m.pauseRequirement(storyID, fmt.Sprintf("security gate: %s (review the finding, then fix on the branch or `nxd resume <req>` to proceed)", summary))
+			m.pauseOnSecurityFinding(storyID, reqID, summary)
 			return
 		default:
 			log.Printf("[pipeline] security gate passed for %s", storyID)
@@ -778,6 +782,12 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 		log.Printf("[pipeline] story %s ready for merge review (review_before_merge enabled)", storyID)
 		return
 	}
+	// Approval gate (approval_wiring.go): a rejected approval resets the
+	// story; a pending one parks it as merge_ready and pauses the requirement.
+	if m.mergeGate(storyID, attemptID, reqID, branch) {
+		outcomeForRelease = devdb.OutcomePaused
+		return
+	}
 	if m.merger != nil {
 		m.mergeMu.Lock()
 		defer m.mergeMu.Unlock()
@@ -786,27 +796,9 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 
 		if err != nil {
 			EmitStageCompleted(m.eventStore, m.projStore, "monitor", storyID, "merge", "failure", mergeStart)
-			// Post-rebase QA already reset the story with feedback.
-			if errors.Is(err, errPostRebaseQA) {
-				log.Printf("[pipeline] %s not merged: %v", storyID, err)
-				return
-			}
-			// Transient Ollama capacity/overload during LLM conflict
-			// resolution — pause cleanly without burning an escalation tier.
-			if m.pauseIfCapacity(storyID, "merge/conflict-resolution", err) {
-				outcomeForRelease = devdb.OutcomePaused
-				return
-			}
-			// Fatal API errors during conflict resolution (credits exhausted,
-			// auth failure) must pause the requirement immediately.
-			if llm.IsFatalAPIError(err) {
-				log.Printf("[pipeline] FATAL: non-retryable API error during merge for %s: %v", storyID, err)
-				outcomeForRelease = devdb.OutcomePaused
-				m.pauseRequirement(storyID, fmt.Sprintf("fatal API error during merge: %v", err))
-				return
-			}
-			log.Printf("[pipeline] merge error for %s: %v", storyID, err)
-			m.resetStoryToDraftFor(storyID, attemptID, "merger", fmt.Sprintf("merge/rebase error: %v", err))
+			// Post-rebase QA reset, capacity/fatal pause, conflict escalation
+			// → approval, or reset with feedback (approval_wiring.go).
+			outcomeForRelease = m.handleMergeFailure(storyID, attemptID, reqID, err)
 			return
 		}
 		EmitStageCompleted(m.eventStore, m.projStore, "monitor", storyID, "merge", "success", mergeStart)

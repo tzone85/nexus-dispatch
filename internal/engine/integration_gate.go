@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 
+	"github.com/tzone85/nexus-dispatch/internal/approvals"
 	"github.com/tzone85/nexus-dispatch/internal/state"
 )
 
@@ -48,8 +49,32 @@ func (m *Monitor) checkIntegration(ctx context.Context, storyID, attemptID, repo
 		log.Printf("[pipeline] qa.pause_on_integration_failure=false — continuing with a red mainline for %s", storyID)
 		return false
 	}
-	m.pauseRequirement(storyID, fmt.Sprintf(
-		"post-merge integration build failed after merging %s: %v (fix the base branch, then `nxd resume`; the Tech Lead fix suggestion is recorded on STORY_INTEGRATION_FAILED)",
-		storyID, truncateDiff(buildErr.Error(), 500)))
+	m.pauseRequirement(storyID, m.integrationPauseReason(storyID, buildErr))
 	return true
+}
+
+// integrationPauseReason builds the pause message and, when
+// approvals.require_for lists integration_failure, records a pending
+// integration_failure approval so the human decision is tracked in the queue
+// (approval_wiring.go). A queue error is logged and the plain reason is used.
+func (m *Monitor) integrationPauseReason(storyID string, buildErr error) string {
+	reason := fmt.Sprintf(
+		"post-merge integration build failed after merging %s: %v (fix the base branch, then `nxd resume`; the Tech Lead fix suggestion is recorded on STORY_INTEGRATION_FAILED)",
+		storyID, truncateDiff(buildErr.Error(), 500))
+	if !ApprovalRequired(m.config.Approvals, approvals.KindIntegrationFailure) {
+		return reason
+	}
+	reqID := ""
+	if story, err := m.projStore.GetStory(storyID); err == nil {
+		reqID = story.ReqID
+	}
+	it, _, err := RequestIntegrationApproval(m.approvals, reqID, storyID, buildErr.Error())
+	switch {
+	case err != nil:
+		log.Printf("[approvals] record integration failure for %s: %v", storyID, err)
+	case it.ID != "":
+		reason = fmt.Sprintf("post-merge integration build failed after merging %s: %v — approval %s pending; %s",
+			storyID, truncateDiff(buildErr.Error(), 500), it.ID, approvalsHint)
+	}
+	return reason
 }
