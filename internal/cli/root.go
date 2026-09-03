@@ -13,9 +13,9 @@ import (
 var version = "0.1.0"
 
 var rootCmd = &cobra.Command{
-	Use:   "nxd",
-	Short: "Nexus Dispatch -- AI agent orchestrator",
-	Long:  "NXD orchestrates autonomous AI agents through the full software development lifecycle.\nHand off a requirement, walk away, come back to merged PRs.",
+	Use:     "nxd",
+	Short:   "Nexus Dispatch -- AI agent orchestrator",
+	Long:    "NXD orchestrates autonomous AI agents through the full software development lifecycle.\nHand off a requirement, walk away, come back to merged PRs.",
 	Version: version,
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
 		checkForModelUpdates(cmd)
@@ -43,6 +43,7 @@ func init() {
 	rootCmd.AddCommand(newWatchCmd())
 	rootCmd.AddCommand(newPlanCmd())
 	rootCmd.AddCommand(newApproveCmd())
+	rootCmd.AddCommand(newApprovalsCmd())
 	rootCmd.AddCommand(newRejectCmd())
 	rootCmd.AddCommand(newReviewStoryCmd())
 	rootCmd.AddCommand(newMergeStoryCmd())

@@ -450,6 +450,41 @@ nxd reject <req-id>
 
 ---
 
+### nxd approvals
+
+Human approval queue. The pipeline records decisions that need a person —
+LLM conflict resolutions, post-merge integration failures, security-gate
+findings and (opt-in) merges — as approval items (`APPROVAL_REQUESTED`). A
+pending item pauses its requirement and blocks the story's merge. Decide it
+here or in the dashboard's **Approvals** panel, then `nxd resume <req-id>`.
+Which kinds are recorded is controlled by `approvals.require_for`
+(see the configuration guide).
+
+```bash
+nxd approvals list [--req <req-id>] [--all] [--json]
+nxd approvals approve <item-id> [--note "<text>"]
+nxd approvals reject  <item-id> [--note "<text>"]
+```
+
+**Flags (`list`):**
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--req <id>` | (all) | Only show items for this requirement |
+| `--all` | false | Include approved/rejected items (default: pending only) |
+| `--json` | false | Machine-readable output |
+
+**Flags (`approve` / `reject`):**
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--note <text>` | "" | Recorded with the decision (`APPROVAL_RESOLVED`) |
+
+The decider is taken from `$NXD_USER`, else the OS user. Item IDs are ULIDs
+(time-sortable). `nxd approve <req-id>` (plan approval) is a separate command.
+
+**Output columns (`list`):** ID, Status, Kind, Req, Story, Summary
+
+---
+
 ### nxd review
 
 Inspect a story's pending changes before merge.
