@@ -1090,7 +1090,7 @@ func TestGitDiff_WithChanges(t *testing.T) {
 
 	// Now gitDiff tries merge-base with main — which is the init commit
 	// So diff should show change.go
-	diff, err := gitDiff(dir)
+	diff, err := gitDiff(dir, "main")
 	if err != nil {
 		t.Fatalf("gitDiff: %v", err)
 	}
@@ -1103,7 +1103,7 @@ func TestGitDiff_NoChanges(t *testing.T) {
 	boostSetupGitRepo(t, dir)
 
 	// No changes since init commit
-	diff, err := gitDiff(dir)
+	diff, err := gitDiff(dir, "main")
 	if err != nil {
 		t.Fatalf("gitDiff with no changes: %v", err)
 	}

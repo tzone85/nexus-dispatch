@@ -288,7 +288,7 @@ func TestDryRunSimulationProducesReviewableDiff(t *testing.T) {
 	exec.Command("git", "-C", dir, "switch", "-c", "nxd/story-1").Run()
 
 	simulateDryRunChanges(dir, "story-1")
-	diff, err := gitDiff(dir)
+	diff, err := gitDiff(dir, "main")
 	if err != nil {
 		t.Fatalf("gitDiff: %v", err)
 	}

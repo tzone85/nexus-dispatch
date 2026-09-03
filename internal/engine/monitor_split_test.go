@@ -92,7 +92,7 @@ func TestCaptureStoryDiff_RealRepoReturnsStat(t *testing.T) {
 	runGit("add", ".")
 	runGit("commit", "-qm", "update")
 
-	got := captureStoryDiff(dir, "feature")
+	got := captureStoryDiff(dir, "main", "feature")
 	if got == "" {
 		t.Fatal("captureStoryDiff returned empty for non-empty diff")
 	}
@@ -116,7 +116,7 @@ func TestCaptureStoryDiff_BadBranchReturnsEmpty(t *testing.T) {
 	}
 	runGit("init", "-q", "--initial-branch=main")
 
-	got := captureStoryDiff(dir, "no-such-branch")
+	got := captureStoryDiff(dir, "main", "no-such-branch")
 	if got != "" {
 		t.Errorf("expected empty diff for missing branch, got %q", got)
 	}
@@ -125,7 +125,7 @@ func TestCaptureStoryDiff_BadBranchReturnsEmpty(t *testing.T) {
 // TestCaptureStoryDiff_NonRepoReturnsEmpty covers the alternative
 // failure mode: dir isn't a git repo at all.
 func TestCaptureStoryDiff_NonRepoReturnsEmpty(t *testing.T) {
-	got := captureStoryDiff(t.TempDir(), "feature")
+	got := captureStoryDiff(t.TempDir(), "main", "feature")
 	if got != "" {
 		t.Errorf("expected empty diff outside a git repo, got %q", got)
 	}

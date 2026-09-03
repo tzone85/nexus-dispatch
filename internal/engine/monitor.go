@@ -521,7 +521,7 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 	// Distinguish between git infrastructure errors (which count toward
 	// the retry limit) and genuinely empty diffs so that broken worktrees
 	// don't loop forever.
-	diff, err := gitDiff(ag.WorktreePath)
+	diff, err := gitDiff(ag.WorktreePath, m.baseBranch(repoDir))
 	if err != nil {
 		log.Printf("[pipeline] git diff error for %s: %v", storyID, err)
 		m.resetStoryToDraftFor(storyID, attemptID, "monitor", fmt.Sprintf("git diff error: %v", err))
@@ -562,7 +562,7 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 
 	// Mine the story diff to MemPalace for future agent context.
 	if m.mempalace != nil && m.mempalace.IsAvailable() {
-		statDiff := captureStoryDiff(repoDir, branch)
+		statDiff := captureStoryDiff(repoDir, m.baseBranch(repoDir), branch)
 		if statDiff != "" {
 			repoName := filepath.Base(repoDir)
 			summary := fmt.Sprintf("Story %s (%s) completed. Changes:\n%s", storyID, storyTitle, truncateDiff(statDiff, 2000))
@@ -848,12 +848,7 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 // If a ConflictResolver is configured, rebase conflicts are automatically
 // resolved via LLM instead of failing immediately.
 func (m *Monitor) rebaseAndMerge(ctx context.Context, storyID, branch, repoDir, worktreePath string) (MergeResult, error) {
-	baseBranch := m.config.Merge.BaseBranch
-	if baseBranch == "" {
-		// Detect the repo's real default branch (master vs main) rather than
-		// assuming main — a hardcoded main fails every merge on older repos.
-		baseBranch = nxdgit.DetectDefaultBranch(repoDir)
-	}
+	baseBranch := m.baseBranch(repoDir)
 
 	log.Printf("[pipeline] fetching %s and rebasing %s for %s", baseBranch, branch, storyID)
 
@@ -1774,124 +1769,6 @@ func ensureGitignorePatterns(worktreePath string) {
 	if err := os.WriteFile(giPath, append(existing, []byte(appendix)...), 0o644); err != nil {
 		log.Printf("[pipeline] update .gitignore at %s: %v", giPath, err)
 	}
-}
-
-// gitDiff returns the git diff for committed changes in a worktree.
-// It tries multiple merge-base candidates so it works with local-only
-// repos that have no "origin/main".
-//
-// Performance note (B1.5): probe `git remote` once to skip the origin/*
-// candidates entirely on local-only repos (common after LB7). Saves
-// 2 fork+exec'd git processes per pipeline pass; ScanRepo runs hundreds
-// of times during a multi-story run.
-func gitDiff(worktreePath string) (string, error) {
-	// Probe whether `origin` exists before trying origin/* refs.
-	hasOrigin := false
-	if remoteCmd := exec.Command("git", "remote"); remoteCmd != nil {
-		remoteCmd.Dir = worktreePath
-		if out, err := remoteCmd.Output(); err == nil {
-			hasOrigin = strings.Contains(string(out), "origin")
-		}
-	}
-
-	candidates := []string{"main", "master"}
-	if hasOrigin {
-		candidates = []string{"origin/main", "origin/master", "main", "master"}
-	}
-	var mbOut []byte
-	var mbErr error
-	for _, ref := range candidates {
-		mbCmd := exec.Command("git", "merge-base", "HEAD", ref)
-		mbCmd.Dir = worktreePath
-		mbOut, mbErr = mbCmd.Output()
-		if mbErr == nil {
-			break
-		}
-	}
-	if mbErr != nil {
-		// No merge-base found -- fall back to the root commit of the
-		// current branch so we diff all changes since the initial commit.
-		rootCmd := exec.Command("git", "rev-list", "--max-parents=0", "HEAD")
-		rootCmd.Dir = worktreePath
-		rootOut, rootErr := rootCmd.Output()
-		if rootErr != nil {
-			return "", fmt.Errorf("git diff: cannot find merge-base or root commit: %w", rootErr)
-		}
-		mbOut = rootOut
-	}
-
-	mergeBase := strings.TrimSpace(string(mbOut))
-	cmd := exec.Command("git", "diff", mergeBase, "HEAD")
-	cmd.Dir = worktreePath
-	out, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("git diff: %w", err)
-	}
-
-	// Filter out diffs that only touch .gitignore (written by
-	// ensureGitignorePatterns before this check). A diff limited to
-	// .gitignore means the agent produced no real code changes.
-	if isGitignoreOnlyDiff(worktreePath, mergeBase) {
-		return "", nil
-	}
-
-	return string(out), nil
-}
-
-// nxdArtifactPatterns are files created by NXD infrastructure, not by the
-// agent's actual work.
-var nxdArtifactPatterns = []string{
-	".gitignore",
-	"CLAUDE.md",
-	".nxd-prompts/",
-	".serena/",
-}
-
-func isArtifactFile(path string) bool {
-	for _, pattern := range nxdArtifactPatterns {
-		if path == pattern || strings.HasPrefix(path, pattern) {
-			return true
-		}
-	}
-	return false
-}
-
-// isGitignoreOnlyDiff returns true when the only files changed between
-// mergeBase and HEAD are NXD infrastructure artifacts (not real code).
-func isGitignoreOnlyDiff(worktreePath, mergeBase string) bool {
-	cmd := exec.Command("git", "diff", "--name-only", mergeBase, "HEAD")
-	cmd.Dir = worktreePath
-	out, err := cmd.Output()
-	if err != nil {
-		return false
-	}
-	files := strings.TrimSpace(string(out))
-	if files == "" {
-		return false
-	}
-	for _, f := range strings.Split(files, "\n") {
-		f = strings.TrimSpace(f)
-		if f == "" {
-			continue
-		}
-		if !isArtifactFile(f) {
-			return false
-		}
-	}
-	return true
-}
-
-// captureStoryDiff returns a compact --stat summary of changes between main
-// and the given branch. Returns an empty string on any error so callers can
-// skip mining without disrupting the pipeline.
-func captureStoryDiff(repoDir, branch string) string {
-	cmd := exec.Command("git", "diff", "main..."+branch, "--stat")
-	cmd.Dir = repoDir
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(out))
 }
 
 // truncateDiff returns s unchanged when it fits within max bytes, otherwise
