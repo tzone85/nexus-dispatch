@@ -150,9 +150,13 @@ func DefaultConfig() Config {
 					PermissionPattern: `\[Y/n\]`,
 				},
 			},
+			// Unattended-mode flags (--dangerously-skip-permissions,
+			// --full-auto) are NOT part of the default args: they are only
+			// appended by RuntimeConfig.EffectiveArgs when the runtime runs
+			// in a docker/ssh runner. On the host the agent keeps prompting.
 			"claude-code": {
 				Command: "claude",
-				Args:    []string{"--dangerously-skip-permissions"},
+				Args:    []string{},
 				Models:  []string{"opus-4", "sonnet-4", "haiku-4"},
 				Detection: RuntimeDetection{
 					IdlePattern:       `^\$\s*$`,
@@ -162,7 +166,7 @@ func DefaultConfig() Config {
 			},
 			"codex": {
 				Command: "codex",
-				Args:    []string{"--full-auto"},
+				Args:    []string{},
 				Models:  []string{"o3", "o4-mini"},
 				Detection: RuntimeDetection{
 					IdlePattern:       "Codex>",
@@ -175,6 +179,18 @@ func DefaultConfig() Config {
 				Models:           []string{"gemma4"},
 				CommandAllowlist: []string{"go build ./...", "go test ./...", "npm test", "npm run build", "make", "make test"},
 			},
+		},
+		// --- workstream B: sandbox + approvals defaults ---
+		Sandbox: SandboxConfig{
+			Mode:    "auto",
+			Image:   "golang:1.26-alpine",
+			Network: "none",
+			CPUs:    "2",
+			Memory:  "2g",
+		},
+		Approvals: ApprovalsConfig{
+			RequireFor:    []string{"conflict_resolution", "integration_failure", "security_finding"},
+			TimeoutAction: "pause",
 		},
 	}
 }
