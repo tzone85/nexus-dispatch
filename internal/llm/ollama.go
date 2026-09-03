@@ -12,16 +12,20 @@ import (
 )
 
 const (
-	ollamaDefaultBaseURL = "http://localhost:11434"
-	ollamaDefaultTimeout = 15 * time.Minute
+	ollamaDefaultBaseURL      = "http://localhost:11434"
+	ollamaDefaultTimeout      = 15 * time.Minute
+	ollamaDefaultRetryBackoff = 500 * time.Millisecond
+	ollamaMaxAttempts         = 3
 )
 
 // OllamaClient communicates with an Ollama instance via its
 // OpenAI-compatible chat completions endpoint.
 type OllamaClient struct {
-	model      string
-	baseURL    string
-	httpClient *http.Client
+	model        string
+	baseURL      string
+	httpClient   *http.Client
+	numCtx       int
+	retryBackoff time.Duration
 }
 
 // OllamaOption configures an OllamaClient.
@@ -36,10 +40,27 @@ func WithOllamaBaseURL(url string) OllamaOption {
 }
 
 // WithOllamaTimeout sets the HTTP client timeout for Ollama requests.
-// Default: 5 minutes (local models can be slow).
+// Default: 15 minutes (local models can be slow).
 func WithOllamaTimeout(d time.Duration) OllamaOption {
 	return func(c *OllamaClient) {
 		c.httpClient = &http.Client{Timeout: d}
+	}
+}
+
+// WithOllamaNumCtx sets the default context window (options.num_ctx) sent
+// with every request; a per-request CompletionRequest.ContextLength wins.
+// 0 (default) leaves the model's own default.
+func WithOllamaNumCtx(n int) OllamaOption {
+	return func(c *OllamaClient) {
+		c.numCtx = n
+	}
+}
+
+// WithOllamaRetryBackoff sets the base back-off between transient-failure
+// retries (attempt n waits base << (n-1)). Default 500 ms; 0 disables waiting.
+func WithOllamaRetryBackoff(d time.Duration) OllamaOption {
+	return func(c *OllamaClient) {
+		c.retryBackoff = d
 	}
 }
 
@@ -47,9 +68,10 @@ func WithOllamaTimeout(d time.Duration) OllamaOption {
 // The model parameter specifies which Ollama model to use by default.
 func NewOllamaClient(model string, opts ...OllamaOption) *OllamaClient {
 	c := &OllamaClient{
-		model:      model,
-		baseURL:    ollamaDefaultBaseURL,
-		httpClient: &http.Client{Timeout: ollamaDefaultTimeout},
+		model:        model,
+		baseURL:      ollamaDefaultBaseURL,
+		httpClient:   &http.Client{Timeout: ollamaDefaultTimeout},
+		retryBackoff: ollamaDefaultRetryBackoff,
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -57,53 +79,31 @@ func NewOllamaClient(model string, opts ...OllamaOption) *OllamaClient {
 	return c
 }
 
-type ollamaRequest struct {
-	Model     string          `json:"model"`
-	Messages  []ollamaMessage `json:"messages"`
-	MaxTokens int             `json:"max_tokens,omitempty"`
-	Stream    bool            `json:"stream"`
-	Tools     []ollamaTool    `json:"tools,omitempty"`
-}
-
-type ollamaMessage struct {
-	Role       string           `json:"role"`
-	Content    string           `json:"content"`
-	ToolCalls  []ollamaToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string           `json:"tool_call_id,omitempty"`
-}
-
-type ollamaTool struct {
-	Type     string         `json:"type"`
-	Function ollamaFunction `json:"function"`
-}
-
-type ollamaFunction struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description,omitempty"`
-	Parameters  json.RawMessage `json:"parameters,omitempty"`
-}
-
-type ollamaToolCall struct {
-	ID       string `json:"id"`
-	Type     string `json:"type"`
-	Function struct {
-		Name      string `json:"name"`
-		Arguments string `json:"arguments"`
-	} `json:"function"`
-}
-
-type ollamaResponse struct {
-	Choices []ollamaChoice `json:"choices"`
-	Model   string         `json:"model"`
-	Usage   struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
-	} `json:"usage"`
-}
-
-type ollamaChoice struct {
-	Message      ollamaMessage `json:"message"`
-	FinishReason string        `json:"finish_reason"`
+// buildRequest assembles the wire request, including Ollama runtime options
+// (num_ctx from the request or the client default, temperature when set).
+func (c *OllamaClient) buildRequest(model string, req CompletionRequest) oaiChatRequest {
+	body := oaiChatRequest{
+		Model:      model,
+		Messages:   buildOAIMessages(req),
+		MaxTokens:  req.MaxTokens,
+		Stream:     false,
+		Tools:      buildOAITools(req.Tools),
+		ToolChoice: oaiToolChoice(req),
+	}
+	numCtx := req.ContextLength
+	if numCtx <= 0 {
+		numCtx = c.numCtx
+	}
+	var temp *float64
+	if req.Temperature > 0 {
+		t := req.Temperature
+		temp = &t
+		body.Temperature = &t
+	}
+	if numCtx > 0 || temp != nil {
+		body.Options = &ollamaOptions{NumCtx: numCtx, Temperature: temp}
+	}
+	return body
 }
 
 // Complete sends a non-streaming completion request to the Ollama
@@ -114,158 +114,87 @@ func (c *OllamaClient) Complete(ctx context.Context, req CompletionRequest) (Com
 		model = c.model
 	}
 
-	msgs := make([]ollamaMessage, 0, len(req.Messages)+1)
-
-	if req.System != "" {
-		msgs = append(msgs, ollamaMessage{
-			Role:    string(RoleSystem),
-			Content: req.System,
-		})
-	}
-
-	for _, m := range req.Messages {
-		msg := ollamaMessage{
-			Role:    string(m.Role),
-			Content: m.Content,
-		}
-
-		// Carry tool_call_id for tool-result messages.
-		if m.Role == RoleTool && m.ToolCallID != "" {
-			msg.ToolCallID = m.ToolCallID
-		}
-
-		// Carry tool_calls for assistant messages that invoked tools.
-		if m.Role == RoleAssistant && len(m.ToolCalls) > 0 {
-			msg.ToolCalls = make([]ollamaToolCall, len(m.ToolCalls))
-			for i, tc := range m.ToolCalls {
-				msg.ToolCalls[i] = ollamaToolCall{
-					ID:   tc.ID,
-					Type: "function",
-				}
-				msg.ToolCalls[i].Function.Name = tc.Name
-				msg.ToolCalls[i].Function.Arguments = string(tc.Arguments)
-			}
-		}
-
-		msgs = append(msgs, msg)
-	}
-
-	// Map request tools to Ollama's OpenAI-compatible format.
-	var tools []ollamaTool
-	for _, td := range req.Tools {
-		tools = append(tools, ollamaTool{
-			Type:     "function",
-			Function: ollamaFunction(td),
-		})
-	}
-
-	body := ollamaRequest{
-		Model:     model,
-		Messages:  msgs,
-		MaxTokens: req.MaxTokens,
-		Stream:    false,
-		Tools:     tools,
-	}
-
-	jsonBody, err := json.Marshal(body)
+	jsonBody, err := json.Marshal(c.buildRequest(model, req))
 	if err != nil {
 		return CompletionResponse{}, fmt.Errorf("marshal request: %w", err)
 	}
 
-	endpoint := c.baseURL + "/v1/chat/completions"
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(jsonBody))
+	resp, respBody, err := c.doWithRetry(ctx, jsonBody)
 	if err != nil {
-		return CompletionResponse{}, fmt.Errorf("create request: %w", err)
-	}
-
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	// S3-7: exponential backoff on transient 5xx and connection failures.
-	// Bounded retries (3 attempts) so the per-iteration timeout in callers
-	// remains meaningful. 4xx (including 404 model-not-found) is NOT retried.
-	const maxAttempts = 3
-	var resp *http.Response
-	var respBody []byte
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		// Re-build the request body each attempt — net/http drains the
-		// body on the first send.
-		httpReq.Body = io.NopCloser(bytes.NewReader(jsonBody))
-		resp, err = c.httpClient.Do(httpReq)
-		if err != nil {
-			if isConnectionRefused(err) {
-				return CompletionResponse{}, fmt.Errorf(
-					"ollama connection refused at %s: is Ollama running? (start with 'ollama serve'): %w",
-					c.baseURL, err,
-				)
-			}
-			if attempt < maxAttempts && ctx.Err() == nil {
-				backoff := time.Duration(1<<uint(attempt-1)) * 500 * time.Millisecond
-				time.Sleep(backoff)
-				continue
-			}
-			return CompletionResponse{}, fmt.Errorf("ollama http request: %w", err)
-		}
-
-		respBody, err = io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if err != nil {
-			return CompletionResponse{}, fmt.Errorf("read response: %w", err)
-		}
-
-		if resp.StatusCode >= 500 && attempt < maxAttempts && ctx.Err() == nil {
-			backoff := time.Duration(1<<uint(attempt-1)) * 500 * time.Millisecond
-			time.Sleep(backoff)
-			continue
-		}
-		break
+		return CompletionResponse{}, err
 	}
 
 	if resp.StatusCode == http.StatusNotFound {
 		return CompletionResponse{}, fmt.Errorf(
-			"ollama model %q not found: pull it with 'ollama pull %s'",
-			model, model,
+			"ollama model %q not found: pull it with 'ollama pull %s': %w",
+			model, model, newAPIError("ollama", resp, respBody),
 		)
 	}
-
 	if resp.StatusCode != http.StatusOK {
-		return CompletionResponse{}, fmt.Errorf(
-			"ollama API error (status %d): %s",
-			resp.StatusCode, string(respBody),
-		)
+		return CompletionResponse{}, newAPIError("ollama", resp, respBody)
 	}
 
-	var apiResp ollamaResponse
-	if err := json.Unmarshal(respBody, &apiResp); err != nil {
-		return CompletionResponse{}, fmt.Errorf("unmarshal response: %w", err)
+	return parseOAIResponse("ollama", respBody)
+}
+
+// doWithRetry posts jsonBody with bounded exponential back-off on transport
+// errors and 5xx responses (S3-7). 4xx (including 404 model-not-found) is not
+// retried. The back-off honours ctx: cancellation returns promptly instead of
+// sleeping through the wait.
+func (c *OllamaClient) doWithRetry(ctx context.Context, jsonBody []byte) (*http.Response, []byte, error) {
+	endpoint := c.baseURL + "/v1/chat/completions"
+	for attempt := 1; ; attempt++ {
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(jsonBody))
+		if err != nil {
+			return nil, nil, fmt.Errorf("create request: %w", err)
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+
+		resp, err := c.httpClient.Do(httpReq)
+		if err != nil {
+			if isConnectionRefused(err) {
+				return nil, nil, fmt.Errorf(
+					"ollama connection refused at %s: is Ollama running? (start with 'ollama serve'): %w",
+					c.baseURL, err,
+				)
+			}
+			if attempt < ollamaMaxAttempts && c.waitBackoff(ctx, attempt) {
+				continue
+			}
+			return nil, nil, fmt.Errorf("ollama http request: %w", err)
+		}
+
+		respBody, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return nil, nil, fmt.Errorf("read response: %w", err)
+		}
+
+		if resp.StatusCode >= 500 && attempt < ollamaMaxAttempts && c.waitBackoff(ctx, attempt) {
+			continue
+		}
+		return resp, respBody, nil
 	}
+}
 
-	if len(apiResp.Choices) == 0 {
-		return CompletionResponse{}, fmt.Errorf("ollama returned no choices")
+// waitBackoff sleeps for the attempt's back-off unless ctx is done first.
+// Returns true when the caller should retry, false when ctx was cancelled.
+func (c *OllamaClient) waitBackoff(ctx context.Context, attempt int) bool {
+	if ctx.Err() != nil {
+		return false
 	}
-
-	choice := apiResp.Choices[0]
-
-	// Extract tool calls from the response.
-	var toolCalls []ToolCall
-	for _, tc := range choice.Message.ToolCalls {
-		toolCalls = append(toolCalls, ToolCall{
-			ID:        tc.ID,
-			Name:      tc.Function.Name,
-			Arguments: json.RawMessage(tc.Function.Arguments),
-		})
+	backoff := c.retryBackoff * time.Duration(1<<uint(attempt-1))
+	if backoff <= 0 {
+		return true
 	}
-
-	return CompletionResponse{
-		Content:    choice.Message.Content,
-		Model:      apiResp.Model,
-		StopReason: choice.FinishReason,
-		ToolCalls:  toolCalls,
-		Usage: Usage{
-			InputTokens:  apiResp.Usage.PromptTokens,
-			OutputTokens: apiResp.Usage.CompletionTokens,
-		},
-	}, nil
+	timer := time.NewTimer(backoff)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 // isConnectionRefused checks whether the error indicates a TCP connection

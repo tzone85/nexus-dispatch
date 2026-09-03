@@ -12,11 +12,15 @@ import (
 
 const googleDefaultBaseURL = "https://generativelanguage.googleapis.com/v1beta"
 
+// googleDefaultModel is used when neither the client nor the request names a model.
+const googleDefaultModel = "gemma-4-26b-a4b-it"
+
 // GoogleClient communicates with the Google AI Studio (Generative Language) API.
 type GoogleClient struct {
 	apiKey     string
 	baseURL    string
 	httpClient *http.Client
+	model      string // configured Google model ID (models.<role>.google_model)
 }
 
 // GoogleOption configures a GoogleClient.
@@ -25,6 +29,18 @@ type GoogleOption func(*GoogleClient)
 // WithGoogleBaseURL sets a custom base URL, useful for testing with httptest servers.
 func WithGoogleBaseURL(url string) GoogleOption {
 	return func(c *GoogleClient) { c.baseURL = url }
+}
+
+// WithGoogleModel pins the Google model ID (config models.<role>.google_model).
+// When set it is what the API receives — CompletionRequest.Model carries the
+// Ollama tag in mixed google+ollama setups and must not be sent to Google.
+func WithGoogleModel(model string) GoogleOption {
+	return func(c *GoogleClient) { c.model = model }
+}
+
+// WithGoogleTimeout sets the per-request HTTP timeout (default 5 minutes).
+func WithGoogleTimeout(d time.Duration) GoogleOption {
+	return func(c *GoogleClient) { c.httpClient = &http.Client{Timeout: d} }
 }
 
 // NewGoogleClient creates a client configured with the given API key.
@@ -105,10 +121,7 @@ type googleUsage struct {
 // Complete sends a completion request to the Google AI Studio generateContent API
 // and returns the parsed response.
 func (c *GoogleClient) Complete(ctx context.Context, req CompletionRequest) (CompletionResponse, error) {
-	model := req.Model
-	if model == "" {
-		model = "gemma-4-26b-a4b-it"
-	}
+	model := c.resolveModel(req.Model)
 
 	gReq := buildGoogleRequest(req)
 
@@ -140,15 +153,13 @@ func (c *GoogleClient) Complete(ctx context.Context, req CompletionRequest) (Com
 		return CompletionResponse{}, fmt.Errorf("read response: %w", err)
 	}
 
-	if httpResp.StatusCode == http.StatusTooManyRequests || httpResp.StatusCode == http.StatusForbidden {
-		return CompletionResponse{}, &QuotaError{
-			StatusCode: httpResp.StatusCode,
-			Message:    string(respBody),
-		}
-	}
-
 	if httpResp.StatusCode != http.StatusOK {
-		return CompletionResponse{}, fmt.Errorf("google AI error (HTTP %d): %s", httpResp.StatusCode, string(respBody))
+		apiErr := newAPIError("google", httpResp, respBody)
+		if httpResp.StatusCode == http.StatusTooManyRequests || httpResp.StatusCode == http.StatusForbidden {
+			// Free-tier quota exhaustion: FallbackClient keys on IsQuotaError.
+			return CompletionResponse{}, newQuotaError(apiErr)
+		}
+		return CompletionResponse{}, apiErr
 	}
 
 	var gResp googleResponse
@@ -157,6 +168,18 @@ func (c *GoogleClient) Complete(ctx context.Context, req CompletionRequest) (Com
 	}
 
 	return parseGoogleResponse(gResp, model)
+}
+
+// resolveModel picks the configured Google model, else the request's model,
+// else the package default.
+func (c *GoogleClient) resolveModel(requested string) string {
+	switch {
+	case c.model != "":
+		return c.model
+	case requested != "":
+		return requested
+	}
+	return googleDefaultModel
 }
 
 // buildGoogleRequest converts a CompletionRequest into the Google AI request format.
@@ -206,16 +229,39 @@ func convertMessage(msg Message) googleContent {
 			}},
 		}
 	case RoleAssistant:
-		return googleContent{
-			Role:  "model",
-			Parts: []googlePart{{Text: msg.Content}},
+		parts := make([]googlePart, 0, len(msg.ToolCalls)+1)
+		if msg.Content != "" || len(msg.ToolCalls) == 0 {
+			parts = append(parts, googlePart{Text: msg.Content})
 		}
+		// A prior model turn that called functions must be replayed with its
+		// functionCall parts, otherwise the following functionResponse turn is
+		// rejected as unpaired and the tool loop breaks.
+		for _, tc := range msg.ToolCalls {
+			parts = append(parts, googlePart{FunctionCall: &googleFunctionCall{
+				Name: tc.Name,
+				Args: parseFunctionArgs(tc.Arguments),
+			}})
+		}
+		return googleContent{Role: "model", Parts: parts}
 	default: // RoleUser, RoleSystem
 		return googleContent{
 			Role:  "user",
 			Parts: []googlePart{{Text: msg.Content}},
 		}
 	}
+}
+
+// parseFunctionArgs decodes tool-call arguments into the args object Google
+// expects; malformed or empty arguments become an empty object.
+func parseFunctionArgs(raw json.RawMessage) map[string]any {
+	args := map[string]any{}
+	if len(raw) == 0 {
+		return args
+	}
+	if err := json.Unmarshal(raw, &args); err != nil || args == nil {
+		return map[string]any{}
+	}
+	return args
 }
 
 // parseFunctionResponseData attempts to parse content as JSON; falls back to wrapping

@@ -29,6 +29,9 @@ type CompletionRequest struct {
 	System      string           `json:"system,omitempty"` // System prompt (Anthropic-style)
 	Tools       []ToolDefinition `json:"tools,omitempty"`
 	ToolChoice  string           `json:"tool_choice,omitempty"`
+	// ContextLength requests a specific context window (Ollama options.num_ctx,
+	// config models.<role>.num_ctx). 0 leaves the provider/model default.
+	ContextLength int `json:"context_length,omitempty"`
 }
 
 // CompletionResponse holds the result of a completion call.
