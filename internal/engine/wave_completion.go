@@ -97,6 +97,14 @@ func CompletedStories(stories []state.Story) map[string]bool {
 	return classifyStories(stories).completed
 }
 
+// DispatchableStories filters the planned stories a manual `nxd resume` may
+// hand to the dispatcher: stories awaiting merge (pr_submitted / merge_ready)
+// are neither completed nor re-dispatchable, exactly as in the monitor's
+// auto-resume path (waveProgress.dispatchable).
+func DispatchableStories(stories []state.Story, planned []PlannedStory) []PlannedStory {
+	return classifyStories(stories).dispatchable(planned)
+}
+
 // emitPendingReview records that the requirement is waiting on open PRs.
 // The payload uses req_id (not id) on purpose: REQ_PENDING_REVIEW with an
 // "id" flips the requirement into the plan-approval pending_review status,

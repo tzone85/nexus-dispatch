@@ -308,6 +308,8 @@ func runResume(cmd *cobra.Command, args []string) error {
 	dispatcher.SetBayesianRouter(bayesianRouter)
 	waveNumber := maxWave + 1
 	dispatchStart := time.Now()
+	// Never re-dispatch a story whose PR is still open (same rule as auto-resume).
+	plannedStories = engine.DispatchableStories(stories, plannedStories)
 	assignments, err := dispatcher.DispatchWave(dag, completed, reqID, plannedStories, waveNumber)
 	if err != nil {
 		engine.EmitStageCompleted(s.Events, s.Proj, "dispatcher", "", "dispatch", "failure", dispatchStart)

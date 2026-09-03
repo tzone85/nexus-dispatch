@@ -234,3 +234,29 @@ func TestCompletedStories(t *testing.T) {
 		t.Fatal("no stories → empty (non-nil) set")
 	}
 }
+
+func TestDispatchableStories_ExcludesOpenPRs(t *testing.T) {
+	stories := []state.Story{
+		{ID: "m", Status: "merged"},
+		{ID: "pr", Status: "pr_submitted"},
+		{ID: "mr", Status: "merge_ready"},
+		{ID: "d", Status: "draft"},
+	}
+	planned := []PlannedStory{{ID: "m"}, {ID: "pr"}, {ID: "mr"}, {ID: "d"}}
+
+	got := DispatchableStories(stories, planned)
+
+	ids := make([]string, 0, len(got))
+	for _, ps := range got {
+		ids = append(ids, ps.ID)
+	}
+	if len(ids) != 2 || ids[0] != "m" || ids[1] != "d" {
+		t.Fatalf("dispatchable = %v, want [m d] (open-PR stories must never be re-dispatched)", ids)
+	}
+
+	// Nothing awaiting merge → the planned slice is returned untouched.
+	clean := DispatchableStories([]state.Story{{ID: "d", Status: "draft"}}, planned)
+	if len(clean) != len(planned) {
+		t.Fatalf("clean run must keep all %d planned stories, got %d", len(planned), len(clean))
+	}
+}

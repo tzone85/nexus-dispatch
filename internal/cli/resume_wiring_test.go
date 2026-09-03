@@ -134,6 +134,9 @@ func TestResume_CompletedSetMatchesMonitor(t *testing.T) {
 	if !strings.Contains(code, "completed := engine.CompletedStories(stories)") {
 		t.Error("resume.go must build the completed set with engine.CompletedStories")
 	}
+	if !strings.Contains(code, "plannedStories = engine.DispatchableStories(stories, plannedStories)") {
+		t.Error("resume.go must filter open-PR stories with engine.DispatchableStories before DispatchWave")
+	}
 	if strings.Contains(code, `story.Status == "pr_submitted"`) {
 		t.Error("resume.go must not treat pr_submitted as completed")
 	}

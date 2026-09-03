@@ -1,6 +1,6 @@
 # NXD Event Reference
 
-Every action in NXD produces an immutable event. NXD currently emits **65 event types**. The detailed entries below cover the core requirement → planning → dispatch → review → QA → security → merge pipeline. The remaining types — added across 2026-04 → 2026-06 for the controller, devdb lifecycle, conflict resolver, integration build, and stage timing — are summarised in the *Additional events* section at the bottom of this page. The canonical list of strings lives in `internal/state/events.go`; the test `internal/config/example_gen_test.go` guards the generated example config from drifting, and a future generator can do the same for this page.
+Every action in NXD produces an immutable event. NXD currently emits **67 event types**. The detailed entries below cover the core requirement → planning → dispatch → review → QA → security → merge pipeline. The remaining types — added across 2026-04 → 2026-06 for the controller, devdb lifecycle, conflict resolver, integration build, and stage timing — are summarised in the *Additional events* section at the bottom of this page. The canonical list of strings lives in `internal/state/events.go`; the test `internal/config/example_gen_test.go` guards the generated example config from drifting, and a future generator can do the same for this page.
 
 ## Event Structure
 
