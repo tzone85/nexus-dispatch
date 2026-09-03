@@ -74,6 +74,10 @@ type Monitor struct {
 	// integration build fails on main.
 	techLeadFixer *TechLeadFixer
 
+	// integrationBuild runs the post-merge build of the base branch; nil
+	// means runIntegrationBuild. Tests inject a fake (see integration_gate.go).
+	integrationBuild func(repoDir string) error
+
 	// securityGate runs the security agent (scanners + LLM threat-model review)
 	// on each story after QA and before merge, pausing the requirement when a
 	// finding meets the gate severity. Nil disables the per-story security gate.
@@ -813,20 +817,11 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 				log.Printf("[pipeline] remote branch cleanup for %s: %v", storyID, err)
 			}
 
-			// Post-merge integration build: validate that main still compiles
-			// after squash-merging this story's branch. This catches cross-story
-			// incompatibilities that per-story QA (run in the worktree) cannot
-			// detect — e.g. story A exposes an interface, story B calls a method
-			// that doesn't exist yet on that interface.
-			if m.techLeadFixer != nil {
-				if buildErr := runIntegrationBuild(repoDir); buildErr != nil {
-					log.Printf("[pipeline] POST-MERGE BUILD FAILED for %s on main: %v", storyID, buildErr)
-					emitEventOrLog(m.eventStore, m.projStore,
-						state.NewEvent(state.EventStoryIntegrationFailed, "monitor", storyID, map[string]any{
-							"error": buildErr.Error(),
-						}))
-					m.techLeadFixer.DispatchIntegrationFix(ctx, storyID, repoDir, buildErr.Error())
-				}
+			// Post-merge integration build (see integration_gate.go). A red
+			// mainline pauses the requirement (qa.pause_on_integration_failure)
+			// so the next wave is not branched from broken code.
+			if m.checkIntegration(ctx, storyID, attemptID, repoDir) {
+				return
 			}
 		}
 	}

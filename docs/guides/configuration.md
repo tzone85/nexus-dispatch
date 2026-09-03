@@ -267,6 +267,23 @@ merge:
 
 In `local` mode, stories still emit `STORY_PR_CREATED` and `STORY_MERGED` events for consistent tracking (with `pr_url: "local://merged"`).
 
+### qa — success criteria and gates
+
+```yaml
+qa:
+  success_criteria:                     # evaluated before an agent may declare a story done
+    - kind: command_succeeds
+      value: go build ./...
+    - kind: test_passes
+      value: go test ./...
+  criteria_authoritative: false         # true = passing criteria outrank the LLM reviewer's veto
+  disable_completion_gate: false        # true = skip the composed-mainline verification before REQ_COMPLETED
+  completion_fix_cycles: 2              # auto-fix cycles against a red mainline before REQ_BLOCKED
+  pause_on_integration_failure: true    # pause the requirement when the post-merge build of the base branch fails
+```
+
+`pause_on_integration_failure` (default `true`) controls what happens when a story merges cleanly but the base branch no longer builds (`STORY_INTEGRATION_FAILED`). By default the requirement is paused — with the Tech Lead's fix suggestion recorded on the event — so the next wave is not branched from a red mainline; fix the base branch and `nxd resume`. Set it to `false` to only record the failure and keep dispatching.
+
 ### billing — LLM budget guard
 
 ```yaml

@@ -292,6 +292,11 @@ type QAConfig struct {
 	// style) and vetoes objectively-complete work, which prevents the pipeline
 	// from ever finishing. Default false preserves the reviewer's veto.
 	CriteriaAuthoritative bool `yaml:"criteria_authoritative"`
+	// PauseOnIntegrationFailure pauses the requirement when the post-merge
+	// integration build of the base branch fails (STORY_INTEGRATION_FAILED),
+	// instead of dispatching the next wave from a red mainline. Default true;
+	// set false to only record the failure and keep going.
+	PauseOnIntegrationFailure bool `yaml:"pause_on_integration_failure"`
 }
 
 // SecurityConfig controls the security agent: the per-story pre-merge security

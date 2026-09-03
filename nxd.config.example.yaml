@@ -151,6 +151,7 @@ qa:
     disable_completion_gate: false
     completion_fix_cycles: 0
     criteria_authoritative: false
+    pause_on_integration_failure: true
 security:
     gate_severity: critical
     auto_learn: true
