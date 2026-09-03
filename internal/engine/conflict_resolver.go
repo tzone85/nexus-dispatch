@@ -23,9 +23,10 @@ var oversizedBinaryPattern = regexp.MustCompile(`(?i)(^|/)(server|main|app|binar
 // is removed (git rm) rather than resolved with --ours.
 const maxBinaryKeepBytes = 500 * 1024 // 500 KB
 
-// maxConflictContentBytes is the maximum size of conflicted file content sent
-// to an Ollama LLM. Ollama models typically have smaller context windows than
-// cloud models, so we truncate to avoid "context length exceeded" errors.
+// maxConflictContentBytes is the maximum size of a conflicted file the resolver
+// will hand to an LLM. Larger files are NEVER truncated (a truncated input
+// resolved and written back as the whole file is data loss) — they are
+// escalated to a human via STORY_CONFLICT_ESCALATED and the rebase is aborted.
 const maxConflictContentBytes = 24 * 1024 // 24 KB
 
 // techLeadContext carries the requirement/story context that the Tech Lead
@@ -174,51 +175,9 @@ func (cr *ConflictResolver) RebaseWithResolution(ctx context.Context, storyID, w
 				continue
 			}
 
-			content, rErr := os.ReadFile(absPath)
-			if rErr != nil {
+			if rErr := cr.resolveTextConflict(ctx, storyID, worktreePath, file, needsTechLead); rErr != nil {
 				_ = nxdgit.RebaseAbort(worktreePath)
-				return fmt.Errorf("read conflicted file %s: %w", file, rErr)
-			}
-
-			// Truncate oversized content to stay within Ollama context limits.
-			contentStr := truncateConflictContent(string(content))
-
-			// Try senior resolver first (fast path).
-			resolved, seniorErr := cr.resolveFile(ctx, file, contentStr)
-
-			// Escalate to Tech Lead if:
-			//  - senior failed entirely, OR
-			//  - this round involves many files (integration-level conflict).
-			if seniorErr != nil || needsTechLead {
-				if cr.techLeadClient != nil {
-					tlCtx := cr.buildTechLeadContext(ctx, storyID, worktreePath, file)
-					resolved, rErr = cr.resolveFileTechLead(ctx, file, contentStr, tlCtx)
-					if rErr != nil {
-						cr.emitEscalationEvent(storyID, file, "tech_lead_failed")
-						_ = nxdgit.RebaseAbort(worktreePath)
-						if llm.IsFatalAPIError(rErr) {
-							log.Printf("[conflict-resolver] FATAL: Tech Lead error for %s: %v", storyID, rErr)
-						}
-						return fmt.Errorf("tech lead resolve %s: %w", file, rErr)
-					}
-					cr.emitEscalationEvent(storyID, file, "tech_lead_resolved")
-				} else if seniorErr != nil {
-					// No tech lead available and senior failed.
-					_ = nxdgit.RebaseAbort(worktreePath)
-					if llm.IsFatalAPIError(seniorErr) {
-						log.Printf("[conflict-resolver] FATAL: API error during conflict resolution for %s: %v", storyID, seniorErr)
-					}
-					return fmt.Errorf("LLM resolve %s: %w", file, seniorErr)
-				}
-				// If needsTechLead but senior succeeded and no tech lead: use senior result.
-			} else if seniorErr != nil {
-				_ = nxdgit.RebaseAbort(worktreePath)
-				return fmt.Errorf("LLM resolve %s: %w", file, seniorErr)
-			}
-
-			if wErr := os.WriteFile(absPath, []byte(resolved), 0o644); wErr != nil {
-				_ = nxdgit.RebaseAbort(worktreePath)
-				return fmt.Errorf("write resolved %s: %w", file, wErr)
+				return fmt.Errorf("resolve %s: %w", file, rErr)
 			}
 		}
 
@@ -309,9 +268,9 @@ func (cr *ConflictResolver) handleBinaryConflict(storyID, worktreePath, absPath,
 	return nil
 }
 
-// resolveFile sends a conflicted file to the senior LLM and returns the resolved content.
-// The prompt explicitly instructs the model not to wrap output in markdown fences,
-// which is important for Ollama models that tend to be verbose.
+// resolveFile sends a conflicted file to the senior LLM and returns the
+// validated resolved content. The prompt asks for the whole file inside the
+// NXD sentinels (never markdown fences, which collide with fences in the file).
 func (cr *ConflictResolver) resolveFile(ctx context.Context, filename, conflictedContent string) (string, error) {
 	if cr.llmClient == nil {
 		return "", fmt.Errorf("no senior LLM client configured")
@@ -322,13 +281,7 @@ Your task:
 1. Read both sides of every conflict
 2. Produce the CORRECT merged version that preserves ALL functionality from BOTH sides
 3. Remove ALL conflict markers
-4. Return ONLY the resolved file content
-
-CRITICAL OUTPUT RULES:
-- Do NOT wrap your response in markdown code fences (no `+"```"+` blocks)
-- Do NOT add any explanation, preamble, or commentary
-- Do NOT add "Here is the resolved file:" or similar
-- Your entire response must be the file content only, starting at line 1
+4. Return the complete resolved file
 
 Key rules:
 - Keep ALL additions from both sides (imports, functions, config entries, etc.)
@@ -336,43 +289,17 @@ Key rules:
 - Preserve the original formatting and style
 - If both sides modified the same line differently, combine them logically
 
+%s
+
 File: %s
 
-%s`, filename, conflictedContent)
+%s`, resolutionOutputRules, filename, conflictedContent)
 
-	resp, err := cr.llmClient.Complete(ctx, llm.CompletionRequest{
-		Model: cr.model,
-		Messages: []llm.Message{
-			{Role: llm.RoleUser, Content: prompt},
-		},
-		MaxTokens:   cr.maxTokens,
-		Temperature: 0.0,
-	})
-	if err != nil {
-		if llm.IsFatalAPIError(err) {
-			return "", fmt.Errorf("fatal API error (credits exhausted or auth failure): %w", err)
-		}
-		return "", err
-	}
-
-	resolved := extractResolvedFileContent(resp.Content)
-
-	// Sanity check: resolved content must not contain conflict markers.
-	if strings.Contains(resolved, "<<<<<<<") || strings.Contains(resolved, ">>>>>>>") {
-		return "", fmt.Errorf("LLM output still contains conflict markers")
-	}
-
-	// Reject conversational commentary. When the model returns prose with no
-	// fenced block, writing it would destroy the file; failing here escalates.
-	if looksLikeResolverChatter(resolved) {
-		return "", fmt.Errorf("LLM returned commentary, not file content")
-	}
-
-	return resolved, nil
+	return cr.completeResolution(ctx, cr.llmClient, cr.model, "senior", prompt, conflictedContent)
 }
 
 // resolveFileTechLead sends a conflicted file to the Tech Lead LLM with full
-// requirement/story context and returns the resolved content.
+// requirement/story context and returns the validated resolved content.
 func (cr *ConflictResolver) resolveFileTechLead(ctx context.Context, filename, conflictedContent string, tlCtx techLeadContext) (string, error) {
 	if cr.techLeadClient == nil {
 		return "", fmt.Errorf("no Tech Lead LLM client configured")
@@ -407,11 +334,7 @@ Conflict content (with markers):
 Resolve the conflict to keep ALL functionality from BOTH sides that is
 consistent with the requirement above. Maintain syntax.
 
-CRITICAL OUTPUT RULES:
-- Return ONLY the resolved file content
-- Do NOT wrap your response in markdown code fences (no `+"```"+` blocks)
-- Do NOT add any explanation or commentary
-- Start your response with the first line of the resolved file`,
+%s`,
 		tlCtx.requirementTitle,
 		tlCtx.requirementText,
 		tlCtx.storyTitle,
@@ -420,34 +343,10 @@ CRITICAL OUTPUT RULES:
 		filename,
 		historyStr,
 		conflictedContent,
+		resolutionOutputRules,
 	)
 
-	resp, err := cr.techLeadClient.Complete(ctx, llm.CompletionRequest{
-		Model: cr.techLeadModel,
-		Messages: []llm.Message{
-			{Role: llm.RoleUser, Content: prompt},
-		},
-		MaxTokens:   cr.maxTokens,
-		Temperature: 0.0,
-	})
-	if err != nil {
-		if llm.IsFatalAPIError(err) {
-			return "", fmt.Errorf("fatal API error (credits exhausted or auth failure): %w", err)
-		}
-		return "", err
-	}
-
-	resolved := extractResolvedFileContent(resp.Content)
-
-	if strings.Contains(resolved, "<<<<<<<") || strings.Contains(resolved, ">>>>>>>") {
-		return "", fmt.Errorf("tech lead output still contains conflict markers")
-	}
-
-	if looksLikeResolverChatter(resolved) {
-		return "", fmt.Errorf("tech lead returned commentary, not file content")
-	}
-
-	return resolved, nil
+	return cr.completeResolution(ctx, cr.techLeadClient, cr.techLeadModel, "tech lead", prompt, conflictedContent)
 }
 
 // buildTechLeadContext populates a techLeadContext from the projection store and
@@ -505,37 +404,6 @@ func gitFileHistory(worktreePath, file string, n int) []string {
 		}
 	}
 	return subjects
-}
-
-// truncateConflictContent truncates conflicted file content to maxConflictContentBytes
-// so Ollama models with smaller context windows don't receive oversized prompts.
-// If truncation occurs, a warning line is appended.
-func truncateConflictContent(content string) string {
-	if len(content) <= maxConflictContentBytes {
-		return content
-	}
-	return content[:maxConflictContentBytes] + "\n... [content truncated to fit context window]"
-}
-
-// stripCodeFences removes leading/trailing markdown code fences from LLM output.
-// extractResolvedFileContent pulls the resolved file out of an LLM response.
-// Conflict-resolution models sometimes wrap the file in a ```fenced block with
-// conversational preamble/postamble ("Resolved. Kept X ... File content to
-// apply: ```json {…}``` Grant write to apply."). Writing that whole reply
-// verbatim corrupts the file (it broke a real build's package.json into invalid
-// JSON). When a fenced block is present return ONLY its contents; otherwise
-// fall back to trimming stray fences.
-func extractResolvedFileContent(resp string) string {
-	if i := strings.Index(resp, "```"); i >= 0 {
-		rest := resp[i+3:]
-		if nl := strings.IndexByte(rest, '\n'); nl >= 0 {
-			rest = rest[nl+1:]
-		}
-		if j := strings.Index(rest, "```"); j >= 0 {
-			return strings.TrimSpace(rest[:j])
-		}
-	}
-	return strings.TrimSpace(stripCodeFences(resp))
 }
 
 // resolverChatterMarkers are phrases that appear in a conflict-resolution model's
@@ -627,10 +495,21 @@ func (cr *ConflictResolver) emitBinaryEvent(storyID, file string, eventType stat
 }
 
 func (cr *ConflictResolver) emitEscalationEvent(storyID, file, outcome string) {
-	evt := state.NewEvent(state.EventStoryConflictEscalated, "conflict-resolver", storyID, map[string]any{
+	cr.emitEscalationEventWithReason(storyID, file, outcome, "")
+}
+
+// emitEscalationEventWithReason emits STORY_CONFLICT_ESCALATED with a
+// human-readable reason (omitted when empty) so operators can see why a file
+// was left for manual resolution.
+func (cr *ConflictResolver) emitEscalationEventWithReason(storyID, file, outcome, reason string) {
+	payload := map[string]any{
 		"file":    file,
 		"outcome": outcome,
-	})
+	}
+	if reason != "" {
+		payload["reason"] = reason
+	}
+	evt := state.NewEvent(state.EventStoryConflictEscalated, "conflict-resolver", storyID, payload)
 	if cr.eventStore != nil {
 		_ = cr.eventStore.Append(evt)
 	}

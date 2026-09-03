@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 
 	"github.com/tzone85/nexus-dispatch/internal/sanitize"
@@ -12,11 +13,11 @@ import (
 // the gap where input was sanitized in the planner but LLM-generated content
 // flowed unchecked through the system (audit finding H7).
 //
-// On detection the response Content is replaced with a redacted notice and
-// the incident is logged. The Usage field is preserved so cost tracking
-// stays accurate. ToolCalls are passed through unchanged because they are
-// already structured output, but the sanitizer is invoked on each tool call
-// argument string for completeness.
+// On detection only the matched span is redacted (the rest of the content is
+// preserved so a single credential-like token no longer destroys an entire
+// plan or review) and the incident is logged. Both resp.Content and every
+// tool-call argument string are scanned; Usage is preserved so cost tracking
+// stays accurate.
 type SanitizingClient struct {
 	inner Client
 	role  string // descriptive label for log lines (e.g. "review", "manager")
@@ -35,15 +36,36 @@ func (s *SanitizingClient) Complete(ctx context.Context, req CompletionRequest) 
 		return resp, err
 	}
 
-	if resp.Content != "" {
-		if sanitize.ScanForSecrets(resp.Content) {
-			log.Printf("[sanitize] %s LLM response contained a secret-like token; redacting", s.role)
-			resp.Content = "[REDACTED: model output contained credential-like token]"
-		} else if sanitize.DetectPromptInjection(resp.Content) {
-			log.Printf("[sanitize] %s LLM response contained prompt-injection markers; redacting", s.role)
-			resp.Content = "[REDACTED: model output contained injection markers]"
+	resp.Content = s.redact("content", resp.Content)
+
+	if len(resp.ToolCalls) > 0 {
+		calls := make([]ToolCall, len(resp.ToolCalls))
+		copy(calls, resp.ToolCalls)
+		for i := range calls {
+			args := string(calls[i].Arguments)
+			if cleaned := s.redact("tool call "+calls[i].Name+" arguments", args); cleaned != args {
+				calls[i].Arguments = json.RawMessage(cleaned)
+			}
 		}
+		resp.ToolCalls = calls
 	}
 
 	return resp, nil
+}
+
+// redact returns text with secret and injection spans replaced, logging each
+// kind of finding once per field.
+func (s *SanitizingClient) redact(field, text string) string {
+	if text == "" {
+		return text
+	}
+	if sanitize.ScanForSecrets(text) {
+		log.Printf("[sanitize] %s LLM response %s contained a secret-like token; redacting span", s.role, field)
+		text = sanitize.RedactSecrets(text)
+	}
+	if sanitize.DetectPromptInjection(text) {
+		log.Printf("[sanitize] %s LLM response %s contained prompt-injection markers; redacting span", s.role, field)
+		text = sanitize.RedactPromptInjection(text)
+	}
+	return text
 }

@@ -2,8 +2,11 @@ package engine
 
 import (
 	"fmt"
+	"log"
+	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/tzone85/nexus-dispatch/internal/config"
@@ -124,7 +127,7 @@ func (rb *ReportBuilder) Build(reqID string) (ReportData, error) {
 		return ReportData{}, fmt.Errorf("build stories: %w", err)
 	}
 
-	effort := rb.buildEffort(stories)
+	effort := rb.buildEffort(reqID, stories)
 	timeline := rb.buildTimeline(reqID, stories)
 	agentStats := rb.buildAgentStats(stories)
 	llmUsage := rb.buildLLMUsage(reqID)
@@ -221,9 +224,9 @@ func (rb *ReportBuilder) storyDuration(s state.Story) time.Duration {
 	return d
 }
 
-// buildEffort maps the stories to StoryEstimate values and calls CalculateCostWithTokens
-// using actual token usage from the metrics store when available.
-func (rb *ReportBuilder) buildEffort(stories []state.Story) Estimate {
+// buildEffort maps the stories to StoryEstimate values and folds in the
+// requirement's actual LLM spend (priced per model from metrics.jsonl).
+func (rb *ReportBuilder) buildEffort(reqID string, stories []state.Story) Estimate {
 	estimates := make([]StoryEstimate, 0, len(stories))
 	for _, s := range stories {
 		estimates = append(estimates, StoryEstimate{
@@ -233,28 +236,53 @@ func (rb *ReportBuilder) buildEffort(stories []state.Story) Estimate {
 		})
 	}
 
-	// Sum actual token usage from the metrics store.
-	inputTokens, outputTokens := rb.sumTokenUsage()
-	return CalculateCostWithTokens(estimates, rb.cfg.Billing, 0, inputTokens, outputTokens)
+	usage := rb.sumTokenUsage(reqID)
+	for _, m := range usage.Unpriced {
+		log.Printf("[report] unpriced model %q in metrics for %s: no billing.llm_costs.rates entry — spend not included", m, reqID)
+	}
+	return ApplyLLMSpend(CalculateCost(estimates, rb.cfg.Billing, 0), usage.CostUSD)
 }
 
-// sumTokenUsage reads the metrics.jsonl file and sums all token counts.
-// Returns (0, 0) if the file doesn't exist or can't be read.
-func (rb *ReportBuilder) sumTokenUsage() (inputTokens, outputTokens int) {
-	entries := rb.readMetricEntries()
-	for _, e := range entries {
-		inputTokens += e.TokensIn
-		outputTokens += e.TokensOut
+// tokenUsageSummary is the requirement-scoped total of metrics.jsonl.
+type tokenUsageSummary struct {
+	TokensIn  int
+	TokensOut int
+	CostUSD   float64
+	Unpriced  []string // models without a configured rate (sorted)
+}
+
+// sumTokenUsage reads metrics.jsonl and sums token counts and priced cost for
+// reqID only — entries from other requirements are excluded exactly as in
+// buildLLMUsage (entries with an empty ReqID, from older records, are counted).
+// Returns zeros if the file doesn't exist or can't be read.
+func (rb *ReportBuilder) sumTokenUsage(reqID string) tokenUsageSummary {
+	var sum tokenUsageSummary
+	unpriced := map[string]bool{}
+	for _, e := range rb.readMetricEntries() {
+		if e.ReqID != "" && e.ReqID != reqID {
+			continue
+		}
+		sum.TokensIn += e.TokensIn
+		sum.TokensOut += e.TokensOut
+		cost, ok := CalculateLLMCost(rb.cfg.Billing, e.Model, e.TokensIn, e.TokensOut)
+		if !ok {
+			unpriced[e.Model] = true
+			continue
+		}
+		sum.CostUSD += cost
 	}
-	return inputTokens, outputTokens
+	for m := range unpriced {
+		sum.Unpriced = append(sum.Unpriced, m)
+	}
+	sort.Strings(sum.Unpriced)
+	return sum
 }
 
 func (rb *ReportBuilder) readMetricEntries() []metrics.MetricEntry {
-	stateDir := rb.cfg.Workspace.StateDir
+	stateDir := expandHomeDir(rb.cfg.Workspace.StateDir)
 	if stateDir == "" {
 		return nil
 	}
-	// Expand ~ manually since report may run without CLI helpers.
 	metricsPath := filepath.Join(stateDir, "metrics.jsonl")
 	recorder := metrics.NewRecorder(metricsPath)
 	entries, err := recorder.ReadAll()
@@ -262,6 +290,22 @@ func (rb *ReportBuilder) readMetricEntries() []metrics.MetricEntry {
 		return nil
 	}
 	return entries
+}
+
+// expandHomeDir expands a leading "~" or "~/" to the user's home directory.
+// The report builder may run without the CLI's path helpers, and a literal
+// "~/.nxd" would otherwise be read relative to the working directory (so
+// metrics were silently never found). Returns p unchanged when the home
+// directory cannot be determined.
+func expandHomeDir(p string) string {
+	if p != "~" && !strings.HasPrefix(p, "~/") {
+		return p
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return p
+	}
+	return filepath.Join(home, strings.TrimPrefix(p[1:], "/"))
 }
 
 func (rb *ReportBuilder) buildLLMUsage(reqID string) []StoryLLMUsage {
@@ -308,14 +352,11 @@ func (rb *ReportBuilder) buildLLMUsage(reqID string) []StoryLLMUsage {
 	return result
 }
 
+// llmCostForModel prices one usage row; an unpriced model is $0 (surfaced by
+// sumTokenUsage's Unpriced list, never by inventing a rate).
 func (rb *ReportBuilder) llmCostForModel(model string, inputTokens, outputTokens int) float64 {
-	if rb.cfg.Billing.LLMCosts.Mode != "per_token" {
-		return 0
-	}
-	if rate, ok := rb.cfg.Billing.LLMCosts.Rates[model]; ok {
-		return float64(inputTokens)/1000.0*rate.InputPer1K + float64(outputTokens)/1000.0*rate.OutputPer1K
-	}
-	return CalculateLLMCost(rb.cfg.Billing, inputTokens, outputTokens)
+	cost, _ := CalculateLLMCost(rb.cfg.Billing, model, inputTokens, outputTokens)
+	return cost
 }
 
 // buildTimeline builds an ordered list of significant delivery events.

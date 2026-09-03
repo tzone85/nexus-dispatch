@@ -74,6 +74,7 @@ models:
     model: gemma4:26b                    # Model name (Ollama tag or API model ID)
     google_model: gemma-4-26b-a4b-it     # Google AI model ID (used by google+ollama and google providers)
     max_tokens: 16000                    # Max output tokens
+    num_ctx: 32768                       # Ollama context window (options.num_ctx); omit for the model default
   senior:
     provider: ollama
     model: gemma4:26b
@@ -116,7 +117,11 @@ export GOOGLE_AI_API_KEY=your-key-here
 
 When using `google+ollama`, NXD sends requests to Google AI first. If the free tier quota is exhausted (HTTP 429), it automatically falls back to the local Ollama model and retries Google AI after `fallback_cooldown_s` seconds. If `GOOGLE_AI_API_KEY` is not set, the `google+ollama` provider behaves identically to `ollama`.
 
-The `google_model` field specifies the model name for Google AI API calls (e.g., `gemma-4-26b-a4b-it`). This is separate from the `model` field, which is the Ollama tag.
+The `google_model` field specifies the model name for Google AI API calls (e.g., `gemma-4-26b-a4b-it`). This is separate from the `model` field, which is the Ollama tag. When `google_model` is set it is what the Google client sends; the `model` (Ollama tag) is only used by the Ollama fallback.
+
+`num_ctx` sets the Ollama context window for that role (`options.num_ctx`); `temperature` requested by a pipeline stage is also forwarded to Ollama. Both are ignored by cloud providers.
+
+**Provider behaviour notes:** every provider returns a structured API error for non-2xx responses (status code, provider, redacted body snippet, `Retry-After`) so the pipeline can distinguish fatal auth/billing failures (401/403/402) from transient rate limits (429) and overload (5xx/529). `anthropic` and `openai` requests time out after 120 s by default; Ollama retries transient 5xx with context-aware back-off. Native tool calling is supported on `anthropic` (`tool_use`/`tool_result` blocks), `openai` (`tools`/`tool_calls`), `google` (`functionCall`/`functionResponse`) and tool-capable Ollama models.
 
 > **Authentication note:** These API keys are used for NXD's **internal operations** only -- planning, code review, and QA. They are **not** passed to spawned coding agents. If you use Claude Code as a runtime, it authenticates via its own OAuth session (your Max/Pro subscription via `claude login`), so spawned agents incur no additional API cost. The API key is only consumed by the lightweight internal LLM calls (a few per story per stage).
 
@@ -301,6 +306,15 @@ qa:
 
 `pause_on_integration_failure` (default `true`) controls what happens when a story merges cleanly but the base branch no longer builds (`STORY_INTEGRATION_FAILED`). By default the requirement is paused — with the Tech Lead's fix suggestion recorded on the event — so the next wave is not branched from a red mainline; fix the base branch and `nxd resume`. Set it to `false` to only record the failure and keep dispatching.
 
+### review
+
+```yaml
+review:
+  max_diff_bytes: 204800   # cap on the diff sent to the LLM reviewer (default 200 KB)
+```
+
+Diffs longer than `max_diff_bytes` are cut and end with an explicit `[diff truncated: N more bytes]` marker that the reviewer prompt tells the model about. The review gate fails closed: a reply with no tool call and no parseable JSON verdict is recorded as a failed review with feedback `reviewer returned no structured verdict` — prose is never interpreted as a pass.
+
 ### billing — LLM budget guard
 
 ```yaml
@@ -314,6 +328,8 @@ billing:
   budget_usd: 25             # hard cap on actual LLM spend per requirement (0 = off)
   budget_warn_pct: 80        # emit REQ_BUDGET_WARNING at this % of the cap (default 80)
 ```
+
+Rates are resolved per model deterministically: an exact key match first, then the **longest** key that is a prefix of the model name (`claude-sonnet` prices `claude-sonnet-4-20250514`), then a `default` key when you define one. A model that matches none of these is **unpriced**: its spend is not counted, and the budget guard and `nxd report` log an "unpriced model" warning so you can add a rate.
 
 The guard prices the requirement's **actual** token usage (`metrics.jsonl`) with your configured rates before each story's post-execution pipeline. Crossing the warning threshold emits `REQ_BUDGET_WARNING` once; reaching the cap emits `REQ_BUDGET_EXCEEDED` and pauses the requirement so no further tokens burn. Raise the budget (or accept the spend) and `nxd resume` to continue. In `mode: subscription` spend is always $0 and the guard never trips — it exists for metered API keys, not local Ollama.
 

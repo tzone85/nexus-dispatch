@@ -12,6 +12,12 @@ var toolSupportedModels = []string{
 	"qwen3", // qwen3 / qwen3-coder ship native tool calling in Ollama
 }
 
+// toolSupportedProviders lists cloud providers whose clients implement native
+// tool calling end to end: AnthropicClient (tools / tool_use / tool_result
+// blocks), OpenAIClient (tools / tool_calls / role tool) and GoogleClient
+// (functionDeclarations / functionCall / functionResponse). Keep this in sync
+// with the clients — advertising support a client silently drops would make
+// the native runtime's tool loop spin on empty responses.
 var toolSupportedProviders = map[string]bool{
 	"anthropic": true,
 	"openai":    true,

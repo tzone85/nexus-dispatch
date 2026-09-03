@@ -3,20 +3,88 @@ package llm
 import (
 	"errors"
 	"fmt"
+	"net/http"
+	"strconv"
 	"strings"
+	"time"
+
+	"github.com/tzone85/nexus-dispatch/internal/sanitize"
 )
 
+// maxErrorBodyBytes bounds the response-body snippet kept on an APIError.
+const maxErrorBodyBytes = 512
+
 // APIError represents a structured error from an LLM provider's HTTP API.
-// It carries the HTTP status code and whether the error is transient (retryable).
+// It carries the HTTP status code, the provider, a bounded and
+// secret-redacted body snippet, and whether the error is transient.
 type APIError struct {
 	StatusCode int
-	Message    string
+	Provider   string // "anthropic", "openai", "ollama", "google"
+	Message    string // body snippet (≤ maxErrorBodyBytes, secrets redacted)
 	Retryable  bool
 	RetryAfter int // seconds; 0 means not specified
 }
 
 func (e *APIError) Error() string {
+	if e.Provider != "" {
+		return fmt.Sprintf("%s API error (status %d): %s", e.Provider, e.StatusCode, e.Message)
+	}
 	return fmt.Sprintf("API error (status %d): %s", e.StatusCode, e.Message)
+}
+
+// newAPIError builds the typed error for a non-2xx provider response. Every
+// HTTP client in this package funnels its error responses through here so
+// IsFatalAPIError / IsRateLimited / IsOverloaded / IsRetryable /
+// RetryAfterSeconds work uniformly across providers.
+func newAPIError(provider string, resp *http.Response, body []byte) *APIError {
+	return &APIError{
+		StatusCode: resp.StatusCode,
+		Provider:   provider,
+		Message:    errorBodySnippet(resp.StatusCode, body),
+		Retryable:  isRetryableStatus(resp.StatusCode),
+		RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After")),
+	}
+}
+
+// isRetryableStatus reports whether a status is transient: request timeout,
+// rate limit, and server-side failures (including Anthropic's 529 overloaded).
+func isRetryableStatus(status int) bool {
+	return status == http.StatusRequestTimeout || status == http.StatusTooManyRequests || status >= 500
+}
+
+// errorBodySnippet trims, redacts and bounds a response body for inclusion in
+// an error message; an empty body falls back to the HTTP status text.
+func errorBodySnippet(status int, body []byte) string {
+	s := strings.TrimSpace(string(body))
+	if s == "" {
+		return fmt.Sprintf("%d %s", status, http.StatusText(status))
+	}
+	s = sanitize.RedactSecrets(s)
+	if len(s) > maxErrorBodyBytes {
+		s = s[:maxErrorBodyBytes] + "…"
+	}
+	return s
+}
+
+// parseRetryAfter converts a Retry-After header (delta-seconds or HTTP-date)
+// into whole seconds; unparseable, absent or past values yield 0.
+func parseRetryAfter(h string) int {
+	h = strings.TrimSpace(h)
+	if h == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(h); err == nil {
+		if secs < 0 {
+			return 0
+		}
+		return secs
+	}
+	if at, err := http.ParseTime(h); err == nil {
+		if d := time.Until(at); d > 0 {
+			return int(d.Round(time.Second) / time.Second)
+		}
+	}
+	return 0
 }
 
 // IsInsufficientBalance returns true when the error indicates the API account
@@ -25,6 +93,9 @@ func IsInsufficientBalance(err error) bool {
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) {
 		return false
+	}
+	if apiErr.StatusCode == http.StatusPaymentRequired {
+		return true
 	}
 	msg := strings.ToLower(apiErr.Message)
 	return apiErr.StatusCode == 400 &&
@@ -146,13 +217,30 @@ func RetryAfterSeconds(err error) int {
 }
 
 // QuotaError indicates the API free tier quota or rate limit was exhausted.
+// It wraps the underlying *APIError so the generic predicates (IsRateLimited,
+// RetryAfterSeconds, ...) see through it while FallbackClient keeps keying on
+// IsQuotaError.
 type QuotaError struct {
 	StatusCode int
 	Message    string
+	api        *APIError
+}
+
+// newQuotaError wraps a provider APIError as a quota-exhaustion signal.
+func newQuotaError(api *APIError) *QuotaError {
+	return &QuotaError{StatusCode: api.StatusCode, Message: api.Message, api: api}
 }
 
 func (e *QuotaError) Error() string {
 	return fmt.Sprintf("quota exhausted (HTTP %d): %s", e.StatusCode, e.Message)
+}
+
+// Unwrap exposes the underlying *APIError (nil when constructed directly).
+func (e *QuotaError) Unwrap() error {
+	if e.api == nil {
+		return nil
+	}
+	return e.api
 }
 
 // IsQuotaError returns true if the error is a quota/rate-limit error.

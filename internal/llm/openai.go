@@ -7,9 +7,15 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 )
 
 const openaiAPIURL = "https://api.openai.com/v1/chat/completions"
+
+// DefaultHTTPTimeout bounds a single cloud-provider request (Anthropic,
+// OpenAI) when no explicit timeout is configured. Without it a stalled
+// connection hangs the pipeline stage forever.
+const DefaultHTTPTimeout = 120 * time.Second
 
 // OpenAIClient communicates with the OpenAI Chat Completions API.
 type OpenAIClient struct {
@@ -18,13 +24,27 @@ type OpenAIClient struct {
 	baseURL    string
 }
 
+// OpenAIOption configures an OpenAIClient.
+type OpenAIOption func(*OpenAIClient)
+
+// WithOpenAITimeout sets the per-request HTTP timeout (default 120 s).
+func WithOpenAITimeout(d time.Duration) OpenAIOption {
+	return func(c *OpenAIClient) {
+		c.httpClient = &http.Client{Timeout: d}
+	}
+}
+
 // NewOpenAIClient creates a client configured with the given API key.
-func NewOpenAIClient(apiKey string) *OpenAIClient {
-	return &OpenAIClient{
+func NewOpenAIClient(apiKey string, opts ...OpenAIOption) *OpenAIClient {
+	c := &OpenAIClient{
 		apiKey:     apiKey,
-		httpClient: &http.Client{},
+		httpClient: &http.Client{Timeout: DefaultHTTPTimeout},
 		baseURL:    openaiAPIURL,
 	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
 }
 
 // WithBaseURL returns a copy of the client with a custom base URL,
@@ -37,56 +57,24 @@ func (c *OpenAIClient) WithBaseURL(url string) *OpenAIClient {
 	}
 }
 
-type openaiRequest struct {
-	Model     string          `json:"model"`
-	Messages  []openaiMessage `json:"messages"`
-	MaxTokens int             `json:"max_tokens"`
-}
-
-type openaiMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
-type openaiResponse struct {
-	Choices []openaiChoice `json:"choices"`
-	Model   string         `json:"model"`
-	Usage   struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
-	} `json:"usage"`
-}
-
-type openaiChoice struct {
-	Message      openaiMessage `json:"message"`
-	FinishReason string        `json:"finish_reason"`
-}
+// Timeout reports the configured per-request HTTP timeout.
+func (c *OpenAIClient) Timeout() time.Duration { return c.httpClient.Timeout }
 
 // Complete sends a completion request to the OpenAI Chat Completions API
 // and returns the parsed response. The system prompt is prepended as a
-// system-role message per OpenAI conventions.
+// system-role message per OpenAI conventions; tools, assistant tool_calls and
+// tool-result messages use the native OpenAI shape.
 func (c *OpenAIClient) Complete(ctx context.Context, req CompletionRequest) (CompletionResponse, error) {
-	msgs := make([]openaiMessage, 0, len(req.Messages)+1)
-
-	// OpenAI uses a system message in the messages array
-	if req.System != "" {
-		msgs = append(msgs, openaiMessage{
-			Role:    string(RoleSystem),
-			Content: req.System,
-		})
+	body := oaiChatRequest{
+		Model:      req.Model,
+		Messages:   buildOAIMessages(req),
+		MaxTokens:  req.MaxTokens,
+		Tools:      buildOAITools(req.Tools),
+		ToolChoice: oaiToolChoice(req),
 	}
-
-	for _, m := range req.Messages {
-		msgs = append(msgs, openaiMessage{
-			Role:    string(m.Role),
-			Content: m.Content,
-		})
-	}
-
-	body := openaiRequest{
-		Model:     req.Model,
-		Messages:  msgs,
-		MaxTokens: req.MaxTokens,
+	if req.Temperature > 0 {
+		t := req.Temperature
+		body.Temperature = &t
 	}
 
 	jsonBody, err := json.Marshal(body)
@@ -114,30 +102,8 @@ func (c *OpenAIClient) Complete(ctx context.Context, req CompletionRequest) (Com
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return CompletionResponse{}, fmt.Errorf(
-			"openai API error (status %d): %s",
-			resp.StatusCode, string(respBody),
-		)
+		return CompletionResponse{}, newAPIError("openai", resp, respBody)
 	}
 
-	var apiResp openaiResponse
-	if err := json.Unmarshal(respBody, &apiResp); err != nil {
-		return CompletionResponse{}, fmt.Errorf("unmarshal response: %w", err)
-	}
-
-	if len(apiResp.Choices) == 0 {
-		return CompletionResponse{}, fmt.Errorf("openai returned no choices")
-	}
-
-	choice := apiResp.Choices[0]
-
-	return CompletionResponse{
-		Content:    choice.Message.Content,
-		Model:      apiResp.Model,
-		StopReason: choice.FinishReason,
-		Usage: Usage{
-			InputTokens:  apiResp.Usage.PromptTokens,
-			OutputTokens: apiResp.Usage.CompletionTokens,
-		},
-	}, nil
+	return parseOAIResponse("openai", respBody)
 }

@@ -162,3 +162,48 @@ func TestMonitor_EnforceBudget(t *testing.T) {
 		}
 	})
 }
+
+func TestBudgetGuard_UnpricedModelsSurfacedNotCounted(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "metrics.jsonl")
+	writeMetrics(t, path,
+		metrics.MetricEntry{Timestamp: time.Now(), ReqID: "req-a", Model: "m1", TokensIn: 1000, TokensOut: 0},           // $1
+		metrics.MetricEntry{Timestamp: time.Now(), ReqID: "req-a", Model: "m1-turbo", TokensIn: 1000, TokensOut: 0},     // prefix → $1
+		metrics.MetricEntry{Timestamp: time.Now(), ReqID: "req-a", Model: "zeta", TokensIn: 900000, TokensOut: 900000},  // unpriced
+		metrics.MetricEntry{Timestamp: time.Now(), ReqID: "req-a", Model: "alpha", TokensIn: 900000, TokensOut: 900000}, // unpriced
+	)
+	g := NewBudgetGuard(budgetBilling(10, 80), path)
+
+	st := g.Check("req-a")
+	if st.SpentUSD < 1.99 || st.SpentUSD > 2.01 {
+		t.Errorf("spend must include exact + prefix-priced models only, got %f", st.SpentUSD)
+	}
+	if st.State != BudgetOK {
+		t.Errorf("unpriced usage must not trip the budget, got %v", st.State)
+	}
+	if len(st.Unpriced) != 2 || st.Unpriced[0] != "alpha" || st.Unpriced[1] != "zeta" {
+		t.Errorf("Unpriced = %v, want sorted [alpha zeta]", st.Unpriced)
+	}
+
+	// Second check: same list, logged only once (idempotent bookkeeping).
+	if again := g.Check("req-a"); len(again.Unpriced) != 2 {
+		t.Errorf("Unpriced must be reported on every check, got %v", again.Unpriced)
+	}
+	if len(g.unpricedLogged) != 2 {
+		t.Errorf("each unpriced model logged once, got %v", g.unpricedLogged)
+	}
+
+	if priced := g.Check("req-none"); priced.Unpriced != nil {
+		t.Errorf("no unpriced usage must yield nil, got %v", priced.Unpriced)
+	}
+}
+
+func TestBudgetGuard_DefaultWarnPct(t *testing.T) {
+	g := NewBudgetGuard(budgetBilling(10, 0), "unused")
+	if got := g.warnPct(); got != 80 {
+		t.Errorf("warnPct default = %v, want 80", got)
+	}
+	if st := g.Check("r"); st.WarnUSD != 8 {
+		t.Errorf("WarnUSD = %v, want 8", st.WarnUSD)
+	}
+}

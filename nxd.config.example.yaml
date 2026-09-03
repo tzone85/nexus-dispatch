@@ -154,6 +154,8 @@ qa:
     completion_fix_cycles: 0
     criteria_authoritative: false
     pause_on_integration_failure: true
+review:
+    max_diff_bytes: 204800
 security:
     gate_severity: critical
     auto_learn: true

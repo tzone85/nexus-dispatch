@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"log"
+	"sort"
 	"sync"
 
 	"github.com/tzone85/nexus-dispatch/internal/config"
@@ -25,6 +27,9 @@ type BudgetStatus struct {
 	SpentUSD  float64
 	BudgetUSD float64
 	WarnUSD   float64
+	// Unpriced lists models that appeared in the metrics but have no rate
+	// (exact, prefix or "default") — their spend is NOT in SpentUSD. Sorted.
+	Unpriced []string
 }
 
 // BudgetGuard enforces billing.budget_usd: it prices the requirement's actual
@@ -38,8 +43,9 @@ type BudgetGuard struct {
 	billing     config.BillingConfig
 	metricsPath string
 
-	mu     sync.Mutex
-	warned map[string]bool // reqID → warning already surfaced this run
+	mu             sync.Mutex
+	warned         map[string]bool // reqID → warning already surfaced this run
+	unpricedLogged map[string]bool // model → "unpriced" already logged this run
 }
 
 // NewBudgetGuard builds a guard pricing metrics from metricsPath. Returns nil
@@ -50,9 +56,10 @@ func NewBudgetGuard(billing config.BillingConfig, metricsPath string) *BudgetGua
 		return nil
 	}
 	return &BudgetGuard{
-		billing:     billing,
-		metricsPath: metricsPath,
-		warned:      map[string]bool{},
+		billing:        billing,
+		metricsPath:    metricsPath,
+		warned:         map[string]bool{},
+		unpricedLogged: map[string]bool{},
 	}
 }
 
@@ -77,12 +84,19 @@ func (g *BudgetGuard) Check(reqID string) BudgetStatus {
 	if err != nil {
 		return status // no metrics yet — nothing spent
 	}
+	unpriced := map[string]bool{}
 	for _, e := range entries {
 		if e.ReqID != "" && e.ReqID != reqID {
 			continue
 		}
-		status.SpentUSD += g.costFor(e.Model, e.TokensIn, e.TokensOut)
+		cost, ok := CalculateLLMCost(g.billing, e.Model, e.TokensIn, e.TokensOut)
+		if !ok {
+			unpriced[e.Model] = true
+			continue
+		}
+		status.SpentUSD += cost
 	}
+	status.Unpriced = g.reportUnpriced(unpriced)
 
 	switch {
 	case status.SpentUSD >= status.BudgetUSD:
@@ -105,15 +119,24 @@ func (g *BudgetGuard) MarkWarned(reqID string) bool {
 	return true
 }
 
-// costFor prices one metrics entry: the model's configured rate when present,
-// else the billing default (first configured rate — same fallback the report
-// builder uses).
-func (g *BudgetGuard) costFor(model string, tokensIn, tokensOut int) float64 {
-	if g.billing.LLMCosts.Mode != "per_token" {
-		return 0
+// reportUnpriced logs each unpriced model once per run and returns the sorted
+// list for the status.
+func (g *BudgetGuard) reportUnpriced(models map[string]bool) []string {
+	if len(models) == 0 {
+		return nil
 	}
-	if rate, ok := g.billing.LLMCosts.Rates[model]; ok {
-		return float64(tokensIn)/1000.0*rate.InputPer1K + float64(tokensOut)/1000.0*rate.OutputPer1K
+	out := make([]string, 0, len(models))
+	for m := range models {
+		out = append(out, m)
 	}
-	return CalculateLLMCost(g.billing, tokensIn, tokensOut)
+	sort.Strings(out)
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for _, m := range out {
+		if !g.unpricedLogged[m] {
+			g.unpricedLogged[m] = true
+			log.Printf("[budget] unpriced model %q: no billing.llm_costs.rates entry (exact, prefix or \"default\") — its spend is not counted", m)
+		}
+	}
+	return out
 }

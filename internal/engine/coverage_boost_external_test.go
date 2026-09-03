@@ -38,7 +38,10 @@ func makeBillingPerToken(inputRate, outputRate float64) config.BillingConfig {
 
 func TestCalculateLLMCost_PerToken(t *testing.T) {
 	billing := makeBillingPerToken(3.0, 15.0) // $3/1K in, $15/1K out
-	cost := engine.CalculateLLMCost(billing, 1000, 500)
+	cost, ok := engine.CalculateLLMCost(billing, "claude-sonnet", 1000, 500)
+	if !ok {
+		t.Fatal("configured model must be priced")
+	}
 	// 1000 tokens in @ $3/1K = $3.00
 	// 500 tokens out @ $15/1K = $7.50
 	// Total = $10.50
@@ -49,7 +52,7 @@ func TestCalculateLLMCost_PerToken(t *testing.T) {
 
 func TestCalculateLLMCost_PerToken_ZeroTokens(t *testing.T) {
 	billing := makeBillingPerToken(3.0, 15.0)
-	cost := engine.CalculateLLMCost(billing, 0, 0)
+	cost, _ := engine.CalculateLLMCost(billing, "claude-sonnet", 0, 0)
 	if cost != 0.0 {
 		t.Errorf("expected $0 for zero tokens, got %f", cost)
 	}
@@ -59,7 +62,7 @@ func TestCalculateLLMCost_SubscriptionMode(t *testing.T) {
 	billing := config.BillingConfig{
 		LLMCosts: config.LLMCostConfig{Mode: "subscription"},
 	}
-	cost := engine.CalculateLLMCost(billing, 10000, 5000)
+	cost, _ := engine.CalculateLLMCost(billing, "claude-sonnet", 10000, 5000)
 	if cost != 0.0 {
 		t.Errorf("subscription mode should return 0, got %f", cost)
 	}
@@ -72,9 +75,9 @@ func TestCalculateLLMCost_NoRates(t *testing.T) {
 			Rates: map[string]config.TokenRate{}, // empty
 		},
 	}
-	cost := engine.CalculateLLMCost(billing, 1000, 500)
-	if cost != 0.0 {
-		t.Errorf("no rates should return 0, got %f", cost)
+	cost, ok := engine.CalculateLLMCost(billing, "claude-sonnet", 1000, 500)
+	if cost != 0.0 || ok {
+		t.Errorf("no rates should return 0 and ok=false, got %f %v", cost, ok)
 	}
 }
 
@@ -83,7 +86,7 @@ func TestCalculateCostWithTokens_PerToken(t *testing.T) {
 	stories := []engine.StoryEstimate{
 		{Title: "Story A", Complexity: 5, Role: "intermediate"},
 	}
-	est := engine.CalculateCostWithTokens(stories, billing, 0, 1000, 500)
+	est := engine.CalculateCostWithTokens(stories, billing, 0, "claude-sonnet", 1000, 500)
 	// LLM cost should be ~$10.50
 	if est.Summary.LLMCost < 10.49 || est.Summary.LLMCost > 10.51 {
 		t.Errorf("LLMCost: expected ~10.50, got %f", est.Summary.LLMCost)

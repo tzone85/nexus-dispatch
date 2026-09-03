@@ -2,6 +2,7 @@ package engine
 
 import (
 	"sort"
+	"strings"
 
 	"github.com/tzone85/nexus-dispatch/internal/config"
 )
@@ -72,12 +73,8 @@ func CalculateCost(stories []StoryEstimate, billing config.BillingConfig, rateOv
 		totalHoursHigh += hrs[1]
 	}
 
-	llmCost := CalculateLLMCost(billing, 0, 0)
-	marginPercent := 100.0
-	if billing.LLMCosts.Mode == "per_token" && totalHoursHigh*rate > 0 && llmCost > 0 {
-		marginPercent = (1 - llmCost/(totalHoursHigh*rate)) * 100
-	}
-
+	// A pre-run estimate has no token usage yet: LLM cost is $0 and the
+	// margin is 100%. ApplyLLMSpend / CalculateCostWithTokens fold in actuals.
 	return Estimate{
 		Stories: populated,
 		Summary: EstimateSummary{
@@ -87,8 +84,8 @@ func CalculateCost(stories []StoryEstimate, billing config.BillingConfig, rateOv
 			HoursHigh:     totalHoursHigh,
 			QuoteLow:      totalHoursLow * rate,
 			QuoteHigh:     totalHoursHigh * rate,
-			LLMCost:       llmCost,
-			MarginPercent: marginPercent,
+			LLMCost:       0,
+			MarginPercent: 100.0,
 			Rate:          rate,
 			Currency:      billing.Currency,
 		},
@@ -124,38 +121,80 @@ func sortedFibKeys(hoursMap map[int][2]float64) []int {
 	return keys
 }
 
-// CalculateLLMCost computes the total LLM cost based on token usage and
-// billing rates. Returns 0 for subscription mode (mode != "per_token") or
-// when no rates are configured.
-func CalculateLLMCost(billing config.BillingConfig, inputTokens, outputTokens int) float64 {
-	if billing.LLMCosts.Mode != "per_token" {
-		return 0.0
-	}
-	if len(billing.LLMCosts.Rates) == 0 {
-		return 0.0
-	}
+// defaultRateKey is the billing.llm_costs.rates key that prices any model
+// without an exact or prefix match.
+const defaultRateKey = "default"
 
-	// Sum cost across all configured model rates (typically the user
-	// configures one rate entry for the model they're using).
-	// For estimation, we use the first rate we find.
-	for _, rate := range billing.LLMCosts.Rates {
-		inputCost := float64(inputTokens) / 1000.0 * rate.InputPer1K
-		outputCost := float64(outputTokens) / 1000.0 * rate.OutputPer1K
-		return inputCost + outputCost
+// RateFor resolves the per-token rate for model deterministically:
+//  1. exact key match,
+//  2. the LONGEST configured key that is a prefix of model (so a rate for
+//     "claude-sonnet" prices "claude-sonnet-4-20250514"; the "default" key is
+//     never used as a prefix),
+//  3. the "default" key when present.
+//
+// ok is false when the model is unpriced so callers can log it instead of
+// silently billing $0 (or a random rate — the previous map-range behaviour).
+func RateFor(billing config.BillingConfig, model string) (config.TokenRate, bool) {
+	rates := billing.LLMCosts.Rates
+	if len(rates) == 0 {
+		return config.TokenRate{}, false
 	}
-	return 0.0
+	if rate, ok := rates[model]; ok && model != "" {
+		return rate, true
+	}
+	bestKey := ""
+	for key := range rates {
+		if key == defaultRateKey || key == "" || !strings.HasPrefix(model, key) {
+			continue
+		}
+		if len(key) > len(bestKey) || (len(key) == len(bestKey) && key < bestKey) {
+			bestKey = key
+		}
+	}
+	if bestKey != "" {
+		return rates[bestKey], true
+	}
+	if rate, ok := rates[defaultRateKey]; ok {
+		return rate, true
+	}
+	return config.TokenRate{}, false
+}
+
+// CalculateLLMCost prices token usage for model. Subscription mode (anything
+// other than "per_token") is legitimately $0 with ok=true. In per_token mode
+// the rate is resolved with RateFor; an unpriced model yields (0, false) so
+// the budget guard and report can surface "unpriced model" rather than
+// under-count spend silently.
+func CalculateLLMCost(billing config.BillingConfig, model string, inputTokens, outputTokens int) (float64, bool) {
+	if billing.LLMCosts.Mode != "per_token" {
+		return 0.0, true
+	}
+	rate, ok := RateFor(billing, model)
+	if !ok {
+		return 0.0, false
+	}
+	inputCost := float64(inputTokens) / 1000.0 * rate.InputPer1K
+	outputCost := float64(outputTokens) / 1000.0 * rate.OutputPer1K
+	return inputCost + outputCost, true
+}
+
+// ApplyLLMSpend returns a copy of est with the given actual LLM spend folded
+// into the summary (LLMCost + MarginPercent against QuoteHigh).
+func ApplyLLMSpend(est Estimate, llmCost float64) Estimate {
+	est.Summary.LLMCost = llmCost
+	est.Summary.MarginPercent = 100.0
+	if llmCost > 0 && est.Summary.QuoteHigh > 0 {
+		est.Summary.MarginPercent = (1 - llmCost/est.Summary.QuoteHigh) * 100
+	}
+	return est
 }
 
 // CalculateCostWithTokens is like CalculateCost but also incorporates actual
-// LLM token usage into the cost summary. Use this for post-completion estimates
-// where real token counts are available.
-func CalculateCostWithTokens(stories []StoryEstimate, billing config.BillingConfig, rateOverride float64, inputTokens, outputTokens int) Estimate {
+// LLM token usage for a single model into the cost summary. Use this for
+// post-completion estimates where real token counts are available. An
+// unpriced model contributes $0 (see CalculateLLMCost).
+func CalculateCostWithTokens(stories []StoryEstimate, billing config.BillingConfig, rateOverride float64, model string, inputTokens, outputTokens int) Estimate {
 	est := CalculateCost(stories, billing, rateOverride)
-
-	est.Summary.LLMCost = CalculateLLMCost(billing, inputTokens, outputTokens)
-	if est.Summary.LLMCost > 0 && est.Summary.QuoteHigh > 0 {
-		est.Summary.MarginPercent = (1 - est.Summary.LLMCost/est.Summary.QuoteHigh) * 100
-	}
-
-	return est
+	llmCost, _ := CalculateLLMCost(billing, model, inputTokens, outputTokens)
+	return ApplyLLMSpend(est, llmCost)
 }

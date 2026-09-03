@@ -36,8 +36,8 @@ func ValidateToolCall(def ToolDefinition, call ToolCall) error {
 	}
 
 	var schema struct {
-		Required   []string                       `json:"required"`
-		Properties map[string]toolPropertySchema   `json:"properties"`
+		Required   []string                      `json:"required"`
+		Properties map[string]toolPropertySchema `json:"properties"`
 	}
 	if err := json.Unmarshal(def.Parameters, &schema); err != nil {
 		return fmt.Errorf("invalid schema JSON: %w", err)
