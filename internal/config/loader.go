@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -36,6 +37,9 @@ func DefaultConfig() Config {
 			// `nxd models check` remains available on demand.
 			UpdateCheck:         false,
 			UpdateIntervalHours: 48,
+			// Event-log durability (workstream C): 1 MiB line cap, fsync on.
+			MaxEventBytes: 1 << 20,
+			FsyncEvents:   true,
 		},
 		Models: ModelsConfig{
 			TechLead:     gemma4Default(16000),
@@ -243,7 +247,40 @@ func LoadFromFile(path string) (Config, error) {
 		return Config{}, fmt.Errorf("config validation: %w", err)
 	}
 
+	// Normalise workspace.state_dir so every consumer (CLI, engine report
+	// builder, executor) sees the same absolute path. A relative value is
+	// resolved against the config file's directory, which is what makes
+	// `nxd init --local-state` (state_dir: .nxd) repo-relative.
+	cfg.Workspace.StateDir = NormalizeStateDir(cfg.Workspace.StateDir, filepath.Dir(path))
+
 	return cfg, nil
+}
+
+// NormalizeStateDir expands a leading "~" to the user's home directory and
+// makes relative paths absolute against baseDir (or the working directory
+// when baseDir is empty). An empty dir yields the default "~/.nxd".
+func NormalizeStateDir(dir, baseDir string) string {
+	if dir == "" {
+		dir = "~/.nxd"
+	}
+	if dir == "~" || strings.HasPrefix(dir, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			dir = filepath.Join(home, dir[1:])
+		}
+	}
+	if filepath.IsAbs(dir) {
+		return filepath.Clean(dir)
+	}
+	if baseDir == "" {
+		if wd, err := os.Getwd(); err == nil {
+			baseDir = wd
+		}
+	}
+	abs, err := filepath.Abs(filepath.Join(baseDir, dir))
+	if err != nil {
+		return filepath.Clean(filepath.Join(baseDir, dir))
+	}
+	return abs
 }
 
 // CheckSchemaVersion compares the loaded YAML's `version` field against

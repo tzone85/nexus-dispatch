@@ -9,6 +9,8 @@ workspace:
     log_retention_days: 30
     update_check: false
     update_interval_hours: 48
+    max_event_bytes: 1048576
+    fsync_events: true
 models:
     tech_lead:
         provider: ollama

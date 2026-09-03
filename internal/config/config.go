@@ -134,6 +134,18 @@ type WorkspaceConfig struct {
 	LogRetentionDays    int    `yaml:"log_retention_days"`
 	UpdateCheck         bool   `yaml:"update_check"`
 	UpdateIntervalHours int    `yaml:"update_interval_hours"`
+
+	// --- event-log durability (workstream C) ---
+	//
+	// MaxEventBytes caps the encoded size of one events.jsonl line. Payload
+	// strings are truncated longest-first (with a "…[truncated N bytes]"
+	// marker and truncated:true) until the line fits; the event itself is
+	// never dropped. 0 means the default (1 MiB).
+	MaxEventBytes int `yaml:"max_event_bytes"`
+	// FsyncEvents flushes every appended event to stable storage. Default
+	// true — the log is the source of truth; losing its tail desyncs every
+	// derived view. Set false only for throwaway benchmarks.
+	FsyncEvents bool `yaml:"fsync_events"`
 }
 
 // ModelConfig describes a single LLM model binding.
@@ -155,6 +167,10 @@ type ModelsConfig struct {
 	Supervisor   ModelConfig `yaml:"supervisor"`
 	Manager      ModelConfig `yaml:"manager"`
 	Investigator ModelConfig `yaml:"investigator"`
+	// OllamaHost overrides the Ollama endpoint used by doctor/health checks
+	// (and the OLLAMA_HOST env var when set). "host:port" without a scheme
+	// is accepted; "http://" is prepended.
+	OllamaHost string `yaml:"ollama_host,omitempty"`
 }
 
 // All returns every role→ModelConfig pair for iteration.
@@ -534,6 +550,9 @@ func (c Config) Validate() error {
 
 	if c.Workspace.UpdateIntervalHours < 0 {
 		return fmt.Errorf("workspace.update_interval_hours must be >= 0, got %d", c.Workspace.UpdateIntervalHours)
+	}
+	if c.Workspace.MaxEventBytes < 0 {
+		return fmt.Errorf("workspace.max_event_bytes must be >= 0, got %d", c.Workspace.MaxEventBytes)
 	}
 
 	// Validate billing configuration.
