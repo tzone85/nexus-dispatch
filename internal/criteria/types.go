@@ -23,9 +23,9 @@ type Criterion struct {
 	Expected string `json:"expected"` // substring, regex, threshold, etc.
 
 	// SP5 additions — DB-touching criteria.
-	Command        string `yaml:"command,omitempty" json:"command,omitempty"`                  // migration_succeeds: shell command to run
-	SQL            string `yaml:"sql,omitempty" json:"sql,omitempty"`                          // sql_query_returns: query to execute
-	ExpectedRows   *int   `yaml:"expected_rows,omitempty" json:"expected_rows,omitempty"`       // sql_query_returns: optional exact row count
+	Command        string `yaml:"command,omitempty" json:"command,omitempty"`                 // migration_succeeds: shell command to run
+	SQL            string `yaml:"sql,omitempty" json:"sql,omitempty"`                         // sql_query_returns: query to execute
+	ExpectedRows   *int   `yaml:"expected_rows,omitempty" json:"expected_rows,omitempty"`     // sql_query_returns: optional exact row count
 	SchemaBaseline string `yaml:"schema_baseline,omitempty" json:"schema_baseline,omitempty"` // schema_changed: path to baseline file
 }
 

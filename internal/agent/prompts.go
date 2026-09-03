@@ -8,9 +8,9 @@ import (
 
 // Package-level plugin state — set once from CLI commands after loading plugins.
 var (
-	pluginPlaybooks      []PluginPlaybookEntry
+	pluginPlaybooks       []PluginPlaybookEntry
 	pluginPromptOverrides map[string]string
-	pluginMu             sync.RWMutex
+	pluginMu              sync.RWMutex
 )
 
 // PluginPlaybookEntry describes a plugin-contributed playbook for injection
@@ -32,23 +32,23 @@ func SetPluginState(playbooks []PluginPlaybookEntry, prompts map[string]string) 
 
 // PromptContext holds the values substituted into system prompt templates.
 type PromptContext struct {
-	TeamName           string
-	RepoPath           string
-	TechStack          string
-	StoryID            string
-	StoryTitle         string
-	StoryDescription   string
-	AcceptanceCriteria string
-	Complexity         int
-	LintCommand        string
-	BuildCommand       string
-	TestCommand        string
-	ReviewFeedback     string
-	IsExistingCodebase bool
-	IsBugFix           bool
-	IsRefactor         bool
-	IsInfrastructure   bool
-	IsFrontend         bool // true when the story builds/changes a user-facing web UI
+	TeamName            string
+	RepoPath            string
+	TechStack           string
+	StoryID             string
+	StoryTitle          string
+	StoryDescription    string
+	AcceptanceCriteria  string
+	Complexity          int
+	LintCommand         string
+	BuildCommand        string
+	TestCommand         string
+	ReviewFeedback      string
+	IsExistingCodebase  bool
+	IsBugFix            bool
+	IsRefactor          bool
+	IsInfrastructure    bool
+	IsFrontend          bool   // true when the story builds/changes a user-facing web UI
 	InvestigationReport string // formatted markdown, injected by planner
 	PriorWorkContext    string // MemPalace search results
 	WaveBrief           string // parallel stories in this wave

@@ -170,7 +170,7 @@ func TestAllPlaybooks_NonEmpty(t *testing.T) {
 		"CodebaseArchaeology":     agent.CodebaseArchaeology,
 		"BugHuntingMethodology":   agent.BugHuntingMethodology,
 		"InfrastructureDebugging": agent.InfrastructureDebugging,
-		"LegacyCodeSurvival":     agent.LegacyCodeSurvival,
+		"LegacyCodeSurvival":      agent.LegacyCodeSurvival,
 	}
 	for name, content := range playbooks {
 		if content == "" {

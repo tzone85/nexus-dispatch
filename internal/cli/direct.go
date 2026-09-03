@@ -4,9 +4,9 @@
 // session without pausing it. The next iteration of the matching agent(s)
 // prepends the directive to its prompt.
 //
-//   nxd direct <req-id>      "use channels not goroutines"   # broadcast to whole requirement
-//   nxd direct <story-id>    "skip the win-detection test"   # narrow to one story
-//   nxd direct --req <id>    --message-file ./hint.md
+//	nxd direct <req-id>      "use channels not goroutines"   # broadcast to whole requirement
+//	nxd direct <story-id>    "skip the win-detection test"   # narrow to one story
+//	nxd direct --req <id>    --message-file ./hint.md
 package cli
 
 import (

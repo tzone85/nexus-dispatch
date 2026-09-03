@@ -2,9 +2,9 @@ package config
 
 // PluginConfig holds all plugin-related configuration sections.
 type PluginConfig struct {
-	Playbooks []PluginPlaybookConfig         `yaml:"playbooks"`
-	Prompts   map[string]string              `yaml:"prompts"`
-	QA        []PluginQAConfig               `yaml:"qa"`
+	Playbooks []PluginPlaybookConfig          `yaml:"playbooks"`
+	Prompts   map[string]string               `yaml:"prompts"`
+	QA        []PluginQAConfig                `yaml:"qa"`
 	Providers map[string]PluginProviderConfig `yaml:"providers"`
 }
 

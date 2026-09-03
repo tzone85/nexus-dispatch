@@ -96,8 +96,8 @@ func (m Model) View() string {
 
 	// Fixed-height sections
 	agentRows := len(m.agents) + 2 // header + rows + border
-	pipelineRows := 3               // summary + progress bar + border
-	escalationRows := 2             // summary line + border (or more if pending)
+	pipelineRows := 3              // summary + progress bar + border
+	escalationRows := 2            // summary line + border (or more if pending)
 	if m.pendingEscalations() > 0 {
 		escalationRows = min(m.pendingEscalations()+2, 5)
 	}

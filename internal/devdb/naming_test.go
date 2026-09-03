@@ -40,15 +40,15 @@ func TestFormatDBName_TruncatesProject(t *testing.T) {
 func TestIsValid(t *testing.T) {
 	cases := map[string]bool{
 		"nxd-demo-api-a8cbef1f-3a": true,
-		"a":                          true,
-		"a-b-c":                      true,
-		"":                           false,
-		"-abc":                       false,
-		"1abc":                       false,
-		"ABC":                        false,
-		"foo_bar":                    false,
-		strings.Repeat("a", 64):      false,
-		strings.Repeat("a", 63):      true,
+		"a":                        true,
+		"a-b-c":                    true,
+		"":                         false,
+		"-abc":                     false,
+		"1abc":                     false,
+		"ABC":                      false,
+		"foo_bar":                  false,
+		strings.Repeat("a", 64):    false,
+		strings.Repeat("a", 63):    true,
 	}
 	for name, want := range cases {
 		if got := devdb.IsValid(name); got != want {

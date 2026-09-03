@@ -102,7 +102,7 @@ type mockEventStore struct{}
 
 var errMock = fmt.Errorf("test error")
 
-func (m *mockEventStore) Append(evt state.Event) error                     { return nil }
+func (m *mockEventStore) Append(evt state.Event) error                         { return nil }
 func (m *mockEventStore) List(filter state.EventFilter) ([]state.Event, error) { return nil, nil }
-func (m *mockEventStore) Count(filter state.EventFilter) (int, error)      { return 0, nil }
-func (m *mockEventStore) Close() error                                     { return nil }
+func (m *mockEventStore) Count(filter state.EventFilter) (int, error)          { return 0, nil }
+func (m *mockEventStore) Close() error                                         { return nil }

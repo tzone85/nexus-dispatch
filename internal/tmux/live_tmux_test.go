@@ -31,7 +31,7 @@ func requireTmux(t *testing.T) {
 // on a shared tmux server.
 func uniqueSessionName(t *testing.T) string {
 	t.Helper()
-	return "nxd-livetest-" + t.Name() + "-" + time.Now().Format("20060102150405") + "-" + fmt.Sprint(time.Now().UnixNano() % 1000000)
+	return "nxd-livetest-" + t.Name() + "-" + time.Now().Format("20060102150405") + "-" + fmt.Sprint(time.Now().UnixNano()%1000000)
 }
 
 // TestLive_AvailableTrue covers the production code path through

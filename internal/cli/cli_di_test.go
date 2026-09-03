@@ -166,9 +166,9 @@ func TestRunReviewStory_WithBranchEmitsDiff(t *testing.T) {
 	seedTestReq(t, env, "REQ-1", "Test", workDir)
 	seedTestStory(t, env, "STORY-WB", "REQ-1", "With branch", 3)
 	assignEvt := state.NewEvent(state.EventStoryAssigned, "test", "STORY-WB", map[string]any{
-		"id":     "STORY-WB",
-		"role":   "junior",
-		"branch": "story/STORY-WB",
+		"id":       "STORY-WB",
+		"role":     "junior",
+		"branch":   "story/STORY-WB",
 		"agent_id": "agent-1",
 	})
 	if err := env.Events.Append(assignEvt); err != nil {
@@ -196,7 +196,7 @@ func TestRunImprove_FeedFetchErrorWarns(t *testing.T) {
 	env := setupTestEnv(t)
 
 	cmd, buf := mkRunCmd(t, env.Config)
-	cmd.Flags().String("feed", "http://127.0.0.1:1/", "")  // unreachable
+	cmd.Flags().String("feed", "http://127.0.0.1:1/", "") // unreachable
 	cmd.Flags().Bool("json", false, "")
 	cmd.SetContext(context.Background())
 

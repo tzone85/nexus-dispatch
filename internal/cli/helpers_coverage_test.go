@@ -137,4 +137,3 @@ func TestLoadConfig_InvalidYAML(t *testing.T) {
 		t.Error("expected error for invalid YAML")
 	}
 }
-

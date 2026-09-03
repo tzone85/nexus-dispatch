@@ -15,8 +15,8 @@ func TestSeverityRank_OrdersAllLevels(t *testing.T) {
 		{SeverityCritical, 3},
 		{SeverityWarning, 2},
 		{SeverityInfo, 1},
-		{Severity(""), 0},          // zero-value
-		{Severity("disaster"), 0},  // any unknown
+		{Severity(""), 0},         // zero-value
+		{Severity("disaster"), 0}, // any unknown
 	}
 	for _, tc := range cases {
 		t.Run(string(tc.sev), func(t *testing.T) {
@@ -33,10 +33,10 @@ func TestSeverityRank_OrdersAllLevels(t *testing.T) {
 // critical, not warning).
 func TestSeverityForRatio_BoundaryConditions(t *testing.T) {
 	cases := []struct {
-		name     string
-		actual   float64
-		thresh   float64
-		want     Severity
+		name   string
+		actual float64
+		thresh float64
+		want   Severity
 	}{
 		{"exactly_2x_threshold_is_critical", 50, 25, SeverityCritical},
 		{"just_above_threshold_is_warning", 26, 25, SeverityWarning},

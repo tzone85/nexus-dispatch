@@ -23,8 +23,8 @@ var tmuxAvailableFn = tmux.Available
 // in tests. The wrapped error returned from PreflightForRun is what the user
 // sees; the sentinel exists for test assertions.
 var (
-	errNotAGitRepo  = errors.New("not a git repository")
-	errTmuxMissing  = errors.New("tmux not available on PATH")
+	errNotAGitRepo = errors.New("not a git repository")
+	errTmuxMissing = errors.New("tmux not available on PATH")
 )
 
 // PreflightForRun runs cheap checks before the LLM pipeline incurs cost:

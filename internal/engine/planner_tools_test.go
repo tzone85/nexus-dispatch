@@ -88,7 +88,7 @@ func TestProcessPlannerToolCalls_CreateStory(t *testing.T) {
 			}`),
 		},
 		{
-			Name: "set_wave_plan",
+			Name:      "set_wave_plan",
 			Arguments: json.RawMessage(`{"waves": [["s-001"], ["s-002"]]}`),
 		},
 	}

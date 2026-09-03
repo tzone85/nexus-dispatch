@@ -13,9 +13,9 @@ const (
 	RoleIntermediate Role = "intermediate"
 	RoleJunior       Role = "junior"
 	RoleQA           Role = "qa"
-	RoleSupervisor    Role = "supervisor"
-	RoleManager       Role = "manager"
-	RoleInvestigator  Role = "investigator"
+	RoleSupervisor   Role = "supervisor"
+	RoleManager      Role = "manager"
+	RoleInvestigator Role = "investigator"
 )
 
 // String returns the role as a plain string.

@@ -33,8 +33,8 @@ func TestPrintReport_OllamaUpdateAvailable(t *testing.T) {
 		"Checking Ollama registry",
 		"gemma4:e4b",
 		"update available",
-		"abc123def456",          // local digest, truncated to 12
-		"998877665544",          // remote digest, truncated to 12
+		"abc123def456", // local digest, truncated to 12
+		"998877665544", // remote digest, truncated to 12
 		"ollama pull gemma4:e4b",
 		"Next auto-check: in 48 hours",
 		"Last checked:",

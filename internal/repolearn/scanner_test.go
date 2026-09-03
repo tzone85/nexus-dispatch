@@ -151,9 +151,9 @@ func TestScanStatic_TypeScriptProject(t *testing.T) {
 			"format": "prettier --write .",
 		},
 		"dependencies": map[string]any{
-			"react":     "^18.2.0",
-			"next":      "^14.0.0",
-			"express":   "^4.18.0",
+			"react":   "^18.2.0",
+			"next":    "^14.0.0",
+			"express": "^4.18.0",
 		},
 		"devDependencies": map[string]any{
 			"typescript": "^5.0.0",

@@ -41,11 +41,11 @@ type ReviewContextRequest struct {
 // ReviewToolResult holds the structured output from processing reviewer tool
 // calls. Exactly one of the tool-specific fields will be populated.
 type ReviewToolResult struct {
-	Verdict          string                 `json:"verdict,omitempty"`
-	Summary          string                 `json:"summary,omitempty"`
-	FileComments     []ReviewFileComment    `json:"file_comments,omitempty"`
+	Verdict          string                  `json:"verdict,omitempty"`
+	Summary          string                  `json:"summary,omitempty"`
+	FileComments     []ReviewFileComment     `json:"file_comments,omitempty"`
 	SuggestedChanges []ReviewSuggestedChange `json:"suggested_changes,omitempty"`
-	ContextRequest   *ReviewContextRequest  `json:"context_request,omitempty"`
+	ContextRequest   *ReviewContextRequest   `json:"context_request,omitempty"`
 }
 
 // ReviewerTools returns the tool definitions available to the reviewer agent.
@@ -140,9 +140,9 @@ func ProcessReviewerToolCalls(calls []llm.ToolCall) (ReviewToolResult, error) {
 // processSubmitReview unmarshals and validates a submit_review tool call.
 func processSubmitReview(args json.RawMessage) (ReviewToolResult, error) {
 	var raw struct {
-		Verdict          string                 `json:"verdict"`
-		Summary          string                 `json:"summary"`
-		FileComments     []ReviewFileComment    `json:"file_comments"`
+		Verdict          string                  `json:"verdict"`
+		Summary          string                  `json:"summary"`
+		FileComments     []ReviewFileComment     `json:"file_comments"`
 		SuggestedChanges []ReviewSuggestedChange `json:"suggested_changes"`
 	}
 	if err := json.Unmarshal(args, &raw); err != nil {

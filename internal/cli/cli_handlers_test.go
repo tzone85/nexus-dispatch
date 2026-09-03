@@ -418,4 +418,3 @@ func TestRunDashboard_RejectsBadConfig(t *testing.T) {
 		t.Fatal("expected error for missing config")
 	}
 }
-

@@ -41,8 +41,8 @@ func TestSeverity_AtLeast(t *testing.T) {
 func TestDedupeFindings(t *testing.T) {
 	in := []Finding{
 		{Tool: "gosec", RuleID: "G101", File: "a.go", Line: 10, Severity: SeverityHigh},
-		{Tool: "gosec", RuleID: "G101", File: "a.go", Line: 10, Severity: SeverityHigh}, // dup
-		{Tool: "gosec", RuleID: "G101", File: "a.go", Line: 11, Severity: SeverityHigh}, // diff line
+		{Tool: "gosec", RuleID: "G101", File: "a.go", Line: 10, Severity: SeverityHigh},   // dup
+		{Tool: "gosec", RuleID: "G101", File: "a.go", Line: 11, Severity: SeverityHigh},   // diff line
 		{Tool: "semgrep", RuleID: "G101", File: "a.go", Line: 10, Severity: SeverityHigh}, // diff tool
 	}
 	out := DedupeFindings(in)

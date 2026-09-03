@@ -50,7 +50,7 @@ type Reprioritization struct {
 // tool calls. Both Drifts and Reprioritizations may be populated when the LLM
 // makes multiple tool calls in a single response.
 type SupervisorToolResult struct {
-	Drifts           []DriftReport    `json:"drifts,omitempty"`
+	Drifts            []DriftReport      `json:"drifts,omitempty"`
 	Reprioritizations []Reprioritization `json:"reprioritizations,omitempty"`
 }
 
