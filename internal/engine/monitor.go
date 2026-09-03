@@ -1105,89 +1105,32 @@ func (m *Monitor) dispatchNextWave(ctx context.Context, rc *RunContext, repoDir 
 		return nil
 	}
 
-	completed := make(map[string]bool)
-	allDone := true
-	for _, s := range stories {
-		if s.Status == "merged" || s.Status == "pr_submitted" || s.Status == "split" {
-			completed[s.ID] = true
-		} else {
-			allDone = false
-		}
-	}
+	progress := classifyStories(stories)
+	completed := progress.completed
 
-	if allDone {
-		log.Printf("[auto-resume] all %d stories complete for requirement %s", len(stories), rc.ReqID)
-
-		// Generate/update README + docs/ (SVG diagrams, training guide, ADRs,
-		// index) as the final step, before the tree is verified.
-		if m.docClient != nil {
-			storyTitles := make([]string, len(stories))
-			for i, s := range stories {
-				storyTitles[i] = "- " + s.Title
-			}
-			reqTitle := rc.ReqID
-			if req, reqErr := m.projStore.GetRequirement(rc.ReqID); reqErr == nil {
-				reqTitle = req.Title
-			}
-			generateDocumentation(ctx, repoDir, reqTitle, storyTitles, m.docClient, m.docModel)
-		}
-
-		// Pull merged changes into the local checkout FIRST so verification
-		// runs against the true composed mainline (all merged stories), not a
-		// stale checkout. Without this the gate would verify the wrong tree.
-		pullBaseAfterMerge(repoDir, m.config.Merge.BaseBranch)
-
-		// Leave the workspace neat: remove dangling branches (and their open
-		// PRs) from stories that never merged. Merged branches are already gone.
-		m.cleanupDanglingBranches(rc.ReqID, repoDir)
-
-		// Completion gate: verify the composed mainline (build + tests) and
-		// auto-fix a red build up to a bounded number of cycles. Only emit
-		// REQ_COMPLETED when verification is green; otherwise emit REQ_BLOCKED
-		// so a requirement is never reported complete on code that does not
-		// compile. Falls back to the legacy advisory path when no gate is wired.
-		if m.completionGate != nil {
-			if m.completionGate.Run(ctx, rc.ReqID, repoDir) {
-				emitEventOrLog(m.eventStore, m.projStore,
-					state.NewEvent(state.EventReqCompleted, "monitor", "", map[string]any{"id": rc.ReqID}))
-			} else {
-				log.Printf("[gate] %s: completion blocked — see .nxd-fix-gaps.md; run 'nxd resume %s --godmode' after addressing the gaps", rc.ReqID, rc.ReqID)
-				emitEventOrLog(m.eventStore, m.projStore,
-					state.NewEvent(state.EventReqBlocked, "monitor", "", map[string]any{"id": rc.ReqID}))
-			}
-			return nil
-		}
-
-		// Legacy advisory verification (no gate wired): check build/tests and
-		// write a fix-gaps file, but complete the requirement regardless.
-		verifyResult := RunVerificationLoop(ctx, repoDir, 1)
-		if ShouldRunFixCycle(verifyResult) {
-			log.Printf("[verify] cycle 1 found %d gaps — generating fix requirement", len(verifyResult.Gaps))
-			if fixReq := GapsToRequirement(verifyResult.Gaps, filepath.Base(repoDir)); fixReq != "" {
-				fixPath := filepath.Join(repoDir, ".nxd-fix-gaps.md")
-				if err := os.WriteFile(fixPath, []byte(fixReq), 0o600); err != nil {
-					log.Printf("[verify] failed to write fix requirement to %s: %v", fixPath, err)
-				} else {
-					log.Printf("[verify] fix requirement written to %s — run 'nxd req --file .nxd-fix-gaps.md --godmode' to auto-fix", fixPath)
-				}
-			}
-		} else {
-			log.Printf("[verify] cycle 1 clean — no critical gaps found")
-		}
-
-		// Mark requirement complete.
-		emitEventOrLog(m.eventStore, m.projStore,
-			state.NewEvent(state.EventReqCompleted, "monitor", "", map[string]any{"id": rc.ReqID}))
+	if progress.allMerged() {
+		m.completeRequirement(ctx, rc, repoDir, stories)
 		return nil
 	}
+	if progress.onlyAwaitingMerge() {
+		// Every remaining story has an open PR (or is waiting for a human merge
+		// decision). Nothing to dispatch and the requirement is NOT done: the
+		// code is not on the base branch yet.
+		m.emitPendingReview(rc.ReqID, progress.awaitingMerge, nil)
+		return nil
+	}
+	// Stories awaiting merge are neither done nor dispatchable: hide them
+	// from the dispatcher (and the tier interception below) without marking
+	// them complete, so their dependents stay blocked.
+	dispatchStories := progress.dispatchable(rc.PlannedStories)
 
 	// Pre-dispatch interception: handle tier 2+ stories inline before
 	// they reach the dispatcher. Tier 2 goes to the Manager for LLM
 	// diagnosis; tier 3 goes to the tech-lead re-plan path.
 	if m.manager != nil {
 		readyIDs := rc.DAG.ReadyNodes(completed)
-		storyLookup := make(map[string]PlannedStory, len(rc.PlannedStories))
-		for _, ps := range rc.PlannedStories {
+		storyLookup := make(map[string]PlannedStory, len(dispatchStories))
+		for _, ps := range dispatchStories {
 			storyLookup[ps.ID] = ps
 		}
 
@@ -1208,6 +1151,9 @@ func (m *Monitor) dispatchNextWave(ctx context.Context, rc *RunContext, repoDir 
 
 			story, ok := storyLookup[id]
 			if !ok {
+				if progress.isAwaitingMerge(id) {
+					continue // open PR — nothing for the manager to do
+				}
 				log.Printf("[auto-resume] story %s not found in planned stories", id)
 				continue
 			}
@@ -1232,7 +1178,7 @@ func (m *Monitor) dispatchNextWave(ctx context.Context, rc *RunContext, repoDir 
 
 	rc.WaveNumber++
 	dispatchStart := time.Now()
-	assignments, err := m.dispatcher.DispatchWave(rc.DAG, completed, rc.ReqID, rc.PlannedStories, rc.WaveNumber)
+	assignments, err := m.dispatcher.DispatchWave(rc.DAG, completed, rc.ReqID, dispatchStories, rc.WaveNumber)
 	if err != nil {
 		EmitStageCompleted(m.eventStore, m.projStore, "auto-resume", "", "dispatch", "failure", dispatchStart)
 		log.Printf("[auto-resume] dispatch error: %v", err)
@@ -1240,26 +1186,7 @@ func (m *Monitor) dispatchNextWave(ctx context.Context, rc *RunContext, repoDir 
 	}
 	EmitStageCompleted(m.eventStore, m.projStore, "auto-resume", "", "dispatch", "success", dispatchStart)
 	if len(assignments) == 0 {
-		// Stall detection: check if stories remain but none are dispatchable
-		pendingCount := 0
-		for _, s := range stories {
-			if s.Status != "merged" && s.Status != "split" && s.Status != "pr_submitted" {
-				pendingCount++
-			}
-		}
-		if pendingCount > 0 {
-			log.Printf("[STALL] requirement %s has %d unfinished stories but none are dispatchable — all escalation tiers exhausted or dependencies unmet", rc.ReqID, pendingCount)
-			log.Printf("[STALL] run 'nxd status --req %s' to inspect, then 'nxd resume %s --godmode' to retry", rc.ReqID, rc.ReqID)
-			emitEventOrLog(m.eventStore, m.projStore,
-				state.NewEvent("PIPELINE_STALLED", "monitor", "", map[string]any{
-					"req_id":        rc.ReqID,
-					"pending_count": pendingCount,
-					"total_stories": len(stories),
-					"reason":        "no dispatchable stories — escalation tiers exhausted",
-				}))
-		} else {
-			log.Printf("[auto-resume] no stories ready for next wave (dependencies not met)")
-		}
+		m.reportNoDispatch(rc, progress, stories)
 		return nil
 	}
 
