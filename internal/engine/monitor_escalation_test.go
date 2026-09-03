@@ -455,3 +455,55 @@ func containsString(list []string, want string) bool {
 	}
 	return false
 }
+
+func TestExecuteSplitAction_StoreFailuresEmitSplitFailed(t *testing.T) {
+	split := ManagerAction{Diagnosis: "too big", Action: "split", SplitConfig: &SplitConfig{Children: []SplitChildConfig{
+		{Suffix: "a", Title: "A", Description: "a", Complexity: 1},
+		{Suffix: "b", Title: "B", Description: "b", Complexity: 1},
+	}}}
+
+	run := func(t *testing.T, reject state.EventType) (map[string]any, *escalationFixture) {
+		t.Helper()
+		f := newEscalationFixture(t, 2)
+		m := NewMonitor(nil, nil, nil, nil, nil, f.cfg, failingAppendStore{f.es, reject}, f.ps)
+		m.executeSplitAction(context.Background(), f.story, split, f.rc, f.rc.PlannedStories[0])
+		failed := f.events("STORY_SPLIT_FAILED", f.story)
+		if len(failed) != 1 {
+			t.Fatalf("STORY_SPLIT_FAILED = %d, want 1", len(failed))
+		}
+		if n := len(f.events(state.EventStorySplit, f.story)); n != 0 {
+			t.Errorf("STORY_SPLIT must not be emitted on a failed split, got %d", n)
+		}
+		if got := f.storyStatus(f.story); got == "split" {
+			t.Error("parent must stay the canonical story after an aborted split")
+		}
+		return state.DecodePayload(failed[0].Payload), f
+	}
+
+	t.Run("child append fails before any child persists", func(t *testing.T) {
+		p, f := run(t, state.EventStoryCreated)
+		if p["reason"] != "child append failed" || p["error"] != "disk full" {
+			t.Errorf("payload = %v", p)
+		}
+		if created, _ := p["created_children"].([]any); len(created) != 0 {
+			t.Errorf("created_children = %v, want none", created)
+		}
+		if len(f.rc.PlannedStories) != 2 {
+			t.Errorf("planned stories mutated on an aborted split: %d", len(f.rc.PlannedStories))
+		}
+	})
+
+	t.Run("split event append fails after children persisted", func(t *testing.T) {
+		p, f := run(t, state.EventStorySplit)
+		if p["reason"] != "split event append failed" {
+			t.Errorf("payload = %v", p)
+		}
+		created, _ := p["created_children"].([]any)
+		if len(created) != 2 || created[0] != "s-esc-a" || created[1] != "s-esc-b" {
+			t.Errorf("created_children = %v, want both children so an operator can recover", created)
+		}
+		if len(f.rc.PlannedStories) != 2 {
+			t.Errorf("DAG/planned stories must not change when STORY_SPLIT was not recorded: %d", len(f.rc.PlannedStories))
+		}
+	})
+}
