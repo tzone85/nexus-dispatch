@@ -376,7 +376,7 @@ shape, grep `internal/engine/` or `internal/state/events.go`.
 ### Conflict resolution
 - **STORY_CONFLICT_BINARY** — git rebase hit a binary conflict
 - **STORY_CONFLICT_BINARY_REMOVED** — binary file stripped from branch as part of conflict resolution
-- **STORY_CONFLICT_ESCALATED** — conflict resolver gave up; merge escalated to human
+- **STORY_CONFLICT_ESCALATED** — conflict resolver escalated a file (payload: `file`, `outcome`, optional `reason`). Outcomes: `tech_lead_resolved` / `tech_lead_failed` / `senior_failed` (LLM path), `lock_file_deterministic` (lock file taken `--ours`), `file_too_large` (file exceeds the 24 KB resolver limit — reason `file too large for automatic resolution`; the file is never truncated or overwritten, the rebase is aborted for a human)
 
 ### Controller (auto-recovery)
 - **CONTROLLER_ANALYSIS** — emitted every tick with stories_checked + actions_taken counts

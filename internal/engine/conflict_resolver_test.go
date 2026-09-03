@@ -62,30 +62,6 @@ func TestStripCodeFences_EmptyString(t *testing.T) {
 }
 
 // --------------------------------------------------------------------------
-// truncateConflictContent tests
-// --------------------------------------------------------------------------
-
-func TestTruncateConflictContent_ShortContent(t *testing.T) {
-	input := "package main\n\nfunc main() {}\n"
-	got := truncateConflictContent(input)
-	if got != input {
-		t.Errorf("expected unchanged output for short content")
-	}
-}
-
-func TestTruncateConflictContent_LongContent(t *testing.T) {
-	// Generate content longer than maxConflictContentBytes.
-	input := strings.Repeat("x", maxConflictContentBytes+100)
-	got := truncateConflictContent(input)
-	if !strings.Contains(got, "truncated") {
-		t.Errorf("expected truncation notice in output")
-	}
-	if len(got) > maxConflictContentBytes+100 {
-		t.Errorf("truncated content too long: %d bytes", len(got))
-	}
-}
-
-// --------------------------------------------------------------------------
 // Binary conflict policy tests
 // --------------------------------------------------------------------------
 
