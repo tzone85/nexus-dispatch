@@ -64,15 +64,15 @@ func plannerToolCallResponse() llm.CompletionResponse {
 		Model: "gemma4:26b",
 		ToolCalls: []llm.ToolCall{
 			{
-				Name: "create_story",
+				Name:      "create_story",
 				Arguments: json.RawMessage(`{"title":"Implement thread-safe key-value store package","description":"Create store package with Get, Set, Delete, List and sync.RWMutex","complexity":3,"acceptance_criteria":"All operations work under concurrent access. List returns sorted keys.","dependencies":[]}`),
 			},
 			{
-				Name: "create_story",
+				Name:      "create_story",
 				Arguments: json.RawMessage(`{"title":"Add HTTP API endpoints","description":"HTTP handlers for POST/GET/DELETE /kv/{key} and GET /kv","complexity":3,"acceptance_criteria":"All endpoints return correct status codes","dependencies":["s-001"]}`),
 			},
 			{
-				Name: "create_story",
+				Name:      "create_story",
 				Arguments: json.RawMessage(`{"title":"Add unit and integration tests","description":"Unit tests for store, integration tests for HTTP API","complexity":3,"acceptance_criteria":"All tests pass with concurrent access coverage","dependencies":["s-001","s-002"]}`),
 			},
 			{
