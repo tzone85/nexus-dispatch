@@ -39,9 +39,11 @@ func minimalMonitor(t *testing.T) *Monitor {
 
 // TestExecuteRetryAction_EmitsEscalatedAndReset covers the side-effect
 // contract of executeRetryAction: two events land — STORY_ESCALATED
-// (back down to the configured tier) and STORY_REVIEW_FAILED (so the
-// next dispatcher wave picks the story back up). Without these events
-// the manager's "retry" verdict would be a silent no-op.
+// (back down to the configured tier) and STORY_RESET (so the next
+// dispatcher wave picks the story back up). It must NOT emit a synthetic
+// STORY_REVIEW_FAILED: that counts against the retry budget the manager
+// just granted (RetryCountAtCurrentTier). Without these events the
+// manager's "retry" verdict would be a silent no-op.
 func TestExecuteRetryAction_EmitsEscalatedAndReset(t *testing.T) {
 	m := minimalMonitor(t)
 	m.executeRetryAction("STORY-RETRY", ManagerAction{
@@ -62,9 +64,16 @@ func TestExecuteRetryAction_EmitsEscalatedAndReset(t *testing.T) {
 		t.Error("reason should include the diagnosis")
 	}
 
+	reset, _ := m.eventStore.List(state.EventFilter{Type: state.EventStoryReset})
+	if len(reset) != 1 {
+		t.Fatalf("expected 1 STORY_RESET, got %d", len(reset))
+	}
+	if got := state.DecodePayload(reset[0].Payload)["to_tier"]; got != float64(0) {
+		t.Errorf("STORY_RESET to_tier = %v, want 0", got)
+	}
 	failed, _ := m.eventStore.List(state.EventFilter{Type: state.EventStoryReviewFailed})
-	if len(failed) != 1 {
-		t.Fatalf("expected 1 STORY_REVIEW_FAILED, got %d", len(failed))
+	if len(failed) != 0 {
+		t.Fatalf("retry must not emit a synthetic STORY_REVIEW_FAILED, got %d", len(failed))
 	}
 }
 

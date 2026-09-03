@@ -356,7 +356,7 @@ func (e *Executor) spawn(ctx context.Context, repoDir string, a Assignment, stor
 
 	// Emit STORY_STARTED event with tier and role so AttemptTracker can
 	// reconstruct attempt history without reverse-engineering roles.
-	startEvt := state.NewEvent(state.EventStoryStarted, a.AgentID, a.StoryID, map[string]any{
+	startEvt := state.NewEventForAttempt(state.EventStoryStarted, a.AgentID, a.StoryID, a.AttemptID, map[string]any{
 		"worktree_path": worktreePath,
 		"runtime":       rtName,
 		"session_name":  a.SessionName,
@@ -578,7 +578,7 @@ func (e *Executor) spawnNative(ctx context.Context, repoDir string, a Assignment
 	}
 
 	// Emit STORY_STARTED with tier and role for attempt tracking.
-	startEvt := state.NewEvent(state.EventStoryStarted, a.AgentID, a.StoryID, map[string]any{
+	startEvt := state.NewEventForAttempt(state.EventStoryStarted, a.AgentID, a.StoryID, a.AttemptID, map[string]any{
 		"worktree_path": worktreePath, "runtime": rtName, "branch": a.Branch,
 		"tier": tierForRole(a.Role), "role": string(a.Role),
 	})
@@ -643,7 +643,7 @@ func (e *Executor) spawnNative(ctx context.Context, repoDir string, a Assignment
 			if prog.IsError {
 				payload["is_error"] = true
 			}
-			evt := state.NewEvent(state.EventStoryProgress, a.AgentID, a.StoryID, payload)
+			evt := state.NewEventForAttempt(state.EventStoryProgress, a.AgentID, a.StoryID, a.AttemptID, payload)
 			if err := e.eventStore.Append(evt); err != nil {
 				log.Printf("[native-runtime] append STORY_PROGRESS for %s: %v", a.StoryID, err)
 			}
@@ -704,7 +704,7 @@ func (e *Executor) spawnNative(ctx context.Context, repoDir string, a Assignment
 				payload["criteria_failures"] = criteria.FailureSummary(execResult.CriteriaResult)
 			}
 		}
-		completeEvt := state.NewEvent(state.EventStoryCompleted, a.AgentID, a.StoryID, payload)
+		completeEvt := state.NewEventForAttempt(state.EventStoryCompleted, a.AgentID, a.StoryID, a.AttemptID, payload)
 		if err := e.eventStore.Append(completeEvt); err != nil {
 			log.Printf("[native-runtime] append STORY_COMPLETED for %s: %v", a.StoryID, err)
 		}

@@ -361,10 +361,11 @@ func (m *Monitor) pollOnce(ctx context.Context, wg *sync.WaitGroup, active map[s
 		log.Printf("[monitor] agent %s finished (status: %s)", ag.Assignment.AgentID, status)
 
 		// Emit story completed
-		completedEvt := state.NewEvent(
+		completedEvt := state.NewEventForAttempt(
 			state.EventStoryCompleted,
 			ag.Assignment.AgentID,
 			ag.Assignment.StoryID,
+			ag.Assignment.AttemptID,
 			map[string]any{
 				"status": status.String(),
 			},
@@ -395,19 +396,6 @@ func (m *Monitor) pollOnce(ctx context.Context, wg *sync.WaitGroup, active map[s
 	}
 }
 
-// nativeAgentCompleted is a pure check: "does the event store contain at
-// least one STORY_COMPLETED event for this story id?" Extracted from
-// pollNativeAgent so tests can exercise the detection logic without invoking
-// the post-execution pipeline goroutine.
-func nativeAgentCompleted(es state.EventStore, storyID string) bool {
-	events, err := es.List(state.EventFilter{
-		Type:    state.EventStoryCompleted,
-		StoryID: storyID,
-		Limit:   1, // we only need to know whether ANY exist; perf win on long-lived stores
-	})
-	return err == nil && len(events) > 0
-}
-
 // pollNativeAgent checks whether a native runtime agent (e.g. Gemma) has
 // finished by looking for a STORY_COMPLETED event. Native agents run as
 // in-process goroutines and emit completion events directly to the store.
@@ -415,7 +403,7 @@ func nativeAgentCompleted(es state.EventStore, storyID string) bool {
 // removing the entry from the `active` map after the range loop finishes.
 func (m *Monitor) pollNativeAgent(ctx context.Context, wg *sync.WaitGroup, sessionName string, ag ActiveAgent, repoDir string) bool {
 	_ = sessionName // retained for log clarity in future iterations; currently unused
-	if !nativeAgentCompleted(m.eventStore, ag.Assignment.StoryID) {
+	if !nativeAgentCompleted(m.eventStore, ag.Assignment.StoryID, ag.Assignment.AttemptID) {
 		return false
 	}
 
@@ -434,6 +422,7 @@ func (m *Monitor) pollNativeAgent(ctx context.Context, wg *sync.WaitGroup, sessi
 func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, repoDir string) {
 	storyID := ag.Assignment.StoryID
 	branch := ag.Assignment.Branch
+	attemptID := ag.Assignment.AttemptID
 
 	// Capture the parent context BEFORE shadowing so the devdb release defer
 	// can tell "graceful shutdown" (parent canceled) from "pipeline timed out"
@@ -507,7 +496,7 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 	// half-merged file produces useless output.
 	if conflicted := validateNoConflictMarkers(ag.WorktreePath); len(conflicted) > 0 {
 		log.Printf("[pipeline] %s has unresolved conflict markers in %v — resetting", storyID, conflicted)
-		m.resetStoryToDraft(storyID, "monitor", fmt.Sprintf("unresolved conflict markers in %d file(s)", len(conflicted)))
+		m.resetStoryToDraftFor(storyID, attemptID, "monitor", fmt.Sprintf("unresolved conflict markers in %d file(s)", len(conflicted)))
 		return
 	}
 
@@ -533,7 +522,7 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 	diff, err := gitDiff(ag.WorktreePath)
 	if err != nil {
 		log.Printf("[pipeline] git diff error for %s: %v", storyID, err)
-		m.resetStoryToDraft(storyID, "monitor", fmt.Sprintf("git diff error: %v", err))
+		m.resetStoryToDraftFor(storyID, attemptID, "monitor", fmt.Sprintf("git diff error: %v", err))
 		return
 	}
 	if diff == "" {
@@ -550,7 +539,7 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 			return
 		}
 		log.Printf("[pipeline] no changes produced for %s, resetting to draft for re-dispatch", storyID)
-		m.resetStoryToDraft(storyID, "monitor", "agent produced no code changes")
+		m.resetStoryToDraftFor(storyID, attemptID, "monitor", "agent produced no code changes")
 		return
 	}
 
@@ -622,7 +611,7 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 				return
 			}
 			log.Printf("[pipeline] review error for %s: %v", storyID, err)
-			m.resetStoryToDraft(storyID, "reviewer", fmt.Sprintf("review error: %v", err))
+			m.resetStoryToDraftFor(storyID, attemptID, "reviewer", fmt.Sprintf("review error: %v", err))
 			return
 		}
 
@@ -664,7 +653,7 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 				log.Printf("[pipeline] review advisory-only for %s (criteria authoritative): %s", storyID, result.Summary)
 			} else {
 				EmitStageCompleted(m.eventStore, m.projStore, "monitor", storyID, "review", "failure", reviewStart)
-				m.resetStoryToDraft(storyID, "reviewer", fmt.Sprintf("review rejected: %s", result.Summary))
+				m.resetStoryToDraftFor(storyID, attemptID, "reviewer", fmt.Sprintf("review rejected: %s", result.Summary))
 				return
 			}
 		} else {
@@ -680,7 +669,7 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 		if err != nil {
 			EmitStageCompleted(m.eventStore, m.projStore, "monitor", storyID, "qa", "failure", qaStart)
 			log.Printf("[pipeline] QA error for %s: %v", storyID, err)
-			m.resetStoryToDraft(storyID, "qa", fmt.Sprintf("QA error: %v", err))
+			m.resetStoryToDraftFor(storyID, attemptID, "qa", fmt.Sprintf("QA error: %v", err))
 			return
 		}
 
@@ -712,7 +701,7 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 				"QA FAILURE — fix this error:\n\n%s\n\nHint: %s\n\nMake the minimal change to fix this. Do not rewrite files.",
 				qaOutput, hint,
 			)
-			feedbackEvt := state.NewEvent(state.EventStoryQAFailed, "monitor", storyID, map[string]any{
+			feedbackEvt := state.NewEventForAttempt(state.EventStoryQAFailed, "monitor", storyID, attemptID, map[string]any{
 				"feedback": retryFeedback,
 				"source":   "qa_failure",
 			})
@@ -737,7 +726,7 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 			// also emits a STORY_REVIEW_FAILED carrying the retry feedback as its
 			// reason, which is what latestReviewFeedback delivers to the
 			// re-spawned agent.
-			m.resetStoryToDraft(storyID, "qa", retryFeedback)
+			m.resetStoryToDraftFor(storyID, attemptID, "qa", retryFeedback)
 			return
 		}
 		EmitStageCompleted(m.eventStore, m.projStore, "monitor", storyID, "qa", "success", qaStart)
@@ -805,7 +794,7 @@ func (m *Monitor) postExecutionPipeline(ctx context.Context, ag ActiveAgent, rep
 				return
 			}
 			log.Printf("[pipeline] merge error for %s: %v", storyID, err)
-			m.resetStoryToDraft(storyID, "merger", fmt.Sprintf("merge/rebase error: %v", err))
+			m.resetStoryToDraftFor(storyID, attemptID, "merger", fmt.Sprintf("merge/rebase error: %v", err))
 			return
 		}
 		EmitStageCompleted(m.eventStore, m.projStore, "monitor", storyID, "merge", "success", mergeStart)
@@ -1096,56 +1085,6 @@ func (m *Monitor) emitHumanReviewNeeded(story state.Story, reason string) {
 	}
 }
 
-// resetStoryToDraft uses the EscalationMachine to decide whether the story
-// should be retried at the current tier, escalated to the next tier, or
-// paused (all tiers exhausted). It emits the appropriate events so the
-// dispatcher picks the story back up with the correct routing.
-func (m *Monitor) resetStoryToDraft(storyID, fromAgent, reason string) {
-	shouldEsc, nextTier, err := m.escalation.ShouldEscalate(storyID)
-	if err != nil {
-		log.Printf("[pipeline] escalation check error for %s: %v", storyID, err)
-	}
-
-	if shouldEsc {
-		currentTier, _ := m.escalation.CurrentTier(storyID)
-		if nextTier >= 4 {
-			m.pauseRequirement(storyID, fmt.Sprintf(
-				"story exhausted all escalation tiers (%d): %s", currentTier, reason,
-			))
-			return
-		}
-		log.Printf("[pipeline] escalating %s from tier %d to tier %d: %s", storyID, currentTier, nextTier, reason)
-		emitEventOrLog(m.eventStore, m.projStore,
-			state.NewEvent(state.EventStoryEscalated, fromAgent, storyID, map[string]any{
-				"from_tier": currentTier,
-				"to_tier":   nextTier,
-				"reason":    reason,
-			}))
-
-		// Record Bayesian outcome: escalation is a failure for the current role.
-		m.recordBayesianEscalation(storyID, currentTier)
-
-		// Also reset to draft so the dispatcher picks it up at the new tier.
-		emitEventOrLog(m.eventStore, m.projStore,
-			state.NewEvent(state.EventStoryReviewFailed, fromAgent, storyID, map[string]any{
-				"reason": fmt.Sprintf("escalated to tier %d: %s", nextTier, reason),
-			}))
-		return
-	}
-
-	// Normal reset within current tier.
-	retryCount, _ := m.escalation.RetryCountAtCurrentTier(storyID)
-	currentTier, _ := m.escalation.CurrentTier(storyID)
-	maxRetries := m.escalation.MaxRetriesForTier(currentTier)
-	log.Printf("[pipeline] reset %s to draft (attempt %d/%d at tier %d): %s",
-		storyID, retryCount+1, maxRetries, currentTier, reason)
-
-	emitEventOrLog(m.eventStore, m.projStore,
-		state.NewEvent(state.EventStoryReviewFailed, fromAgent, storyID, map[string]any{
-			"reason": reason,
-		}))
-}
-
 // dispatchNextWave determines which stories are now ready (dependencies met)
 // and dispatches a new wave of agents. Returns the newly spawned ActiveAgents.
 func (m *Monitor) dispatchNextWave(ctx context.Context, rc *RunContext, repoDir string) []ActiveAgent {
@@ -1429,9 +1368,16 @@ func (m *Monitor) executeRetryAction(storyID string, action ManagerAction, workt
 			"reason":    "manager retry: " + action.Diagnosis,
 		}))
 
+	// Reset to draft with STORY_RESET, not a synthetic STORY_REVIEW_FAILED:
+	// RetryCountAtCurrentTier counts review failures after the last
+	// escalation, so a fake failure here would silently consume one of the
+	// retries the manager just granted.
 	emitEventOrLog(m.eventStore, m.projStore,
-		state.NewEvent(state.EventStoryReviewFailed, "manager", storyID, map[string]any{
-			"reason": "manager retry with fixes",
+		state.NewEvent(state.EventStoryReset, "manager", storyID, map[string]any{
+			"reason":   "manager retry with fixes",
+			"to_tier":  resetTier,
+			"source":   "manager",
+			"decision": action.Diagnosis,
 		}))
 }
 
