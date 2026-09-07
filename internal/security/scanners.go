@@ -171,7 +171,8 @@ func relPath(repoDir, p string) string {
 
 func parseGosec(out []byte, repoDir string) ([]Finding, error) {
 	var doc struct {
-		Issues []struct {
+		GolangErrors map[string]json.RawMessage `json:"Golang errors"`
+		Issues       []struct {
 			Severity string `json:"severity"`
 			RuleID   string `json:"rule_id"`
 			Details  string `json:"details"`
@@ -184,6 +185,13 @@ func parseGosec(out []byte, repoDir string) ([]Finding, error) {
 	}
 	if err := json.Unmarshal(out, &doc); err != nil {
 		return nil, err
+	}
+	// gosec emits valid JSON with a populated "Golang errors" map and no issues
+	// when it cannot load or compile the packages (e.g. a broken worktree). That
+	// is coverage lost, not a clean run — returning an error routes it to
+	// RunScanners' `failed` list instead of masquerading as scanned-clean.
+	if len(doc.GolangErrors) > 0 && len(doc.Issues) == 0 {
+		return nil, fmt.Errorf("gosec did not analyze the code: %d package load/compile error(s), no code inspected", len(doc.GolangErrors))
 	}
 	findings := make([]Finding, 0, len(doc.Issues))
 	for _, i := range doc.Issues {
@@ -269,9 +277,17 @@ func parseSemgrep(out []byte, repoDir string) ([]Finding, error) {
 				} `json:"metadata"`
 			} `json:"extra"`
 		} `json:"results"`
+		Errors []json.RawMessage `json:"errors"`
 	}
 	if err := json.Unmarshal(out, &doc); err != nil {
 		return nil, err
+	}
+	// semgrep emits valid JSON with a populated "errors" array and no results
+	// when the scan itself fails — most notably when "--config auto" cannot
+	// fetch rules on an offline host, which is NXD's default environment. Zero
+	// results from a failed scan is coverage lost, not a clean run.
+	if len(doc.Errors) > 0 && len(doc.Results) == 0 {
+		return nil, fmt.Errorf("semgrep did not complete: %d error(s) and no results (rules/targets could not be scanned)", len(doc.Errors))
 	}
 	findings := make([]Finding, 0, len(doc.Results))
 	for _, r := range doc.Results {
@@ -300,6 +316,10 @@ func parseSemgrep(out []byte, repoDir string) ([]Finding, error) {
 
 func parseNpmAudit(out []byte) ([]Finding, error) {
 	var doc struct {
+		Error *struct {
+			Code    string `json:"code"`
+			Summary string `json:"summary"`
+		} `json:"error"`
 		Vulnerabilities map[string]struct {
 			Name     string            `json:"name"`
 			Severity string            `json:"severity"`
@@ -309,6 +329,17 @@ func parseNpmAudit(out []byte) ([]Finding, error) {
 	}
 	if err := json.Unmarshal(out, &doc); err != nil {
 		return nil, err
+	}
+	// npm emits valid JSON with a top-level "error" object (and no
+	// "vulnerabilities") when the audit cannot run — most commonly ENOLOCK on a
+	// yarn/pnpm repo with no package-lock.json. That inspects zero dependencies,
+	// so it must be recorded as a failed run, not a clean one.
+	if doc.Error != nil {
+		msg := strings.TrimSpace(strings.TrimSpace(doc.Error.Code) + " " + strings.TrimSpace(doc.Error.Summary))
+		if msg == "" {
+			msg = "npm reported an audit error"
+		}
+		return nil, fmt.Errorf("npm audit did not complete: %s", msg)
 	}
 	findings := make([]Finding, 0, len(doc.Vulnerabilities))
 	for pkg, v := range doc.Vulnerabilities {
@@ -390,12 +421,14 @@ func (s Scanner) Run(ctx context.Context, repoDir string) ([]Finding, error) {
 	// Capture stdout only: scanners emit their machine-readable report on
 	// stdout and human log lines (often ANSI-coloured) on stderr. Combining
 	// the streams corrupted the JSON payload. Exit code is intentionally
-	// ignored for the JSON scanners: they exit non-zero when they find
-	// issues, and a genuine run failure corrupts the JSON so the parser
-	// returns an error (→ recorded as failed). govulncheck is the exception —
-	// its text output is empty both when it finds nothing AND when it never
-	// ran (offline, no go.mod, load error), so a clean parse cannot tell the
-	// two apart; we must inspect its exit code (see below).
+	// ignored for the JSON scanners: they exit non-zero when they find issues,
+	// and their parsers detect a failed run from the tool's own structured
+	// error channel (gosec "Golang errors", semgrep "errors", npm "error") and
+	// return an error (→ recorded as failed) rather than assuming a failure
+	// always corrupts the JSON. govulncheck is the exception — its text output
+	// is empty both when it finds nothing AND when it never ran (offline, no
+	// go.mod, load error), so a clean parse cannot tell the two apart; we must
+	// inspect its exit code (see below).
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

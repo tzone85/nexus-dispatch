@@ -206,6 +206,58 @@ func TestParseGovulncheck_MalformedLinesSkipped(t *testing.T) {
 	}
 }
 
+// TestParsers_FailedRunErrorsNotSwallowed proves the JSON scanners route a
+// failed run — one that emits valid JSON carrying a structured error channel
+// and no findings — to an error (→ RunScanners' `failed` list) rather than
+// reporting it as a clean run. Without this, a tool that never inspected the
+// code is indistinguishable from one that found nothing, and the security gate
+// would report a build as scanned-clean when coverage was actually lost.
+func TestParsers_FailedRunErrorsNotSwallowed(t *testing.T) {
+	// npm audit with no lockfile (yarn/pnpm repo): valid JSON, top-level error,
+	// zero vulnerabilities inspected.
+	npmErr := []byte(`{"error":{"code":"ENOLOCK","summary":"This command requires an existing lockfile.","detail":"Try creating one first"}}`)
+	if _, err := parseNpmAudit(npmErr); err == nil {
+		t.Error("parseNpmAudit must fail when npm reports a top-level error (audit did not run)")
+	}
+
+	// gosec on a worktree that does not compile: valid JSON, populated
+	// "Golang errors", no issues.
+	gosecErr := []byte(`{"Golang errors":{"pkg/a.go":[{"line":1,"column":1,"error":"expected declaration"}]},"Issues":null,"Stats":{"files":0,"lines":0}}`)
+	if _, err := parseGosec(gosecErr, "/repo"); err == nil {
+		t.Error("parseGosec must fail when 'Golang errors' is populated and no issues were produced")
+	}
+
+	// semgrep whose scan failed (e.g. --config auto offline): valid JSON,
+	// populated errors, no results.
+	semErr := []byte(`{"results":[],"errors":[{"code":2,"level":"error","message":"failed to download config"}]}`)
+	if _, err := parseSemgrep(semErr, "/repo"); err == nil {
+		t.Error("parseSemgrep must fail when it reports errors and produced no results")
+	}
+}
+
+// TestParsers_SuccessfulRunsDoNotFalseFail guards against the failure detection
+// misclassifying a genuine clean/partial run as failed.
+func TestParsers_SuccessfulRunsDoNotFalseFail(t *testing.T) {
+	// gosec clean: "Golang errors" present but empty is the normal success shape.
+	if fs, err := parseGosec([]byte(`{"Golang errors":{},"Issues":[]}`), "/repo"); err != nil || len(fs) != 0 {
+		t.Errorf("clean gosec run must not error: fs=%v err=%v", fs, err)
+	}
+	// gosec partial: load errors on some packages but issues still found — the
+	// findings must be surfaced, not dropped as a failure.
+	gosecPartial := []byte(`{"Golang errors":{"pkg/a.go":[{"error":"x"}]},"Issues":[{"severity":"HIGH","rule_id":"G401","details":"weak","file":"b.go","line":"5","cwe":{"id":"327"}}]}`)
+	if fs, err := parseGosec(gosecPartial, "/repo"); err != nil || len(fs) != 1 {
+		t.Errorf("partial gosec run with findings must surface them: fs=%v err=%v", fs, err)
+	}
+	// semgrep clean with an empty errors array.
+	if fs, err := parseSemgrep([]byte(`{"results":[],"errors":[]}`), "/repo"); err != nil || len(fs) != 0 {
+		t.Errorf("clean semgrep run must not error: fs=%v err=%v", fs, err)
+	}
+	// npm audit clean: no top-level error key, empty vulnerabilities.
+	if fs, err := parseNpmAudit([]byte(`{"vulnerabilities":{},"metadata":{"vulnerabilities":{"total":0}}}`)); err != nil || len(fs) != 0 {
+		t.Errorf("clean npm audit run must not error: fs=%v err=%v", fs, err)
+	}
+}
+
 func TestSeverityString_AllValues(t *testing.T) {
 	want := map[Severity]string{
 		SeverityCritical: "critical",
