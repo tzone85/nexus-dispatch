@@ -21,6 +21,33 @@ func newGCCmd() *cobra.Command {
 	return cmd
 }
 
+// mergedBranchInfos maps merged stories (with a branch) to the BranchInfo the
+// reaper consumes. Branch retention is measured from the MERGE time, not story
+// creation: the reaper deletes branches whose MergedAt is older than
+// BranchRetentionDays. Passing CreatedAt applied the policy against the wrong
+// clock — a story created long ago but merged yesterday had its branch reaped
+// immediately, and a recently-created story merged long ago was kept too long.
+// Merged stories always carry merged_at; CreatedAt is only a defensive fallback
+// for pre-migration rows.
+func mergedBranchInfos(stories []state.Story) []engine.BranchInfo {
+	branches := make([]engine.BranchInfo, 0, len(stories))
+	for _, story := range stories {
+		if story.Branch == "" {
+			continue
+		}
+		mergedAt := story.MergedAt
+		if mergedAt.IsZero() {
+			mergedAt = story.CreatedAt
+		}
+		branches = append(branches, engine.BranchInfo{
+			Name:     story.Branch,
+			StoryID:  story.ID,
+			MergedAt: mergedAt,
+		})
+	}
+	return branches
+}
+
 func runGC(cmd *cobra.Command, _ []string) error {
 	cfgPath, _ := cmd.Flags().GetString("config")
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
@@ -44,17 +71,7 @@ func runGC(cmd *cobra.Command, _ []string) error {
 		return nil
 	}
 
-	branches := make([]engine.BranchInfo, 0, len(mergedStories))
-	for _, story := range mergedStories {
-		if story.Branch == "" {
-			continue
-		}
-		branches = append(branches, engine.BranchInfo{
-			Name:     story.Branch,
-			StoryID:  story.ID,
-			MergedAt: story.CreatedAt,
-		})
-	}
+	branches := mergedBranchInfos(mergedStories)
 
 	if dryRun {
 		fmt.Fprintf(out, "Dry run: would check %d branches for cleanup\n", len(branches))

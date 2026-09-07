@@ -87,6 +87,16 @@ func (fs *FileStore) readAndFilter(filter EventFilter) ([]Event, error) {
 
 	var events []Event
 	scanner := bufio.NewScanner(f)
+	// Event payloads embed unbounded tool output — a QA/build failure records the
+	// full `go build`/`go test ./...` combined output in the STORY_QA_FAILED
+	// feedback, which routinely exceeds bufio.Scanner's default 64 KB token cap.
+	// Without a raised buffer, one oversized line makes scanner.Err() return
+	// bufio.ErrTooLong and the ENTIRE event log becomes unreadable (List/Count
+	// fail), stalling attempt-counting, escalation, reporting, and the dashboard.
+	// NXD_EVENTS_LENIENT does not rescue this — it only skips per-line JSON
+	// parse errors inside the loop, not a buffer overflow. Match the ceiling the
+	// other JSONL readers already use (trace/metrics 1 MB, sanitize 4 MB).
+	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 	lineNo := 0
 	for scanner.Scan() {
 		lineNo++

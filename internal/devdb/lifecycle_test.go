@@ -160,6 +160,39 @@ func TestLifecycle_Release_FailedWithoutKeepDB_Deletes(t *testing.T) {
 	}
 }
 
+// TestLifecycle_Provision_EnvFileFailure_TearsDownDB proves that when the DB is
+// created but wiring it into the worktree fails, the just-created DB is torn
+// down rather than orphaned. Otherwise the caller leaves result.DB zero-valued
+// (so the monitor's release defer never fires) and ReleaseOrphans preserves
+// zero-CreatedAt DBs for human review, so it accumulates in the shared server.
+func TestLifecycle_Provision_EnvFileFailure_TearsDownDB(t *testing.T) {
+	rp := &recordingProvider{Provider: null.New()}
+	es := &fakeEventStore{}
+	lc := devdb.NewLifecycle(rp, es, devdb.Config{Provider: "null"})
+
+	// Force WriteEnvFiles to fail: place a regular file where it must create the
+	// .nxd-db directory, so MkdirAll returns "not a directory".
+	worktree := t.TempDir()
+	blocker := filepath.Join(worktree, devdb.EnvFileDirName)
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := lc.Provision(context.Background(), "story-1", "myproj", worktree)
+	if err == nil {
+		t.Fatal("expected Provision to fail when the env file cannot be written")
+	}
+	if len(rp.deleted) != 1 {
+		t.Fatalf("created DB must be torn down on envfile failure; delete calls = %v", rp.deleted)
+	}
+	// The only event emitted should be the failure, never a spurious "created".
+	for _, e := range es.appended {
+		if e.Type == state.EventStoryDBCreated {
+			t.Errorf("must not emit STORY_DB_CREATED when provisioning failed")
+		}
+	}
+}
+
 // fakeProjector records events the lifecycle drives into the read model.
 type fakeProjector struct {
 	projected []state.Event
