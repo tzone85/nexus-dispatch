@@ -1,0 +1,28 @@
+name: Notify archify maps
+
+# Tells tzone85/nexus-dispatch-archify that main moved so its interactive maps can re-sync.
+# Needs the ARCHIFY_DISPATCH_TOKEN secret (fine-grained PAT, Contents: read and
+# write on tzone85/nexus-dispatch-archify). Without it this job skips instead of failing.
+
+on:
+  push:
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Dispatch map refresh
+        env:
+          GH_TOKEN: ${{ secrets.ARCHIFY_DISPATCH_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::warning::ARCHIFY_DISPATCH_TOKEN is not set; skipping map refresh dispatch."
+            exit 0
+          fi
+          gh api "repos/tzone85/nexus-dispatch-archify/dispatches" \
+            -f event_type=source-main-updated \
+            -f "client_payload[sha]=${GITHUB_SHA}"
