@@ -1,6 +1,6 @@
 # NXD Architecture Deep Dive
 
-This document explains how NXD works internally — the event-sourced pipeline, agent hierarchy, wave dispatch, and monitoring systems.
+This document explains how NXD works internally — the event-sourced pipeline, agent roles, wave dispatch, the post-execution pipeline, and monitoring. Where a component exists in the code but is not wired into the running pipeline, this page says so.
 
 ## Core Design Principles
 
@@ -13,20 +13,21 @@ This document explains how NXD works internally — the event-sourced pipeline, 
 
 ![NXD system overview](../diagrams/system-overview.svg)
 
-The diagram above shows the five layers and how they communicate:
+The diagram above shows the layers and how they communicate:
 
 - **CLI Layer** — Cobra commands that operators run (`nxd req`, `nxd resume`, `nxd improve`, …).
-- **Orchestrator Engine** — planner, wave dispatcher, monitor, reviewer, QA runner, merger.
+- **Orchestrator Engine** — planner, wave dispatcher, executor, monitor, reviewer, QA runner, security gate, merger, completion gate.
 - **State Layer** — append-only `events.jsonl` projected into a SQLite materialized view.
-- **MemPalace** — local-first semantic memory the planner and reviewer query for relevant prior work (offline; ChromaDB local backend).
-- **Agent Runtime** — native in-process Gemma goroutines or tmux-hosted CLI agents (Aider, Claude Code, Codex).
+- **MemPalace** — local-first semantic memory (offline; ChromaDB local backend). The executor searches it for prior work when building an agent's prompt; the monitor mines story diffs, review verdicts, and QA failures into it. The planner and reviewer do not query it.
+- **Agent Runtime** — native in-process Gemma goroutines (the default) or tmux-hosted CLI agents (Aider, Claude Code, Codex).
 - **Git worktrees** — each story runs in an isolated worktree branched from the base.
+- **Ephemeral DBs (devdb)** — opt-in per-story Docker Postgres databases, provisioned by the executor and released by the monitor. Off when `devdb.provider` is empty or `null`.
 
 The pipeline that drives those components, end to end, looks like this:
 
 ![NXD pipeline flow](../diagrams/pipeline-flow.svg)
 
-Stories progress left to right; the dashed arrows are failure paths that loop back into the agent for self-correction (criteria gate, review request_changes, QA fail).
+Stories progress left to right; the dashed arrows are failure paths that send the story back to draft for another attempt (criteria gate, review rejection, QA failure).
 
 ## Event Sourcing Model
 
@@ -39,7 +40,7 @@ Every action in NXD produces an event. Events are never modified or deleted — 
 ```
 Event {
     ID:        "01HZ..."          // ULID (time-sortable, unique)
-    Type:      "STORY_CREATED"    // One of 31 event types
+    Type:      "STORY_CREATED"    // One of 65 EventType constants (internal/state/events.go)
     Timestamp: 2026-03-10T...     // UTC
     AgentID:   "tech_lead-req1-1" // Which agent produced this
     StoryID:   "story-01"         // Related story (if any)
@@ -47,16 +48,21 @@ Event {
 }
 ```
 
+`internal/state/events.go` defines 65 `EventType` constants. The monitor also emits one raw string, `PIPELINE_STALLED`, when stories remain but none can be dispatched. The [Event Reference](../reference/event-reference.md) documents payloads.
+
 ### Event Categories
 
-| Category | Events | Producer |
-|----------|--------|----------|
-| Requirement | REQ_SUBMITTED, REQ_ANALYZED, REQ_PLANNED, REQ_COMPLETED | CLI, Planner |
-| Story | STORY_CREATED through STORY_MERGED (14 types) | Planner, Dispatcher, Reviewer, QA, Merger |
-| Agent | AGENT_SPAWNED, AGENT_CHECKPOINT, AGENT_RESUMED, AGENT_STUCK, AGENT_TERMINATED | Dispatcher, Watchdog |
-| Escalation | ESCALATION_CREATED, ESCALATION_RESOLVED | Watchdog, Supervisor |
-| Supervisor | SUPERVISOR_CHECK, SUPERVISOR_REPRIORITIZE, SUPERVISOR_DRIFT_DETECTED | Supervisor |
-| Cleanup | WORKTREE_PRUNED, BRANCH_DELETED, GC_COMPLETED | Reaper |
+| Category | Examples | Producer |
+|----------|----------|----------|
+| Requirement | REQ_SUBMITTED, REQ_PLANNED, REQ_PAUSED, REQ_COMPLETED, REQ_BLOCKED, REQ_BUDGET_WARNING | CLI, Planner, Monitor |
+| Story lifecycle | STORY_CREATED, STORY_ASSIGNED, STORY_STARTED, STORY_COMPLETED, STORY_REVIEW_PASSED/FAILED, STORY_QA_PASSED/FAILED, STORY_PR_CREATED, STORY_MERGED | Planner, Dispatcher, Executor, Monitor, Reviewer, QA, Merger |
+| Escalation and recovery | STORY_ESCALATED, STORY_REWRITTEN, STORY_SPLIT, STORY_RESET, STORY_RECOVERY | Monitor, Controller, `nxd resume` recovery |
+| Security | STORY_SECURITY_PASSED/FAILED, SECURITY_SCAN_COMPLETED, SECURITY_RULE_LEARNED | Security gate |
+| Agent | AGENT_SPAWNED, AGENT_STUCK, AGENT_TERMINATED | Dispatcher, Watchdog, Controller |
+| Controller | CONTROLLER_ANALYSIS, CONTROLLER_ACTION, CONTROLLER_STUCK_DETECTED | Controller (opt-in) |
+| Cleanup | BRANCH_DELETED, GC_COMPLETED | `nxd gc` |
+
+Three groups are defined but not emitted by the running pipeline: `SUPERVISOR_CHECK` / `SUPERVISOR_REPRIORITIZE` / `SUPERVISOR_DRIFT_DETECTED` (the supervisor is never constructed — see the Supervisor section) and `WORKTREE_PRUNED` (only `Reaper.Reap` emits it, and nothing calls `Reap` — see the Cleanup section).
 
 ### Projections
 
@@ -71,77 +77,65 @@ SQLite tables:
     requirements (id, title, status, ...)
     stories      (id, req_id, complexity, status, agent_id, branch, ...)
     agents       (id, type, model, status, session_name, ...)
-    escalations  (id, story_id, from_role, to_role, reason, ...)
+    escalations  (projected from STORY_ESCALATED)
     story_deps   (story_id, depends_on)
-    agent_scores (agent_id, quality, reliability, speed, ...)
+    agent_scores (created by the schema; nothing writes to it today)
 ```
 
 **Why both?** The event log is the authoritative history (append-only, auditable, replayable). SQLite projections are derived views optimized for queries (list stories by status, find agents by role). If projections get corrupted, they can be rebuilt by replaying all events.
 
-## Agent Hierarchy
+## Agent Roles
 
-![Agent hierarchy + complexity routing](../diagrams/agent-hierarchy.svg)
+![Agent roles + complexity routing](../diagrams/agent-hierarchy.svg)
 
-NXD models a complete agile development team:
+Every role reads its model from `models.<role>` in `nxd.yaml`. `DefaultConfig` sets **every role to `gemma4:e4b` on Ollama**; the two-model split in [Model Selection](model-selection.md) is a recommended override, not the shipped default.
 
-```
-        Tech Lead (qwen3-coder:30b)
-        Decomposes requirements into stories
-              |
-     +--------+--------+
-     |                  |
-   Senior            Supervisor
-   (qwen3-coder      (gemma4:e4b)
-    :30b reviewer)   Periodic drift
-   Different family  detection,
-   from coder catches reprioritization
-   coder's blind spots
-     |
-     +--------+--------+
-     |                  |
-  Intermediate       Junior
-  (gemma4:e4b)       (gemma4:e4b)
-  Handles 4-5        Handles 1-3
-  complexity         complexity
-              |
-              QA
-              (qwen3-coder:30b)
-              Lint, build, test + failure analysis
-```
+| Role | What it does in the running pipeline |
+|------|--------------------------------------|
+| Investigator | Existing codebases only: LLM + read-only commands produce an investigation report before planning (`nxd req`, `nxd plan`) |
+| Tech Lead | Decomposes the requirement into stories (direct LLM call). Its model also drafts fix suggestions when the post-merge integration build fails |
+| Junior | Implements stories up to `routing.junior_max_complexity` (default 3) |
+| Intermediate | Implements stories up to `routing.intermediate_max_complexity` (default 5) |
+| Senior | Implements stories above the intermediate threshold and every tier-1 escalation, using the same runtime selection as the other coders. Its model is also used by the reviewer, conflict resolver, security gate LLM review, completion-gate fix cycles, and the docs generator |
+| QA | Not a model. The QA runner executes `qa.success_criteria` (build / vet / test commands and other criteria) in the worktree |
+| Manager | LLM diagnosis of tier-2 stories (retry / rewrite / split). Implemented in `internal/engine/manager.go`, but `nxd resume` does not attach it to the monitor — see Escalation Ladder |
+| Supervisor | LLM drift detection. `NewSupervisor` exists but has no callers, so it never runs — see the Supervisor section |
 
-> The model labels above are the **recommended default**. NXD works with any Ollama model — the architectural roles are stable, but operators choose models per role via `nxd.yaml`. See [Model Selection](model-selection.md) for the rationale behind pairing different model families.
+`models.qa`, `models.supervisor`, and `models.manager` are accepted by the config loader but are not read by the running pipeline.
 
-### Execution Modes
+### How a Coding Role Picks a Runtime
 
-| Role | Mode | How It Runs |
-|------|------|-------------|
-| Tech Lead | API | Direct LLM call, returns structured JSON |
-| Senior | API (review) / CLI (complex tasks) | LLM for review, tmux session for implementation |
-| Intermediate | CLI | tmux session with Aider in a git worktree |
-| Junior | CLI | tmux session with Aider in a git worktree |
-| QA | Hybrid | LLM analysis + shell commands (lint/build/test) |
-| Supervisor | API | Periodic LLM call to assess progress |
+`Executor.runtimeForRole` resolves a runtime for Junior, Intermediate, and Senior assignments:
+
+1. If the role's model name starts with an entry in a native runtime's `models` list, use that native runtime. The default `gemma` runtime lists `gemma4`, so with the default config **every coding agent runs in-process through the native Gemma tool loop** against Ollama — no tmux, no Aider.
+2. Otherwise map the provider to a CLI runtime whose binary is on `PATH`: `ollama` → `aider`, `anthropic` → `claude-code`, `openai` → `codex`, `google` → `gemini`. CLI runtimes run in tmux sessions in the story's worktree.
+3. Otherwise fall back to any native runtime, then any runtime whose binary exists.
 
 ### Complexity Routing (Fibonacci)
 
 ```
-Complexity 1-3:  -> Junior       (gemma4:e4b — coder)
-Complexity 4-5:  -> Intermediate (gemma4:e4b — coder)
-Complexity 6-8:  -> Senior       (qwen3-coder:30b — reviewer/escalation)
-Complexity 9-13: -> Senior decomposes further, then assigns
+Complexity <= junior_max_complexity (3)        -> Junior
+Complexity <= intermediate_max_complexity (5)  -> Intermediate
+Anything higher                                -> Senior
 ```
 
-Thresholds are configurable via `routing.junior_max_complexity` and `routing.intermediate_max_complexity`.
+The planner rejects any story above `planning.max_story_complexity` (default 5), so with defaults Senior receives work through escalation rather than planning. When Bayesian priors are loaded (always, in `nxd resume`), the dispatcher routes by those priors instead of the static thresholds; see the Bayesian section of [Configuration](configuration.md).
 
-### Escalation Flow
+### Escalation Ladder
 
-```
-Junior stuck (2 retries)
-    -> Senior takes over
-        -> Senior stuck
-            -> Tech Lead re-plans
-                -> Human intervention (if all else fails)
-```
+Every failed attempt goes through `Monitor.resetStoryToDraft`, which emits `STORY_REVIEW_FAILED` (story back to draft) and asks the `EscalationMachine` whether the current tier's budget is spent. The budget counts `STORY_REVIEW_FAILED` events since the last `STORY_ESCALATED`, so review rejections, QA failures, empty diffs, and merge errors all count.
+
+| Tier | Handler | Budget (config key, default) |
+|------|---------|------------------------------|
+| 0 | Same role re-dispatched | `routing.max_retries_before_escalation` (2) |
+| 1 | Senior | `routing.max_senior_retries` (2) |
+| 2 | Manager diagnosis | `routing.max_manager_attempts` (2) |
+| 3 | Tech Lead re-plan (`Planner.RePlan`, emits `STORY_SPLIT`) | 1 |
+| 4 | Requirement paused (`REQ_PAUSED`) | — |
+
+Current wiring caveat: the tier-2 and tier-3 handlers only run when a Manager is attached to the monitor, and `nxd resume` attaches neither the Manager nor the Planner. Stories at tier 2 or 3 therefore reach the dispatcher, which logs a warning and routes them to Senior again, until tier 4 pauses the requirement.
+
+Two failure classes never spend a tier: transient Ollama capacity errors (429/503, model loading, out of memory) and security-gate findings both pause the requirement instead. `routing.max_qa_failures_before_escalation` is not read by the pipeline; QA failures count against the tier budgets above.
 
 ## Wave-Based Dispatch
 
@@ -164,7 +158,7 @@ Wave 1: [A, B, C]  <- all independent, run in parallel
 Wave 2: [D, E]     <- dependencies satisfied, run in parallel
 ```
 
-Each wave waits for the previous wave to complete (all stories reviewed + merged) before dispatching.
+A story counts as done for dependency purposes once its status is `merged`, `pr_submitted`, or `split`. When the monitor finishes a story's pipeline it dispatches the next ready wave itself (auto-resume).
 
 ### Dependency Graph
 
@@ -179,6 +173,20 @@ graph.AddEdge("story-02", "story-01")  // story-02 depends on story-01
 `ReadyNodes(completed)` returns nodes whose dependencies are all in the `completed` set.
 
 Cycle detection is built-in — if the Tech Lead creates circular dependencies, the Planner rejects the plan.
+
+## Native Gemma Runtime
+
+![Native Gemma runtime tool-call loop](../diagrams/native-runtime-loop.svg)
+
+The native runtime (`internal/runtime/gemma.go`) runs a tool-call loop with seven tools: `read_file`, `write_file`, `edit_file`, `run_command` (allowlist-gated), `task_complete`, `write_scratchboard`, and `read_scratchboard`. If a model replies without structured tool calls but its text contains `{"name": ..., "arguments": ...}` objects, the runtime extracts and executes them as tool calls.
+
+The loop ends when:
+- `task_complete` is called and every configured success criterion passes (criteria-gated completion);
+- the criteria rejection budget (`max_criteria_retries`, default 2) is exhausted — the story fails and goes through the escalation ladder;
+- the model replies with no tool calls at all;
+- `max_iterations` is reached, or an LLM call fails.
+
+Each tool call emits `STORY_PROGRESS`, and pending `nxd direct` operator directives are injected at the start of each iteration.
 
 ## Dashboard
 
@@ -196,17 +204,18 @@ The TUI reads from the SQLite projection store and refreshes every 2 seconds.
 
 ### Web Dashboard
 
-`nxd dashboard --web` starts an embedded HTTP server (default port 8787). A WebSocket hub broadcasts projection snapshots to all connected browsers every 2 seconds.
+`nxd dashboard --web` starts an embedded HTTP server (default port 8787). The printed URL carries a random per-session token (`?token=<hex>`); `/`, `/ws`, and the static assets reject requests without it.
 
 ```
 nxd dashboard --web
   |
-  +-> HTTP server (port 8787)
-  |     GET /        -> embedded HTML/CSS/JS (no external dependencies)
-  |     GET /ws      -> WebSocket upgrade
+  +-> HTTP server (port 8787, token-gated)
+  |     GET /?token=...  -> embedded HTML/CSS/JS, seeds an HttpOnly token cookie
+  |     GET /ws          -> WebSocket upgrade
   |
   +-> WebSocket hub
-        every 2s: read nxd.db -> marshal snapshot -> broadcast to all clients
+        on each appended event: push it to all clients immediately (event bus)
+        every 5s: read nxd.db -> marshal full snapshot -> broadcast
 ```
 
 The web dashboard provides a full control panel:
@@ -222,9 +231,9 @@ Destructive actions (kill, reassign, edit) require a confirmation dialog. Comman
 
 ## Monitoring Systems
 
-### Watchdog (Deterministic)
+### Watchdog (Deterministic, CLI runtimes only)
 
-Runs every `poll_interval_ms` (default 10s). For each active tmux session:
+Runs on each monitor poll (`poll_interval_ms`, default 10s) for tmux-hosted agents. Native agents are tracked through the event store instead.
 
 1. **Read** last 30 lines of pane output
 2. **Detect** status via regex matching:
@@ -233,146 +242,93 @@ Runs every `poll_interval_ms` (default 10s). For each active tmux session:
    - `plan_mode_pattern` -> Send Escape to exit
 3. **Fingerprint** the output (SHA-256 hash)
 4. **Compare** with previous fingerprint
-5. If unchanged for `stuck_threshold_s` -> Flag as STUCK
+5. If unchanged for `stuck_threshold_s` -> emit `AGENT_STUCK`
 
-No LLM calls. Purely deterministic. Runs as a Go goroutine.
+No LLM calls. `AGENT_STUCK` is informational; the monitor does not escalate on it.
 
-### Supervisor (LLM-Based)
+### Controller (Deterministic, opt-in)
 
-Runs periodically (configurable). Sends a structured prompt to the Supervisor model:
+With `controller.enabled: true`, a background loop finds stories with no progress for `max_stuck_duration_s` and cancels, restarts, or reprioritizes them, emitting `CONTROLLER_*` events. It makes no LLM calls.
 
-```
-"Review the progress of this requirement:
- Requirement: <original text>
- Stories and their status:
- - story-01: Add User model (complexity: 2, status: merged)
- - story-02: JWT utility (complexity: 3, status: in_progress)
- ...
- Assess whether stories are on track."
-```
+### Supervisor (Not Wired)
 
-Returns: `{on_track: bool, concerns: [...], reprioritize: [...]}`
+`internal/engine/supervisor.go` implements an LLM progress review that would emit `SUPERVISOR_CHECK` / `SUPERVISOR_DRIFT_DETECTED`. `NewSupervisor` has no callers and `nxd resume` passes `nil` to `NewController`, so **no drift detection runs today**.
 
-If drift is detected, emits `SUPERVISOR_DRIFT_DETECTED` event and can trigger reprioritization.
+## Post-Execution Pipeline
 
-## Code Review Pipeline
+When an agent finishes, `Monitor.postExecutionPipeline` runs these steps in order, bounded by `monitor.pipeline_timeout_s` (default 900s):
 
-When a story's implementation is complete:
+1. **Budget guard** — if `billing.budget_usd` is set and spent, pause the requirement.
+2. **Tidy the branch** — auto-commit leftover work, strip compiled binaries, scrub LLM preamble lines, reject unresolved conflict markers (reset to draft).
+3. **Build check** — non-blocking; a failure is only logged.
+4. **Diff** — an empty diff resets the story to draft (or pauses on an Ollama capacity error). The diff is mined into MemPalace.
+5. **Code review** — the Senior model reviews the diff against acceptance criteria and returns pass/fail with comments (`file`, `line`, `severity`, `comment`). A rejection resets the story to draft. With `qa.criteria_authoritative: true` and `qa.success_criteria` set, a rejection is recorded but advisory and the pipeline continues.
+6. **QA** — runs `qa.success_criteria` in the worktree. A failure emits `STORY_QA_FAILED` with the command output as retry feedback and resets the story to draft.
+7. **Security gate** — on by default (`security.disable_gate`, skipped in `--dry-run`). Scanners plus an LLM threat-model review over the changed files; a finding at or above `security.gate_severity` (default `critical`) pauses the requirement. Scanner errors are logged and do not block.
+8. **Merge** — with `merge.review_before_merge: true` the story stops at `STORY_MERGE_READY`. Otherwise it rebases onto the base branch (LLM conflict resolution with the Senior model when needed) and merges.
+9. **Cleanup** — after a successful merge the monitor removes the worktree, deletes the local branch, and deletes the remote branch.
+10. **Post-merge integration build** — when an LLM client is available, runs `go build ./...`, `cargo build`, or `npm run build` (detected from the repo) on the base branch. A failure emits `STORY_INTEGRATION_FAILED` and asks the Tech Lead model for a fix description, which is logged; it does not block.
 
-1. **Diff extraction** — `git diff main...<branch>` captures all changes
-2. **Senior review** — Diff sent to Senior LLM with acceptance criteria
-3. **Structured response** — Pass/fail with file-level comments and severity ratings
-4. **Event emission** — `STORY_REVIEW_PASSED` or `STORY_REVIEW_FAILED`
+When every story is done, the monitor generates README/docs updates, pulls the merged base branch, deletes dangling branches from unmerged stories, and runs the **completion gate** (on by default, `qa.disable_completion_gate`): it verifies build and tests on the composed mainline, runs up to `qa.completion_fix_cycles` (default 2) fix cycles, and emits `REQ_COMPLETED` only on green — otherwise `REQ_BLOCKED`.
 
-Review comments include:
-```json
-{
-  "file": "internal/auth/jwt.go",
-  "line": 42,
-  "severity": "major",
-  "comment": "Token expiry should be configurable, not hardcoded"
-}
-```
+### Story Status Along the Way
 
-If review fails, the story loops back to the implementing agent with feedback.
-
-## QA Pipeline
-
-After review passes, QA runs three checks in sequence:
-
-```
-1. LINT   -> golangci-lint run ./...  (or project-specific linter)
-2. BUILD  -> go build ./...           (or project-specific build)
-3. TEST   -> go test ./...            (or project-specific test)
-```
-
-All three must pass. If any fails:
-- `STORY_QA_FAILED` event emitted with details of which check failed
-- Story loops back for fixes
-- After `max_qa_failures_before_escalation` failures, escalates
+The projection maps events to statuses: `STORY_COMPLETED` → `review`, `STORY_REVIEW_PASSED` → `qa`, `STORY_QA_PASSED` → **`pr_submitted`**, `STORY_PR_CREATED` → `pr_submitted` (sets `pr_url`), `STORY_MERGED` → `merged`. `STORY_REVIEW_FAILED` and `STORY_QA_FAILED` send the story back to `draft`. A story therefore shows `pr_submitted` as soon as QA passes, before the security gate runs and before any PR or merge exists.
 
 ## Merge Strategy
 
 ### Local Mode (Default, Offline)
 
 ```
-1. git checkout main
-2. git merge --no-ff nxd/story-01 -m "Merge nxd/story-01 into main"
+1. Rebase the story worktree onto the base branch
+2. git merge --no-ff <story-branch> into the base branch
 3. Emit STORY_PR_CREATED (pr_url: "local://merged")
 4. Emit STORY_MERGED
 ```
 
-If conflicts: merge aborted, conflict file list returned, story escalated.
+`merge.base_branch` defaults to empty, which means the repo's real default branch (`main` or `master`) is detected.
 
 ### GitHub Mode
 
 ```
-1. git push origin nxd/story-01
+1. git push origin <story-branch>
 2. gh pr create --title "[NXD] Story title" --body "..."
-3. gh pr merge <number> (if auto_merge enabled)
+3. gh pr merge <number> --squash (if auto_merge enabled)
 4. Emit STORY_PR_CREATED, STORY_MERGED
 ```
 
-## Cleanup (Reaper)
+## Cleanup
 
-After merge, the Reaper performs tiered cleanup:
+Post-merge cleanup happens inside the monitor (see Post-Execution Pipeline, step 9) and emits no cleanup event. At the end of a requirement, dangling branches from stories that never merged are deleted when `cleanup.delete_dangling_branches` is true (default).
 
-| Phase | When | What |
-|-------|------|------|
-| Worktree prune | Immediately after merge | Delete `~/.nxd/worktrees/nxd-req-role-n/` |
-| Log archive | Immediately | Archive tmux session logs to `~/.nxd/logs/` |
-| Branch GC | On `nxd gc` | Delete `nxd/*` branches older than retention period |
+`nxd gc` is the only caller of the Reaper, and it only calls `Reaper.GarbageCollect`: it deletes branches of `merged` stories older than `cleanup.branch_retention_days` (measured from the story's creation time) and emits `BRANCH_DELETED` and `GC_COMPLETED`. `Reaper.Reap` — the per-story worktree prune that would emit `WORKTREE_PRUNED` — has no callers, and `cleanup.worktree_prune` and `cleanup.log_archive` are not read by the pipeline.
 
-`nxd gc --dry-run` previews without deleting. Retention days are configurable.
+`nxd gc --dry-run` previews without deleting.
 
-## Reputation Scoring
+## Reputation Scoring (Not Wired)
 
-Each agent builds a reputation score across assignments:
-
-```
-Overall = (Quality * 0.50) + (Reliability * 0.30) + (Speed * 0.20)
-```
-
-| Metric | What It Measures | Range |
-|--------|-----------------|-------|
-| Quality | Review pass rate, QA pass rate | 0.0 - 1.0 |
-| Reliability | Task completion rate, escalation frequency | 0.0 - 1.0 |
-| Speed | Relative to expected duration for complexity tier | 0.0 - 1.0 |
-
-Scores influence future routing — high-performing agents get prioritized for similar tasks.
+`internal/agent/scoring.go` defines `ComputeReputation` (quality 50%, reliability 30%, speed 20%), but nothing calls it and nothing writes the `agent_scores` table. Routing is influenced by the Bayesian priors instead.
 
 ## Data Flow Summary
 
 ```
-User: "Add auth"
-  -> REQ_SUBMITTED event
-  -> Planner.Plan() via Tech Lead LLM
-  -> STORY_CREATED events (x5)
-  -> REQ_PLANNED event
+nxd req "Add auth"
+  -> REQ_SUBMITTED
+  -> (existing repo) Investigator report
+  -> Planner via Tech Lead model -> STORY_CREATED (xN) -> REQ_PLANNED
+  -> exits; `nxd resume <req>` (or `nxd req --background`) continues
 
-Dispatcher.DispatchWave()
-  -> AGENT_SPAWNED events
-  -> STORY_ASSIGNED events
-  -> tmux sessions created with Aider
+nxd resume
+  Dispatcher.DispatchWave()  -> STORY_ASSIGNED
+  Executor.SpawnAll()        -> worktree per story, MemPalace search,
+                                native Gemma goroutine (default) or tmux CLI agent
+  Agent finishes             -> STORY_COMPLETED
+  Monitor pipeline           -> review -> QA -> security gate -> merge
+                                -> worktree/branch removal -> integration build
+  Monitor auto-resume        -> next wave
+  All stories done           -> docs -> completion gate -> REQ_COMPLETED | REQ_BLOCKED
 
-Watchdog.Check() every 10s
-  -> Permission bypass if needed
-  -> AGENT_STUCK if no progress
-
-Reviewer.Review()
-  -> STORY_REVIEW_PASSED or STORY_REVIEW_FAILED
-
-QA.Run()
-  -> STORY_QA_PASSED or STORY_QA_FAILED
-
-Merger.Merge()
-  -> STORY_PR_CREATED, STORY_MERGED
-
-Reaper.Reap()
-  -> WORKTREE_PRUNED, BRANCH_DELETED
-
-All events append to events.jsonl
-All events project to nxd.db
-TUI dashboard reads from nxd.db (2s refresh)
-Web dashboard reads from nxd.db, broadcasts over WebSocket (2s refresh)
+All events append to events.jsonl and project to nxd.db
+TUI dashboard reads nxd.db every 2s
+Web dashboard pushes events as they append + full snapshot every 5s
 ```

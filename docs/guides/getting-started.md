@@ -46,16 +46,18 @@ ollama serve
 
 This runs in the background on `http://localhost:11434`. Keep this terminal open or run it as a service.
 
-### 3. Pull the Recommended Models
+### 3. Pull Models
 
-NXD's recommended setup uses **two models from different families** so the reviewer's blind spots don't match the coder's:
+`nxd init` writes a config that uses `gemma4:e4b` for every role, so that one model is enough to run NXD:
 
 ```bash
-# Coder (junior/intermediate/supervisor roles) — ~6 GB
-ollama pull gemma4:e4b
+ollama pull gemma4:e4b   # ~6 GB — every role in the default config
+```
 
-# Reviewer + Planner (senior/tech_lead/QA roles) — ~19 GB
-ollama pull qwen3-coder
+NXD's recommended setup adds a reviewer from a **different model family** so the reviewer's blind spots don't match the coder's. Pull it, then set it as `models.senior` (and `models.tech_lead`) in `nxd.yaml`:
+
+```bash
+ollama pull qwen3-coder   # ~19 GB — senior (reviewer) + tech_lead (planner)
 ```
 
 > [!IMPORTANT]
@@ -70,7 +72,7 @@ ollama pull qwen2.5-coder:14b   # ~9 GB — reviewer/planner for 24 GB machines
 ollama pull gemma4:e4b           # ~6 GB — coder
 ```
 
-**16GB machine?** Run everything on one model and accept the same-model warning:
+**16GB machine?** Keep the default single-model config and accept the same-model notice:
 
 ```bash
 ollama pull gemma4:e4b   # Use for every role on 16 GB RAM
@@ -95,7 +97,7 @@ If you skip this step, the bridge degrades gracefully (`nxd doctor` will flag it
 
 ### 5. Install tmux
 
-NXD runs CLI-based agent sessions inside tmux for isolation and monitoring. The native Gemma runtime (recommended) doesn't need tmux — it runs as goroutines — but it's still a hard dependency for any non-Gemma runtime.
+NXD runs CLI-based agent sessions inside tmux for isolation and monitoring. The native Gemma runtime — the default for every coding role — runs as in-process goroutines instead. `nxd req` and `nxd resume` still require tmux on PATH whenever the config lists a non-native runtime, and the default config lists `aider`, `claude-code`, and `codex`.
 
 ```bash
 # macOS
@@ -229,9 +231,10 @@ workspace:
   state_dir: ~/.nxd-myproject   # one state dir PER project (NEVER share between repos)
 
 models:
-  senior: {provider: ollama, model: qwen3-coder:30b, max_tokens: 8000}   # 32GB+
-  # senior: {provider: ollama, model: qwen2.5-coder:14b, max_tokens: 8000}  # 24GB budget
-  junior: {provider: ollama, model: gemma4:e4b,      max_tokens: 4000}
+  senior: {provider: ollama, model: gemma4:e4b, max_tokens: 8000}           # default
+  # senior: {provider: ollama, model: qwen3-coder:30b, max_tokens: 8000}     # recommended override, 32GB+
+  # senior: {provider: ollama, model: qwen2.5-coder:14b, max_tokens: 8000}   # budget override, 24GB
+  junior: {provider: ollama, model: gemma4:e4b, max_tokens: 4000}
   # ... other roles
 ```
 
@@ -280,31 +283,39 @@ nxd req "Add user authentication with JWT tokens, login/register endpoints, and 
 
 NXD will:
 1. Emit a `REQ_SUBMITTED` event
-2. Call the Tech Lead model (`qwen3-coder:30b`) to decompose the requirement
-3. Create stories with Fibonacci complexity scores
-4. Build a dependency graph
-5. Print the plan
+2. In an existing codebase, classify the requirement and run the Investigator
+3. Call the Tech Lead model (`models.tech_lead`, `gemma4:e4b` by default) to decompose the requirement
+4. Create stories with Fibonacci complexity scores and a dependency graph
+5. Print the plan and exit
 
-Example output:
+Example output (abridged):
 
 ```
-Requirement submitted: req-01HZ...
-Planning with Tech Lead (qwen3-coder:30b)...
+Planning requirement: Add user authentication with JWT tokens, login/register endpoints, and password hashing
+Requirement ID: <req-id>
 
-Stories created:
-  [1] story-01 | Add User model with password hashing      | Complexity: 2 | Deps: none
-  [2] story-02 | Create JWT token generation utility        | Complexity: 3 | Deps: none
-  [3] story-03 | Implement register endpoint                | Complexity: 3 | Deps: story-01
-  [4] story-04 | Implement login endpoint with JWT response | Complexity: 5 | Deps: story-01, story-02
-  [5] story-05 | Add auth middleware for protected routes   | Complexity: 3 | Deps: story-02
+Detected: greenfield project (...)
+Plan created with 7 stories:
 
-Dependency waves:
-  Wave 1: story-01, story-02 (parallel)
-  Wave 2: story-03, story-05 (parallel, after wave 1)
-  Wave 3: story-04 (after wave 2)
+  1. [story-01] Add User model with password hashing (complexity: 2, deps: none)
+  2. [story-02] Create JWT token generation utility (complexity: 3, deps: none)
+  3. [story-03] Implement register endpoint (complexity: 3, deps: [story-01])
+  ...
 
-Run 'nxd status --req req-01HZ...' to track progress.
+Total complexity: 21 story points
+Run 'nxd status --req <req-id>' to track progress.
+Run 'nxd resume <req-id>' to dispatch agents.
 ```
+
+By default the planner also appends an integration story and a documentation story (`planning.emit_integration_story`, `planning.emit_scribe_story`).
+
+`nxd req` stops after planning. Dispatch the agents with:
+
+```bash
+nxd resume <req-id>
+```
+
+Or submit with `nxd req --background "..."` to plan and then run `nxd resume` as a detached daemon (tail it with `nxd req-logs <req-id>`).
 
 ### Step 3: Monitor Progress
 
@@ -368,20 +379,24 @@ nxd gc
 
 ## What Happens Behind the Scenes
 
-When you run `nxd req`, the following pipeline executes:
+`nxd req` covers intake and planning; `nxd resume` (or the `--background` daemon) runs the rest:
 
 ```
 1. INTAKE       Your requirement text -> REQ_SUBMITTED event
 2. PLANNING     Tech Lead LLM decomposes -> stories + dependency DAG
 3. DISPATCH     Topo sort -> wave 1 stories assigned to agents
-4. EXECUTION    Each agent gets: tmux session + git worktree + Aider
+4. EXECUTION    Each agent gets a git worktree and runs in the native Gemma
+                runtime (default) or a tmux-hosted CLI agent
 5. REVIEW       Senior LLM reviews the git diff
-6. QA           Lint -> Build -> Test (local shell commands)
-7. MERGE        Local git merge into base branch (or GitHub PR)
-8. CLEANUP      Delete worktree, archive logs, defer branch GC
+6. QA           qa.success_criteria commands (build / vet / test)
+7. SECURITY     Scanners + LLM review; critical findings pause the requirement
+8. MERGE        Local git merge into base branch (or GitHub PR)
+9. CLEANUP      Remove the worktree and the story's local + remote branch
+10. COMPLETE    After the last story: verify build + tests on the merged
+                mainline, then REQ_COMPLETED (or REQ_BLOCKED)
 ```
 
-Waves repeat until all stories are merged. If an agent gets stuck, the Watchdog detects it (via screen fingerprinting) and escalates.
+Waves repeat until all stories are merged. A story that keeps failing climbs the escalation ladder and eventually pauses the requirement — see [Architecture](architecture.md).
 
 ## Generating the Demo GIF (optional)
 

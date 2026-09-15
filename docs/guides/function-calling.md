@@ -13,7 +13,7 @@ NXD uses function calling to get structured outputs from LLMs instead of parsing
 
 Native tool calling: Gemma 4 (all variants) via Ollama, Anthropic (Claude), OpenAI (GPT), Google AI.
 
-For other models (DeepSeek, Qwen, CodeLlama) via Ollama: schemas are injected into the system prompt and JSON is parsed from text output. This is the path the **`qwen3-coder:30b` reviewer takes** (and the budget `qwen2.5-coder:14b` alternative), and is fully supported — not a legacy/degraded mode. JSON parsing has been hardened with markdown-fence stripping and per-field validation (see `ParseToolCallsFromText` in `internal/llm/tool_compat.go`).
+For other models (DeepSeek, Qwen, CodeLlama) via Ollama: schemas are injected into the system prompt and JSON is parsed from text output. This is the path a qwen reviewer takes when you configure one (`qwen3-coder:30b`, or the budget `qwen2.5-coder:14b`), and is fully supported — not a legacy/degraded mode. JSON parsing has been hardened with markdown-fence stripping and per-field validation (see `ParseToolCallsFromText` in `internal/llm/tool_compat.go`).
 
 ## Tool Definitions by Role
 
@@ -39,12 +39,16 @@ Example:
 
 ### Supervisor
 
+Not called today: the supervisor is never constructed (`NewSupervisor` has no callers).
+
 | Tool | Description |
 |------|-------------|
 | `report_drift` | Report scope_creep/stuck/quality_regression/dependency_blocked with severity and recommendation |
 | `reprioritize` | Move story to different execution wave |
 
 ### Manager
+
+Not called by `nxd resume` today: the monitor's Manager is not attached, so tier-2 stories are re-dispatched to Senior (see the Escalation Ladder section of [Architecture](architecture.md)).
 
 | Tool | Description |
 |------|-------------|
@@ -59,7 +63,11 @@ Example:
 | `write_file(path, content)` | Create or overwrite file |
 | `edit_file(path, old_text, new_text)` | Surgical text replacement |
 | `run_command(command)` | Execute allowlisted shell command |
-| `task_complete(summary, files_changed[])` | Signal work done |
+| `task_complete(summary)` | Signal work done; accepted only after `qa.success_criteria` pass |
+| `write_scratchboard(category, content)` | Share a discovery with other agents on the same requirement |
+| `read_scratchboard(category?)` | Read shared discoveries, optionally filtered by category |
+
+If a model writes tool calls as plain JSON objects (`{"name": ..., "arguments": ...}`) in its reply text instead of structured `tool_calls`, the native runtime extracts and executes them (`extractInlineToolCalls` in `internal/runtime/inline_tools.go`).
 
 ## Validation and Retry
 

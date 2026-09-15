@@ -1,9 +1,9 @@
 # Gemma 4 Guide
 
-NXD uses Google's Gemma 4 family as the **coder** in its default two-model split. This guide covers setup, hardware tuning, and how Gemma fits into the recommended workflow.
+NXD uses Google's Gemma 4 family for every role in its shipped default, and as the **coder** in the recommended two-model split. This guide covers setup, hardware tuning, and how Gemma fits into the recommended workflow.
 
 > [!IMPORTANT]
-> **Gemma 4 is the coder, not the reviewer.** NXD's recommended setup pairs `gemma4:e4b` (junior/intermediate) with `qwen3-coder:30b` (senior/QA reviewer) — different model families catch different bugs. On 24GB machines, use `qwen2.5-coder:14b` as the budget reviewer alternative. See [Model Selection](model-selection.md) for the full rationale.
+> **Gemma 4 is the default for every role; the recommended setup uses it as the coder only.** `nxd init` writes `gemma4:e4b` for all roles. The recommended override pairs `gemma4:e4b` (junior/intermediate) with `qwen3-coder:30b` (senior reviewer and tech lead) — different model families catch different bugs. On 24GB machines, use `qwen2.5-coder:14b` as the budget reviewer alternative. See [Model Selection](model-selection.md) for the full rationale.
 
 ## Why Gemma 4 (as the coder)
 
@@ -18,14 +18,15 @@ NXD uses Google's Gemma 4 family as the **coder** in its default two-model split
 
 ```bash
 # 1. Pull both models — reviewer + coder
-ollama pull qwen3-coder          # senior / QA reviewer (~19GB, 262K context)
-ollama pull gemma4:e4b           # junior / intermediate coder (~6GB)
+ollama pull qwen3-coder          # reviewer for models.senior (~19GB, 262K context)
+ollama pull gemma4:e4b           # coder (~6GB)
 
-# 2. Initialize NXD (writes the recommended split into nxd.yaml)
+# 2. Initialize NXD. This writes gemma4:e4b for every role; set
+#    models.senior and models.tech_lead to qwen3-coder:30b for the split.
 nxd init
 
-# 3. Submit your first requirement
-nxd req "Build a REST API for user management with CRUD endpoints"
+# 3. Submit your first requirement (plans, then runs nxd resume as a daemon)
+nxd req --background "Build a REST API for user management with CRUD endpoints"
 
 # 4. Monitor progress
 nxd status
@@ -34,7 +35,7 @@ nxd dashboard
 
 ## Single-Model Gemma (16GB RAM laptop)
 
-If you don't have VRAM for two models, use `gemma4:e4b` for everything. NXD will print a `same-model review` warning at startup — that's expected:
+If you don't have VRAM for two models, use `gemma4:e4b` for everything — this is what `nxd init` writes. NXD will print a `same-model review` warning at startup — that's expected:
 
 ```yaml
 models:
@@ -85,7 +86,7 @@ For non-Gemma models, NXD falls back to text-based JSON parsing automatically. S
 
 ## Native Runtime Loop
 
-The native Gemma runtime runs as an in-process goroutine that drives a tool-call loop against Ollama. Each iteration: prompt → LLM call → parse tool call → execute → feed result back. When the agent claims `task_complete`, NXD runs the configured criteria gate (build / vet / test) **before** accepting the completion — if anything fails, the failure is fed back and the agent self-corrects up to the rejection budget.
+The native Gemma runtime runs as an in-process goroutine that drives a tool-call loop against Ollama. Each iteration: prompt → LLM call → parse tool call → execute → feed result back. The runtime exposes seven tools (`read_file`, `write_file`, `edit_file`, `run_command`, `task_complete`, `write_scratchboard`, `read_scratchboard`) and also executes tool calls a model writes as plain JSON in its reply text. When the agent claims `task_complete`, NXD runs the configured criteria gate (build / vet / test) **before** accepting the completion — if anything fails, the failure is fed back and the agent self-corrects up to the rejection budget.
 
 ![Native Gemma runtime tool-call loop](../diagrams/native-runtime-loop.svg)
 

@@ -1,12 +1,12 @@
 # Migration Guide: v0 to v1 (two-model split)
 
-NXD's recommended setup is a **two-model split**: `qwen3-coder:30b` for reviewer/planner roles (32GB+ machines; budget: `qwen2.5-coder:14b` on 24GB) and `gemma4:e4b` for coder roles. This guide covers upgrading from earlier single-model defaults (DeepSeek, single-Qwen, or all-Gemma).
+NXD's recommended setup is a **two-model split**: `qwen3-coder:30b` for reviewer/planner roles (32GB+ machines; budget: `qwen2.5-coder:14b` on 24GB) and `gemma4:e4b` for coder roles. The shipped default that `nxd init` writes is still single-model (`gemma4:e4b` for every role), so the split is something you opt into. This guide covers upgrading from earlier single-model defaults (DeepSeek, single-Qwen, or all-Gemma).
 
 ## What Changed
 
 | Aspect          | Before (v0)                                | Now                                                              |
 |-----------------|--------------------------------------------|--------------------------------------------------------------------|
-| Default models  | DeepSeek / single Qwen / all-Gemma         | `qwen3-coder:30b` (reviewer) + `gemma4:e4b` (coder)              |
+| Default models  | DeepSeek / single Qwen / all-Gemma         | `gemma4:e4b` for every role; recommended override `qwen3-coder:30b` (reviewer) + `gemma4:e4b` (coder) |
 | Schema version  | No `version` field                         | `version: "1.0"` (pinned; older configs run in compat mode)|
 | Output format   | Free-text JSON parsing                     | Native function calling on Gemma side                      |
 | Coding runtime  | Aider only                                 | Aider + native `gemma` runtime (criteria-gated completion) |
