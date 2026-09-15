@@ -102,10 +102,17 @@ func TestRunInit_SkipsExistingConfig(t *testing.T) {
 }
 
 // chdirTemp switches into a fresh temp dir (restored on cleanup) with HOME
-// pointed at it so init never touches the real ~/.nxd.
+// pointed at it so init never touches the real ~/.nxd. The returned path is
+// symlink-resolved: on macOS t.TempDir() lives under /var/folders (a symlink
+// to /private/var/folders) while os.Getwd() inside init reports the resolved
+// path — comparing the two spellings makes path assertions fail on macOS
+// only.
 func chdirTemp(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	orig, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)

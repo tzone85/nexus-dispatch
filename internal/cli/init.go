@@ -143,7 +143,20 @@ func initStateDir(cfgPath, cwd string, localState bool) (string, string) {
 		}
 	}
 	mode := "shared"
-	if rel, err := filepath.Rel(cwd, dir); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel) {
+	// Compare symlink-resolved spellings: on macOS os.Getwd() reports
+	// /private/var/... while a config or flag may say /var/... (a symlink
+	// to it) — Rel across the two spellings would misclassify an
+	// inside-repo directory as shared. Resolved forms are only used when
+	// BOTH paths resolve; the state dir may not exist yet, and resolving
+	// just one side would reintroduce the very mismatch this guards
+	// against.
+	relBase, relDir := cwd, dir
+	if rb, err := filepath.EvalSymlinks(cwd); err == nil {
+		if rd, err := filepath.EvalSymlinks(dir); err == nil {
+			relBase, relDir = rb, rd
+		}
+	}
+	if rel, err := filepath.Rel(relBase, relDir); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel) {
 		mode = "local"
 	}
 	return dir, mode
