@@ -5,7 +5,7 @@ title: |md
 | {near: top-center; style.font-size: 22; style.bold: true}
 
 subtitle: |md
-  Different model families = different blind spots = real review
+  Recommended override. The shipped default uses gemma4:e4b for every role.
 | {near: top-center; style.font-size: 13}
 
 reviewer_side: Reviewer Side\n(qwen3-coder:30b) {
@@ -14,8 +14,7 @@ reviewer_side: Reviewer Side\n(qwen3-coder:30b) {
   style.stroke-width: 2
 
   tech_lead: Tech Lead\n(planning, decomposition)
-  senior: Senior\n(code review)
-  qa: QA\n(failure analysis)
+  senior: Senior\n(code review, escalations)
 }
 
 coder_side: Coder Side\n(gemma4:e4b) {
@@ -25,7 +24,6 @@ coder_side: Coder Side\n(gemma4:e4b) {
 
   junior: Junior\n(complexity 1-3)
   intermediate: Intermediate\n(complexity 4-5)
-  supervisor: Supervisor\n(drift detection)
 }
 
 shared: Shared Constraints {

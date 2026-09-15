@@ -101,24 +101,29 @@ When using `google+ollama`, NXD sends requests to Google AI first. If the free t
 
 The `google_model` field specifies the model name for Google AI API calls (e.g., `gemma-4-26b-a4b-it`). This is separate from the `model` field, which is the Ollama tag.
 
-> **Authentication note:** These API keys are used for NXD's **internal operations** only -- planning, code review, and QA. They are **not** passed to spawned coding agents. If you use Claude Code as a runtime, it authenticates via its own OAuth session (your Max/Pro subscription via `claude login`), so spawned agents incur no additional API cost. The API key is only consumed by the lightweight internal LLM calls (a few per story per stage).
+> **Authentication note:** These API keys are used for NXD's **internal operations** only -- planning, code review, security review, and merge-conflict resolution. They are **not** passed to spawned coding agents. If you use Claude Code as a runtime, it authenticates via its own OAuth session (your Max/Pro subscription via `claude login`), so spawned agents incur no additional API cost. The API key is only consumed by the lightweight internal LLM calls (a few per story per stage).
 
 You can mix providers -- for example, use Ollama for juniors and Google AI for the Tech Lead.
 
 > [!IMPORTANT]
 > **Use different model families for `senior` and `junior`.** When the same model writes and reviews code, the reviewer shares the coder's hallucinations and confidence patterns. NXD logs a `WARNING` at config-load time when `models.senior.model == models.junior.model` (or `== intermediate.model`).
 >
-> Recommended split: `qwen3-coder:30b` for `senior`/`tech_lead`/`qa` (32GB+ machines), `gemma4:e4b` for `junior`/`intermediate`/`supervisor`. Budget alternative on 24GB: `qwen2.5-coder:14b` + `gemma4:e4b`. See [Model Selection](model-selection.md) for the full rationale + GPU-swap trade-off.
+> The shipped default (`DefaultConfig`, which `nxd init` writes) sets every role to `gemma4:e4b` on Ollama, so a fresh config prints this notice. Recommended override: `qwen3-coder:30b` for `senior` and `tech_lead` (32GB+ machines), `gemma4:e4b` for `junior`/`intermediate`. Budget alternative on 24GB: `qwen2.5-coder:14b` + `gemma4:e4b`. See [Model Selection](model-selection.md) for the full rationale + GPU-swap trade-off.
+>
+> `models.qa`, `models.supervisor`, and `models.manager` are accepted but not read by the running pipeline: QA runs `qa.success_criteria` commands, and neither the supervisor nor the manager is wired into `nxd resume` (see [Architecture](architecture.md)).
 
 ### memory (MemPalace)
 
-NXD's offline-first semantic memory layer. Used by the planner + reviewer to recall prior diffs, QA failures, and review feedback when handling related work.
+NXD's offline-first semantic memory layer. The monitor mines story diffs, review verdicts, and QA failures into it; the executor searches it for related prior work when building an agent's prompt. The planner and reviewer do not query it.
 
 ```yaml
 memory:
-  enabled: true                                 # default false; flip on after `pip install -r requirements.txt`
-  palace_path: ~/.mempalace                     # optional override; defaults to $HOME/.mempalace
+  enabled: true                                 # default true; accepted but not read today
+  palace_path: ~/.mempalace                     # accepted but not read today
 ```
+
+> [!NOTE]
+> Neither key is consulted yet: `nxd resume` always constructs the MemPalace bridge and uses it whenever the bridge reports MemPalace is available, and skips it otherwise.
 
 > [!IMPORTANT]
 > **Offline-first guarantee.** MemPalace ships with the ChromaDB local backend pinned at `mempalace==2.0.0` — zero API calls, all embeddings computed locally. Enabling it does NOT introduce any network traffic. The Python bridge lives at `scripts/mempalace_bridge.py` and is wrapped by `internal/memory/mempalace.go`.
@@ -147,8 +152,10 @@ Controls how stories are assigned to agent tiers based on Fibonacci complexity s
 routing:
   junior_max_complexity: 3              # Stories 1-3 go to Junior
   intermediate_max_complexity: 5        # Stories 4-5 go to Intermediate
-  max_retries_before_escalation: 2      # Retry count before escalating
-  max_qa_failures_before_escalation: 3  # QA fails before escalating
+  max_retries_before_escalation: 2      # Failed attempts at tier 0 (same role) before escalating
+  max_senior_retries: 2                 # Failed attempts at tier 1 (Senior)
+  max_manager_attempts: 2               # Tier 2 budget (Manager diagnosis; see Architecture for wiring)
+  max_qa_failures_before_escalation: 3  # Accepted but not read; QA failures count against the tier budgets
 ```
 
 **Complexity scoring (Fibonacci):**
@@ -160,13 +167,13 @@ routing:
 | 3 | Junior | Create a basic CRUD endpoint |
 | 5 | Intermediate | Implement a service with validation |
 | 8 | Senior | Design a new subsystem |
-| 13 | Senior (decompose first) | Major architectural change |
+| 13 | Senior | Major architectural change |
 
-Stories scored 9-13 are automatically decomposed further by the Senior before assignment.
+The planner rejects any story scored above `planning.max_story_complexity` (default 5), so with defaults stories are planned at 5 or below and Senior receives work through escalation. The escalation ladder is described in [Architecture](architecture.md).
 
 ### monitor
 
-Controls the Watchdog and Supervisor monitoring loops.
+Controls the monitor poll loop and the Watchdog for tmux-hosted agents.
 
 ```yaml
 monitor:
@@ -179,7 +186,7 @@ monitor:
 1. Watchdog captures the last 30 lines of each tmux pane
 2. Computes a SHA-256 fingerprint of the output
 3. If the fingerprint hasn't changed after `stuck_threshold_s`, the agent is flagged as stuck
-4. Stuck agents are escalated (Junior -> Senior -> Tech Lead -> Human)
+4. The Watchdog emits `AGENT_STUCK`. The event is informational; the monitor does not escalate on it. Native Gemma agents are not fingerprinted — `max_iterations` and a per-iteration LLM deadline bound them instead.
 
 **Watchdog also auto-handles:**
 - Permission prompts (`[Y/n]`) — auto-approves with "Y"
@@ -187,7 +194,7 @@ monitor:
 
 ### controller
 
-The **active controller** is an opt-in supervisor loop that detects stuck stories and corrects them (cancel / restart / escalate tier). Disabled by default — turn on for unattended long runs.
+The **active controller** is an opt-in deterministic loop (no LLM calls) that detects stuck stories and corrects them (cancel / restart / escalate tier). Disabled by default — turn on for unattended long runs.
 
 ```yaml
 controller:
@@ -217,19 +224,18 @@ No YAML config; on by default. Wipe a requirement's scratchboard by deleting its
 
 ### cleanup
 
-Controls post-merge cleanup behavior.
-
 ```yaml
 cleanup:
-  worktree_prune: immediate     # "immediate" (delete after merge) or "deferred"
-  branch_retention_days: 7      # Days to keep merged branches (0 = delete immediately)
-  log_archive: file             # "file", "dolt", or "none"
+  delete_dangling_branches: true  # At requirement end, delete branches (and open PRs) of stories that never merged
+  branch_retention_days: 7        # `nxd gc` deletes branches of merged stories older than this
+  worktree_prune: immediate       # Accepted but not read by the pipeline
+  log_archive: file               # Accepted but not read by the pipeline
 ```
 
-**Cleanup timeline:**
-1. **Immediate:** Worktree deleted right after merge
-2. **Deferred:** Worktree kept until `nxd gc` runs
-3. **Branch GC:** `nxd gc` deletes branches older than `branch_retention_days`
+**What actually happens:**
+1. **After each merge:** the monitor removes the story's worktree and deletes its local and remote branch, whatever `worktree_prune` says. No `WORKTREE_PRUNED` event is emitted.
+2. **At requirement end:** branches from stories that never merged are deleted when `delete_dangling_branches` is true.
+3. **`nxd gc`:** deletes branches of `merged` stories created more than `branch_retention_days` ago, emitting `BRANCH_DELETED` and `GC_COMPLETED`. With `branch_retention_days: 0` it deletes nothing.
 
 ### updates
 
@@ -297,9 +303,30 @@ notifications:
 
 NXD runs unattended for long stretches; notifications tell you the moment a run finishes or needs you. By default it fires on `REQ_COMPLETED`, `REQ_BLOCKED`, `REQ_PAUSED`, `HUMAN_REVIEW_NEEDED`, `STORY_SECURITY_FAILED`, `REQ_BUDGET_WARNING`, and `REQ_BUDGET_EXCEEDED`. Delivery is asynchronous and best-effort: a slow or failing endpoint is logged and dropped, never blocking the pipeline. The `slack` format also works with Discord's `/slack` webhook endpoint.
 
+### qa and security gates
+
+```yaml
+qa:
+  success_criteria:                # checked before the native runtime accepts task_complete, and again in the QA stage
+    - kind: command_succeeds
+      value: go build ./...
+  criteria_authoritative: false    # true: a reviewer rejection is advisory when success_criteria are set
+  disable_completion_gate: false   # false = verify the merged mainline before REQ_COMPLETED
+  completion_fix_cycles: 0         # 0 = default of 2 fix cycles; negative = verify once, no fixes
+
+security:
+  disable_gate: false              # false = per-story security gate runs after QA, before merge
+  gate_severity: critical          # findings at or above this pause the requirement
+  gate_scope: changed              # "changed" (default) = only the story's files; "repo" = whole worktree
+  llm_findings_block: false        # false = LLM-only findings are advisory
+  auto_learn: true                 # learn knowledge-base rules from confirmed findings
+```
+
+Both gates are skipped under `--dry-run`. Where each one sits in the pipeline is covered in the Post-Execution Pipeline section of [Architecture](architecture.md).
+
 ### runtimes
 
-Defines CLI tools that agents use to write code. NXD spawns each in a tmux session.
+Defines the runtimes coding agents (Junior, Intermediate, Senior) run on. Native runtimes run in-process; CLI runtimes are spawned in tmux sessions.
 
 ```yaml
 runtimes:
@@ -321,7 +348,7 @@ runtimes:
       permission_pattern: "\\[Y/n\\]"          # Regex: agent is asking for permission
 ```
 
-**Native runtime (`gemma`):** Built into NXD, requires no external dependencies. Auto-selects for Gemma 4 models. Uses function calling for structured code edits. The `command_allowlist` restricts which shell commands the runtime can execute for safety. The `max_iterations` field limits edit-test cycles to prevent runaway loops.
+**Native runtime (`gemma`):** Built into NXD, requires no external dependencies. Selected whenever a role's model name starts with an entry in its `models` list, so with the default config (`gemma4:e4b` everywhere) every coding agent uses it. For other models the provider picks a CLI runtime whose binary is on PATH (`ollama` → `aider`, `anthropic` → `claude-code`, `openai` → `codex`), falling back to the native runtime. `nxd req` and `nxd resume` require tmux whenever any non-native runtime is listed, which the default config does. Uses function calling for structured code edits. The `command_allowlist` restricts which shell commands the runtime can execute for safety. The `max_iterations` field limits edit-test cycles to prevent runaway loops.
 
 **Detection patterns** are compiled as Go regexps and matched against the last 30 lines of tmux pane output. The Watchdog uses these to determine agent status.
 
@@ -332,7 +359,7 @@ Just add another block to `runtimes:` with the command, args, and detection patt
 
 ### Recommended (32GB+ RAM, offline, two-model split)
 
-The default for 32GB+ machines. `qwen3-coder:30b` reviews (262K context, SWE-bench 51.6%), `gemma4:e4b` writes — different model families, different blind spots.
+Recommended for 32GB+ machines (not the shipped default — `nxd init` writes `gemma4:e4b` for every role). `qwen3-coder:30b` plans and reviews (262K context, SWE-bench 51.6%), `gemma4:e4b` writes — different model families, different blind spots.
 
 ```yaml
 version: "1.0"
@@ -367,7 +394,7 @@ models:
 
 ### Minimal (16GB RAM laptop, or single-model)
 
-Single-family setup for low-RAM laptops or quick experiments. NXD will log a `WARNING` at startup about reviewer/coder overlap — this is expected for this config.
+Single-family setup for low-RAM laptops or quick experiments. NXD will log a `WARNING` at startup about reviewer/coder overlap — this is expected for this config, which matches the shipped default.
 
 ```yaml
 models:

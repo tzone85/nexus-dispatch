@@ -33,18 +33,19 @@ sudo systemctl start ollama
 # Check what models you have
 ollama list
 
-# Pull both default models (recommended split, 32GB+)
-ollama pull qwen3-coder         # reviewer / senior / tech_lead (~19GB)
-ollama pull gemma4:e4b          # coder / junior (~6GB)
-# Budget alternative for 24GB machines:
-# ollama pull qwen2.5-coder:14b && ollama pull gemma4:e4b
+# Default config (nxd init): gemma4:e4b for every role
+ollama pull gemma4:e4b          # ~6GB
+# The recommended split adds a reviewer (32GB+):
+ollama pull qwen3-coder         # models.senior / models.tech_lead (~19GB)
+# Budget reviewer for 24GB machines:
+# ollama pull qwen2.5-coder:14b
 ```
 
 **Tip:** Model names in `nxd.yaml` must exactly match Ollama tags. Use `ollama list` to see exact names.
 
 ### "same-model review reduces hallucination detection" warning
 
-**Cause:** `models.senior.model` matches `models.junior.model` or `models.intermediate.model` — the reviewer and coder are the same model, so the reviewer shares the coder's blind spots.
+**Cause:** `models.senior.model` matches `models.junior.model` or `models.intermediate.model` — the reviewer and coder are the same model, so the reviewer shares the coder's blind spots. The shipped default sets every role to `gemma4:e4b`, so a fresh `nxd init` config prints this.
 
 **Symptoms:** at startup:
 ```
@@ -329,7 +330,7 @@ Only add commands you trust -- this allowlist is a safety boundary preventing ar
    nxd events --type STORY_QA_FAILED --limit 5
    ```
 
-2. The story automatically loops back to the agent for fixes. If it keeps failing, it escalates after `max_qa_failures_before_escalation` attempts.
+2. The story goes back to draft with the failing command output as feedback and is re-dispatched. Each failure counts against the escalation tier budgets (`routing.max_retries_before_escalation`, then `routing.max_senior_retries`); `max_qa_failures_before_escalation` is not read.
 
 3. Adjust QA commands if they're project-specific — NXD detects common build tools, but you may need custom commands for your project.
 

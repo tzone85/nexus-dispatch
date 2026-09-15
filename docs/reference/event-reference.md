@@ -1,6 +1,6 @@
 # NXD Event Reference
 
-Every action in NXD produces an immutable event. NXD currently emits **65 event types**. The detailed entries below cover the core requirement → planning → dispatch → review → QA → security → merge pipeline. The remaining types — added across 2026-04 → 2026-06 for the controller, devdb lifecycle, conflict resolver, integration build, and stage timing — are summarised in the *Additional events* section at the bottom of this page. The canonical list of strings lives in `internal/state/events.go`; the test `internal/config/example_gen_test.go` guards the generated example config from drifting, and a future generator can do the same for this page.
+Every action in NXD produces an immutable event. `internal/state/events.go` defines **65 event types**; a few are defined but not emitted by the running pipeline (noted below), and the monitor also emits one raw string, `PIPELINE_STALLED`. The detailed entries below cover the core requirement → planning → dispatch → review → QA → security → merge pipeline. The remaining types — added across 2026-04 → 2026-06 for the controller, devdb lifecycle, conflict resolver, integration build, and stage timing — are summarised in the *Additional events* section at the bottom of this page. The canonical list of strings lives in `internal/state/events.go`; the test `internal/config/example_gen_test.go` guards the generated example config from drifting, and a future generator can do the same for this page.
 
 ## Event Structure
 
@@ -127,7 +127,7 @@ Every action in NXD produces an immutable event. NXD currently emits **65 event 
 ### STORY_COMPLETED
 **When:** Agent finishes implementation
 **Payload:** `{ "files_changed": 3, "lines_added": 120 }`
-**Projection:** Updates story status to "completed"
+**Projection:** Updates story status to "review"
 
 ### STORY_REVIEW_REQUESTED
 **When:** Story submitted for Senior code review
@@ -144,7 +144,7 @@ Every action in NXD produces an immutable event. NXD currently emits **65 event 
   "summary": "Clean implementation, minor suggestions"
 }
 ```
-**Projection:** Updates story status to "review_passed"
+**Projection:** Updates story status to "qa"
 
 ### STORY_REVIEW_FAILED
 **When:** Reviewer requests changes
@@ -156,7 +156,7 @@ Every action in NXD produces an immutable event. NXD currently emits **65 event 
   "summary": "Missing error handling in auth middleware"
 }
 ```
-**Projection:** Updates story status to "review_failed" (loops back to agent)
+**Projection:** Updates story status to "draft" (re-dispatched; counts against the escalation tier budget)
 
 ### STORY_QA_STARTED
 **When:** QA pipeline begins
@@ -164,12 +164,12 @@ Every action in NXD produces an immutable event. NXD currently emits **65 event 
 **Projection:** Updates story status to "qa"
 
 ### STORY_QA_PASSED
-**When:** All QA checks pass (lint + build + test)
+**When:** All QA checks pass (configured lint/build/test commands plus `qa.success_criteria`)
 **Payload:**
 ```json
 { "passed": true, "total_checks": 3, "failed_checks": [] }
 ```
-**Projection:** Updates story status to "qa_passed"
+**Projection:** Updates story status to "pr_submitted" — before the security gate runs and before any merge or PR exists
 
 ### STORY_QA_FAILED
 **When:** One or more QA checks fail
@@ -177,7 +177,7 @@ Every action in NXD produces an immutable event. NXD currently emits **65 event 
 ```json
 { "passed": false, "total_checks": 3, "failed_checks": ["test"] }
 ```
-**Projection:** Updates story status to "qa_failed" (loops back to agent)
+**Projection:** Updates story status to "draft" (re-dispatched with the failing output as feedback)
 
 ### STORY_PR_CREATED
 **When:** Merger creates a PR or performs local merge
@@ -201,10 +201,7 @@ In local mode: `{ "pr_number": 0, "pr_url": "local://merged", "merged_sha": "abc
 ```json
 {
   "role": "junior",
-  "model": "qwen2.5-coder:7b",
-  "runtime": "aider",
-  "session_name": "nxd-req01-junior-1",
-  "story_id": "story-01"
+  "session_name": "nxd-req01-junior-1"
 }
 ```
 **Projection:** Creates row in `agents` table
@@ -231,16 +228,17 @@ In local mode: `{ "pr_number": 0, "pr_url": "local://merged", "merged_sha": "abc
 ## Escalation Events
 
 ### STORY_ESCALATED
-**When:** A story is bumped to a higher tier — the monitor after repeated failures, the dispatcher on wave assignment, or the active controller on a stuck agent
-**Producer:** Monitor / Dispatcher / Controller
+**When:** A story is bumped to a higher tier — the monitor when a tier's retry budget is spent, the Manager on a retry decision, or the active controller when reprioritizing a stuck story
+**Producer:** Monitor / Manager / Controller
 **Payload:**
 ```json
 {
-  "from_tier": "junior",
-  "to_tier": "intermediate",
-  "reason": "Agent stuck after 2 retries"
+  "from_tier": 0,
+  "to_tier": 1,
+  "reason": "review rejected: missing error handling"
 }
 ```
+Tiers are integers: 0 same role, 1 Senior, 2 Manager diagnosis, 3 Tech Lead re-plan, 4 requirement paused. `nxd resume` does not attach the Manager or Planner, so tiers 2 and 3 are currently re-dispatched to Senior.
 **Projection:** Story reassigned at the higher tier; resolution is observable through the story's subsequent lifecycle events (`STORY_ASSIGNED` → … → `STORY_MERGED`)
 
 ## Security Gate Events
@@ -268,6 +266,8 @@ In local mode: `{ "pr_number": 0, "pr_url": "local://merged", "merged_sha": "abc
 **Payload:** `{ "rule": "kb-014", "title": "Unparameterised SQL in repository layer" }`
 
 ## Supervisor Events
+
+Defined but not emitted: the supervisor is never constructed (`NewSupervisor` has no callers).
 
 ### SUPERVISOR_CHECK
 **When:** Periodic progress review shows everything on track
@@ -308,26 +308,32 @@ The `status` field may be `kept` instead of `deleted` if `devdb.on_failure.keep_
 ## Cleanup Events
 
 ### WORKTREE_PRUNED
-**When:** Reaper deletes a worktree after merge
+**When:** `Reaper.Reap` prunes a worktree. Nothing calls `Reap` today, so this event is not emitted; the monitor removes worktrees after merge without an event.
 **Payload:** `{ "worktree_path": "~/.nxd/worktrees/...", "mode": "immediate" }`
 
 ### BRANCH_DELETED
-**When:** Reaper deletes a merged branch
-**Payload:** `{ "branch": "nxd/story-01" }`
+**When:** `nxd gc` deletes the branch of a merged story older than `cleanup.branch_retention_days`
+**Payload:** `{ "branch": "nxd/story-01", "reason": "gc_retention_expired" }`
 
 ### GC_COMPLETED
-**When:** Garbage collection finishes
+**When:** `nxd gc` deleted at least one branch
 **Payload:** `{ "branches_deleted": 3 }`
 
 ## Story Status State Machine
 
 ```
-draft -> estimated -> assigned -> in_progress
-    -> completed -> review -> review_passed -> qa
-    -> qa_passed -> pr_submitted -> merged
+draft -> (estimated) -> assigned -> in_progress
+    -> review          STORY_COMPLETED / STORY_REVIEW_REQUESTED
+    -> qa              STORY_REVIEW_PASSED / STORY_QA_STARTED
+    -> pr_submitted    STORY_QA_PASSED (before security gate and merge),
+                       STORY_PR_CREATED
+    -> merged          STORY_MERGED
 
-    review -> review_failed -> (back to in_progress)
-    qa -> qa_failed -> (back to in_progress)
+    STORY_REVIEW_FAILED, STORY_QA_FAILED, STORY_RESET -> draft
+    STORY_MERGE_READY -> merge_ready   (merge.review_before_merge: true)
+    STORY_SPLIT       -> split         (replaced by child stories)
+    STORY_RECOVERY    -> payload new_status
+    nxd archive       -> archived
 ```
 
 ## Querying Events
@@ -354,11 +360,12 @@ shape, grep `internal/engine/` or `internal/state/events.go`.
 - **STAGE_COMPLETED** — coarse timing marker for each pipeline stage (executor, reviewer, QA, merger) with duration and outcome
 - **STORY_REWRITTEN** — Manager rewrote the story (title / description / acceptance criteria / complexity) after diagnosis
 - **STORY_SPLIT** — Tech Lead replaced one story with N replacements; payload includes child_story_ids
-- **STORY_RESET** — story sent back to draft status by the monitor (post-failure retry path)
-- **STORY_RECOVERY** — controller reset a stuck story to draft
-- **STORY_MERGE_READY** — review + QA both passed; merger may proceed
-- **STORY_ESCALATED** — story bumped to a higher escalation tier (junior → intermediate → senior, etc.)
-- **STORY_INTEGRATION_FAILED** — post-merge integration build failed; tech-lead fixer dispatched
+- **STORY_RESET** — `nxd resume` startup recovery sent an orphaned story back to draft (the monitor's retry path uses STORY_REVIEW_FAILED instead)
+- **STORY_RECOVERY** — startup recovery or the controller reset a stuck story; the payload's `new_status` becomes the story status
+- **STORY_MERGE_READY** — review, QA, and the security gate passed with `merge.review_before_merge: true`; the story waits for a human merge
+- **STORY_ESCALATED** — story bumped to a higher escalation tier (see STORY_ESCALATED above)
+- **STORY_INTEGRATION_FAILED** — post-merge integration build failed; the Tech Lead model drafts a fix description, which is logged
+- **PIPELINE_STALLED** — raw string, not an `EventType` constant: stories remain but none are dispatchable (payload: `req_id`, `pending_count`, `total_stories`, `reason`)
 
 ### Requirement-level
 - **REQ_PLANNING_STARTED** — Tech Lead began decomposition (kicks off planner stage timing)
@@ -389,4 +396,4 @@ shape, grep `internal/engine/` or `internal/state/events.go`.
 - **DIRECTIVE_ACKED** — agent acknowledged it processed a USER_DIRECTIVE
 - **HUMAN_REVIEW_NEEDED** — pipeline parked awaiting human input (e.g. PR approval, tier-3 escalation)
 
-Note: 6 devdb events (`STORY_DB_CREATED`, `STORY_DB_FAILED`, `STORY_DB_DELETED` plus their controller/recovery siblings) are documented in [`docs/guides/configuration.md`](../guides/configuration.md). For the canonical list, see `EventType` constants in `internal/state/events.go`.
+Note: the three devdb events (`STORY_DB_CREATED`, `STORY_DB_FAILED`, `STORY_DB_DELETED`) are documented in the DevDB Lifecycle Events section above. For the canonical list, see `EventType` constants in `internal/state/events.go`.

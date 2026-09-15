@@ -27,6 +27,7 @@ orch: Orchestrator Engine {
   monitor: Monitor + Watchdog
   reviewer: Reviewer\n(Senior LLM)
   qa: QA Runner
+  gates: Security + completion gates
   merger: Merge + Cleanup
 }
 
@@ -44,7 +45,7 @@ mem: MemPalace\n(offline, ChromaDB) {
 
 agents: Agent Runtime {
   style.fill: "#e8eaf6"
-  native: Native Gemma\n(in-process)
+  native: Native Gemma\n(in-process, default)
   tmux: tmux + Aider/Claude/Codex
 }
 
@@ -53,12 +54,12 @@ git: Git Worktrees + Branches {
   style.fill: "#f5f5f5"
 }
 
-ollama: Ollama (local)\nqwen + gemma4 {
+ollama: Ollama (local)\ngemma4:e4b by default {
   shape: cylinder
   style.fill: "#fce8e6"
 }
 
-devdb: Ephemeral DBs (planned)\nDocker only — offline {
+devdb: Ephemeral DBs (opt-in)\nDocker only — offline {
   style.fill: "#dcfce7"
   lifecycle: Lifecycle\n(Provision/Release)
   docker: docker.Provider\n(local Postgres)
@@ -69,7 +70,7 @@ user -> cli: requirements
 cli -> orch: commands
 orch -> state: append events
 state -> orch: read projection
-orch -> mem: recall prior work
+orch -> mem: executor searches · monitor mines diffs, reviews, QA failures
 orch -> agents: spawn per wave
 agents -> ollama: LLM calls
 agents -> git: read/write code

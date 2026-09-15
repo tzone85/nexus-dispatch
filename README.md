@@ -24,9 +24,8 @@ You need: Go 1.26+, [Ollama](https://ollama.com), [tmux](https://github.com/tmux
 # 1. Start Ollama (skip if already running as a service)
 ollama serve &                        # or: brew services start ollama
 
-# 2. Pull models
-ollama pull qwen2.5-coder:14b         # planner + reviewer (~9 GB)
-ollama pull gemma4:e4b                # coder (~6 GB)
+# 2. Pull the default model (nxd init configures gemma4:e4b for every role)
+ollama pull gemma4:e4b                # ~6 GB
 
 # 3. Install NXD + MemPalace
 go install github.com/tzone85/nexus-dispatch/cmd/nxd@latest
@@ -39,7 +38,9 @@ nxd req-logs <req-id>                 # tail the daemon log
 nxd dashboard                         # TUI; add --web for the browser dashboard
 ```
 
-The first run takes a few minutes while Ollama warms the models. `nxd req --background` self-daemonizes the pipeline; without it, `nxd req` plans then exits and you must run `nxd resume <req-id>` to dispatch agents. Follow progress via `nxd req-logs <req-id>` or the dashboard.
+The first run takes a few minutes while Ollama warms the model. `nxd req --background` self-daemonizes the pipeline; without it, `nxd req` plans then exits and you must run `nxd resume <req-id>` to dispatch agents. Follow progress via `nxd req-logs <req-id>` or the dashboard.
+
+With the default config every coding agent runs in-process through the native Gemma runtime, and the same model reviews its work, so NXD prints a same-model review notice. To review with a different model family (for example `qwen3-coder:30b` as `models.senior`), see [Model Selection](docs/guides/model-selection.md).
 
 ## Platform Support
 
@@ -95,8 +96,9 @@ nxd init && nxd doctor
 | Command | What it does |
 |---|---|
 | `nxd init` | Create `~/.nxd/`, generate `nxd.yaml`, check Ollama |
-| `nxd req "<requirement>"` | Submit a requirement; planning + dispatch |
-| `nxd req --background` | Same, but self-daemonize; tail with `nxd req-logs` |
+| `nxd req "<requirement>"` | Submit a requirement and plan it (dispatch with `nxd resume`) |
+| `nxd req --background` | Plan, then self-daemonize `nxd resume`; tail with `nxd req-logs` |
+| `nxd resume [req-id]` | Dispatch waves and run review → QA → security gate → merge |
 | `nxd status` | Requirements + stories overview |
 | `nxd dashboard [--web]` | Live TUI / browser dashboard |
 | `nxd timeline [req-id]` | Chronological requirement history with per-story durations |
@@ -128,13 +130,15 @@ cmd/nxd/           CLI entry point (cobra)
 internal/agent/    Role definitions, prompts, complexity scoring
 internal/cli/      Cobra command implementations
 internal/config/   YAML loader + validation
-internal/dashboard/ TUI (Bubbletea), web (WebSocket)
-internal/engine/   Planner, dispatcher, reviewer, QA, merger, watchdog
+internal/dashboard/ TUI (Bubbletea)
+internal/engine/   Planner, dispatcher, executor, monitor, reviewer, QA, security + completion gates, merger
+internal/memory/   MemPalace bridge (executor search, monitor mining)
 internal/git/      Worktrees, branches, local merge, GitHub PRs
 internal/llm/      Ollama / Anthropic / OpenAI clients
 internal/runtime/  Pluggable runtimes (gemma native, Aider, Claude Code, Codex)
 internal/state/    Event store (JSONL) + SQLite projections
 internal/tmux/     Session lifecycle
+internal/web/      Web dashboard (HTTP + WebSocket, token-gated)
 ```
 
 Architecture deep dive: [`docs/guides/architecture.md`](docs/guides/architecture.md).

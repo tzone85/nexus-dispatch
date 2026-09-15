@@ -64,6 +64,7 @@ nxd req --background "<requirement text>"
 4. Validates no circular dependencies
 5. Prints the plan summary
 6. With `--background`: forks a detached child running `nxd resume <reqID>`; logs go to `~/.nxd/logs/req-<reqID>.log`. Survives parent shell teardown and macOS app-nap.
+7. Without `--background` (or with `--review`): exits after printing the plan. Run `nxd resume <reqID>` to dispatch agents.
 
 **Example:**
 ```bash
@@ -166,7 +167,7 @@ nxd escalations
 
 ### nxd gc
 
-Garbage collect merged branches and worktrees.
+Delete branches of merged stories that are older than `cleanup.branch_retention_days`.
 
 ```bash
 nxd gc [--dry-run]
@@ -178,8 +179,8 @@ nxd gc [--dry-run]
 | `--dry-run` | false | Preview cleanup without deleting anything |
 
 **What it cleans:**
-- Worktrees for merged stories (if `worktree_prune: deferred`)
-- Branches older than `branch_retention_days`
+- Branches of `merged` stories created more than `branch_retention_days` ago; emits `BRANCH_DELETED` and `GC_COMPLETED`. With `branch_retention_days: 0` nothing is deleted.
+- Worktrees are not touched: the monitor already removes each story's worktree right after merge, and `worktree_prune` is not read.
 
 ---
 
@@ -237,18 +238,24 @@ nxd events [--type <type>] [--story <id>] [--limit <n>]
 
 **Events are displayed newest-first.**
 
-**Event types:**
+**Event types** (the 65 constants in `internal/state/events.go`; the monitor also emits a raw `PIPELINE_STALLED`):
 ```
-REQ_SUBMITTED, REQ_ANALYZED, REQ_PLANNED, REQ_COMPLETED
-STORY_CREATED, STORY_ESTIMATED, STORY_ASSIGNED, STORY_STARTED,
-STORY_PROGRESS, STORY_COMPLETED, STORY_REVIEW_REQUESTED,
-STORY_REVIEW_PASSED, STORY_REVIEW_FAILED, STORY_QA_STARTED,
-STORY_QA_PASSED, STORY_QA_FAILED, STORY_PR_CREATED, STORY_MERGED
+REQ_SUBMITTED, REQ_ANALYZED, REQ_PLANNED, REQ_PAUSED, REQ_RESUMED
+REQ_COMPLETED, REQ_BLOCKED, REQ_CLASSIFIED, INVESTIGATION_COMPLETED, REQ_PENDING_REVIEW
+REQ_REJECTED, REQ_BUDGET_WARNING, REQ_BUDGET_EXCEEDED, STORY_CREATED, STORY_ESTIMATED
+STORY_ASSIGNED, STORY_STARTED, STORY_PROGRESS, STORY_COMPLETED, STORY_REVIEW_REQUESTED
+STORY_REVIEW_PASSED, STORY_REVIEW_FAILED, STORY_QA_STARTED, STORY_QA_PASSED, STORY_QA_FAILED
+STORY_SECURITY_PASSED, STORY_SECURITY_FAILED, STORY_PR_CREATED, STORY_MERGED, STORY_MERGE_READY
+STORY_RECOVERY, STORY_ESCALATED, STORY_REWRITTEN, STORY_SPLIT, STORY_RESET
+RECOVERY_COMPLETED, STORY_DB_CREATED, STORY_DB_FAILED, STORY_DB_DELETED, REQ_ESTIMATED
 AGENT_SPAWNED, AGENT_CHECKPOINT, AGENT_RESUMED, AGENT_STUCK, AGENT_TERMINATED
-ESCALATION_CREATED, ESCALATION_RESOLVED
-SUPERVISOR_CHECK, SUPERVISOR_REPRIORITIZE, SUPERVISOR_DRIFT_DETECTED
-WORKTREE_PRUNED, BRANCH_DELETED, GC_COMPLETED
+SUPERVISOR_CHECK, SUPERVISOR_REPRIORITIZE, SUPERVISOR_DRIFT_DETECTED, CONTROLLER_ANALYSIS, CONTROLLER_ACTION
+CONTROLLER_STUCK_DETECTED, SECURITY_SCAN_COMPLETED, SECURITY_RULE_LEARNED, WORKTREE_PRUNED, BRANCH_DELETED
+GC_COMPLETED, USER_DIRECTIVE, DIRECTIVE_ACKED, HUMAN_REVIEW_NEEDED, STAGE_COMPLETED
+STORY_CONFLICT_BINARY, STORY_CONFLICT_BINARY_REMOVED, STORY_CONFLICT_ESCALATED, STORY_INTEGRATION_FAILED, REQ_PLANNING_STARTED
 ```
+
+Supervisor events and `WORKTREE_PRUNED` are defined but not emitted by the running pipeline — see the [Event Reference](event-reference.md).
 
 ---
 
@@ -296,7 +303,7 @@ Data refreshes every 2 seconds automatically.
 
 #### Web Dashboard
 
-Opens at `http://localhost:<port>`. Updates in real time via WebSocket.
+Opens at the URL printed by the command, which carries a per-session token (`http://localhost:<port>/?token=<hex>`); requests without the token are rejected. Each appended event is pushed over the WebSocket immediately, and a full state snapshot is broadcast every 5 seconds.
 
 **Available actions:**
 
@@ -560,13 +567,13 @@ nxd improve --json
 
 ---
 
-### Tech-Lead conflict resolver + post-merge integration build
+### Conflict resolver + post-merge integration build
 
 When two stories merge against the same files, NXD runs an automated three-way conflict resolution pipeline:
 
 1. **Binary detection** — uses `git diff --numstat` and a null-byte sniff to short-circuit binary conflicts before running text-merge.
-2. **Tech-Lead LLM resolution** — for textual conflicts, the Tech-Lead model receives the two diffs plus the base file and produces a unified resolution.
-3. **Post-merge integration build** — after the merge commit lands, the configured `go build ./...` / equivalent runs against the integrated tree to surface compile-level regressions introduced by the resolution.
-4. **Binary strip** — release binaries are stripped of debug symbols as part of the post-merge step.
+2. **LLM resolution** — for textual conflicts, the Senior model (`models.senior`) receives the two diffs plus the base file and produces a unified resolution.
+3. **Post-merge integration build** — after each story merges, NXD runs `go build ./...`, `cargo build`, or `npm run build` (detected from the repo; skipped otherwise) on the base branch. A failure emits `STORY_INTEGRATION_FAILED` and asks the Tech Lead model for a fix description, which is logged; it does not block the pipeline. Runs only when an LLM client is available.
+4. **Binary strip** — before review, compiled binaries an agent committed are removed from the story branch.
 
 No new CLI surface. Configuration lives under `merge:` in `nxd.yaml`.

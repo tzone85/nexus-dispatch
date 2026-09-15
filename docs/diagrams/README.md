@@ -5,11 +5,11 @@ Rendered SVGs for the docs. Source files are the `.d2` companions in this direct
 | Diagram | Purpose |
 |---------|---------|
 | `system-overview.svg` | High-level: user → CLI → orchestrator → agents → git |
-| `pipeline-flow.svg` | Requirement → plan → wave dispatch → code → review → QA → merge |
-| `two-model-split.svg` | qwen reviewer vs gemma4 coder, GPU swap trade-off |
+| `pipeline-flow.svg` | Requirement → plan → wave dispatch → code → review → QA → security gate → merge → completion gate |
+| `two-model-split.svg` | Recommended override: qwen reviewer vs gemma4 coder, GPU swap trade-off |
 | `event-sourcing.svg` | events.jsonl → projection → SQLite → readers |
 | `native-runtime-loop.svg` | Gemma runtime tool-call loop with criteria gate |
-| `agent-hierarchy.svg` | Agent roles + complexity routing + supervisor feedback |
+| `agent-hierarchy.svg` | Agent roles, complexity routing, escalation ladder, unwired components |
 
 ## Regenerating
 
