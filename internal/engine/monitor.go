@@ -1299,14 +1299,27 @@ func (m *Monitor) dispatchNextWave(ctx context.Context, rc *RunContext, repoDir 
 	}
 	EmitStageCompleted(m.eventStore, m.projStore, "auto-resume", "", "dispatch", "success", dispatchStart)
 	if len(assignments) == 0 {
-		// Stall detection: check if stories remain but none are dispatchable
+		// Stall detection: check if stories remain but none are dispatchable.
 		pendingCount := 0
+		mergeReadyCount := 0
 		for _, s := range stories {
-			if s.Status != "merged" && s.Status != "split" && s.Status != "pr_submitted" {
+			switch s.Status {
+			case "merged", "split", "pr_submitted":
+				// terminal or handed off — not pending
+			case "merge_ready":
+				mergeReadyCount++
+				pendingCount++
+			default:
 				pendingCount++
 			}
 		}
-		if pendingCount > 0 {
+		switch {
+		case mergeReadyCount > 0:
+			// Stories are waiting on a human merge decision (review_before_merge),
+			// not stuck. Auto-resume cannot merge them; it stops cleanly so the
+			// operator can review and merge, then resume. This is NOT a stall.
+			log.Printf("[auto-resume] requirement %s has %d story(ies) awaiting merge review — run 'nxd merge %s' (or 'nxd review'), then 'nxd resume %s'", rc.ReqID, mergeReadyCount, rc.ReqID, rc.ReqID)
+		case pendingCount > 0:
 			log.Printf("[STALL] requirement %s has %d unfinished stories but none are dispatchable — all escalation tiers exhausted or dependencies unmet", rc.ReqID, pendingCount)
 			log.Printf("[STALL] run 'nxd status --req %s' to inspect, then 'nxd resume %s --godmode' to retry", rc.ReqID, rc.ReqID)
 			emitEventOrLog(m.eventStore, m.projStore,
@@ -1316,7 +1329,7 @@ func (m *Monitor) dispatchNextWave(ctx context.Context, rc *RunContext, repoDir 
 					"total_stories": len(stories),
 					"reason":        "no dispatchable stories — escalation tiers exhausted",
 				}))
-		} else {
+		default:
 			log.Printf("[auto-resume] no stories ready for next wave (dependencies not met)")
 		}
 		return nil

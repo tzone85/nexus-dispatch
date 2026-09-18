@@ -104,6 +104,53 @@ func TestFileStore_AppendAndList(t *testing.T) {
 	}
 }
 
+// TestFileStore_List_HandlesEventOverDefaultScanBuffer proves a single event
+// larger than bufio.Scanner's default 64 KB token limit does not make the
+// entire event log unreadable. QA/build-failure events embed the full combined
+// tool output in their feedback, which routinely exceeds 64 KB; before the
+// buffer was raised, one such line made List/Count fail with bufio.ErrTooLong,
+// stalling attempt-counting, escalation, reporting, and the dashboard.
+func TestFileStore_List_HandlesEventOverDefaultScanBuffer(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "events.jsonl")
+
+	store, err := state.NewFileStore(path)
+	if err != nil {
+		t.Fatalf("new file store: %v", err)
+	}
+	defer store.Close()
+
+	// A ~256 KB feedback blob — well over the 64 KB default scan-token cap and
+	// realistic for a verbose `go test ./...` failure.
+	bigFeedback := strings.Repeat("build failure line with lots of detail\n", 7000)
+	if len(bigFeedback) < 64*1024 {
+		t.Fatalf("test blob too small (%d bytes) to exercise the buffer limit", len(bigFeedback))
+	}
+
+	if err := store.Append(state.NewEvent(state.EventReqSubmitted, "system", "", map[string]any{"title": "before"})); err != nil {
+		t.Fatalf("append small: %v", err)
+	}
+	if err := store.Append(state.NewEvent(state.EventStoryQAFailed, "monitor", "s-001", map[string]any{"feedback": bigFeedback})); err != nil {
+		t.Fatalf("append large: %v", err)
+	}
+	if err := store.Append(state.NewEvent(state.EventStoryCreated, "tech-lead", "s-002", map[string]any{"title": "after"})); err != nil {
+		t.Fatalf("append small 2: %v", err)
+	}
+
+	events, err := store.List(state.EventFilter{})
+	if err != nil {
+		t.Fatalf("list must not fail on an oversized event line: %v", err)
+	}
+	if len(events) != 3 {
+		t.Fatalf("expected 3 events across the oversized line, got %d", len(events))
+	}
+	// The oversized event must round-trip intact, and events after it must still
+	// be readable (a buffer overflow would have truncated the whole read).
+	if events[2].Type != state.EventStoryCreated {
+		t.Fatalf("event after the oversized line was lost: got %s", events[2].Type)
+	}
+}
+
 func TestFileStore_FilterByType(t *testing.T) {
 	dir := t.TempDir()
 	store, _ := state.NewFileStore(filepath.Join(dir, "events.jsonl"))

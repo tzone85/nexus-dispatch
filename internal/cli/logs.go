@@ -82,7 +82,10 @@ func tailLog(path string, n int, raw bool, out io.Writer) error {
 	}
 
 	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	if len(lines) > n {
+	// Guard against a non-positive --lines: n <= 0 must mean "show all", never a
+	// negative slice index. Without the n > 0 check, `--lines=-1` computed
+	// lines[len(lines)-(-1):] and panicked with a slice-out-of-range.
+	if n > 0 && len(lines) > n {
 		lines = lines[len(lines)-n:]
 	}
 

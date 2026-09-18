@@ -9,7 +9,7 @@ go 1.26.1
 // fixed in go1.26.5). With GOTOOLCHAIN=auto (default), older local installs
 // will fetch 1.26.5 on first build instead of compiling against a vulnerable
 // stdlib.
-toolchain go1.26.5
+toolchain go1.26.6
 
 require (
 	github.com/charmbracelet/bubbletea v1.3.10
