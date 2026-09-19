@@ -39,9 +39,11 @@ func CurrentBranch(repoDir string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-// BranchExists returns true when the named branch (or ref) exists.
+// BranchExists reports whether a local branch (refs/heads/<name>) exists.
 func BranchExists(repoDir, name string) bool {
-	cmd := exec.Command("git", "rev-parse", "--verify", name)
+	// refs/heads only: rev-parse --verify would also match a tag or a remote
+	// ref of the same name, and the canonical fallback feeds branch -D.
+	cmd := exec.Command("git", "show-ref", "--verify", "--quiet", "refs/heads/"+name)
 	cmd.Dir = repoDir
 	return cmd.Run() == nil
 }

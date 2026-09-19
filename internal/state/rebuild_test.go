@@ -8,6 +8,89 @@ import (
 	"github.com/tzone85/nexus-dispatch/internal/state"
 )
 
+// TestRebuildFrom_RestoresStoryBranch replays a log through RebuildFrom's
+// truncate-and-replay and asserts the branch persisted by STORY_STARTED
+// survives, so a rebuilt projection is not the one place the branch is lost.
+func TestRebuildFrom_RestoresStoryBranch(t *testing.T) {
+	dir := t.TempDir()
+	es, err := state.NewFileStore(filepath.Join(dir, "events.jsonl"))
+	if err != nil {
+		t.Fatalf("new file store: %v", err)
+	}
+	defer es.Close()
+	ps, err := state.NewSQLiteStore(filepath.Join(dir, "nxd.db"))
+	if err != nil {
+		t.Fatalf("new sqlite store: %v", err)
+	}
+	defer ps.Close()
+
+	events := []state.Event{
+		state.NewEvent(state.EventReqSubmitted, "", "", map[string]any{
+			"id": "R", "title": "t", "description": "d", "repo_path": "/tmp",
+		}),
+		state.NewEvent(state.EventStoryCreated, "", "S1", map[string]any{
+			"id": "S1", "req_id": "R", "title": "story", "description": "d", "complexity": 1,
+		}),
+		state.NewEvent(state.EventStoryStarted, "agent-1", "S1", map[string]any{
+			"branch": "nxd/S1", "worktree_path": "/tmp/wt", "role": "junior",
+		}),
+	}
+	for _, evt := range events {
+		if err := es.Append(evt); err != nil {
+			t.Fatalf("append %s: %v", evt.Type, err)
+		}
+	}
+
+	if err := ps.RebuildFrom(context.Background(), es); err != nil {
+		t.Fatalf("RebuildFrom: %v", err)
+	}
+	got, err := ps.GetStory("S1")
+	if err != nil {
+		t.Fatalf("get story: %v", err)
+	}
+	if got.Branch != "nxd/S1" {
+		t.Errorf("branch lost across rebuild: got %q, want nxd/S1", got.Branch)
+	}
+	if got.Status != "in_progress" {
+		t.Errorf("status after rebuild: got %q, want in_progress", got.Status)
+	}
+}
+
+// TestNeedsStoryBranchBackfill pins the flag's lifecycle: a fresh database
+// needs the backfill, a backfilled one does not, and the flag survives a
+// RebuildFrom — the rebuild replays STORY_STARTED with the branch handler, so
+// the backfill has nothing left to do and must not rescan the log on every
+// start after a rebuild.
+func TestNeedsStoryBranchBackfill(t *testing.T) {
+	dir := t.TempDir()
+	es, err := state.NewFileStore(filepath.Join(dir, "events.jsonl"))
+	if err != nil {
+		t.Fatalf("new file store: %v", err)
+	}
+	defer es.Close()
+	ps, err := state.NewSQLiteStore(filepath.Join(dir, "nxd.db"))
+	if err != nil {
+		t.Fatalf("new sqlite store: %v", err)
+	}
+	defer ps.Close()
+
+	if needs, err := ps.NeedsStoryBranchBackfill(); err != nil || !needs {
+		t.Fatalf("fresh database: want needs=true, got %v (err=%v)", needs, err)
+	}
+	if err := ps.BackfillStoryBranches(nil); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+	if needs, err := ps.NeedsStoryBranchBackfill(); err != nil || needs {
+		t.Fatalf("after backfill: want needs=false, got %v (err=%v)", needs, err)
+	}
+	if err := ps.RebuildFrom(context.Background(), es); err != nil {
+		t.Fatalf("RebuildFrom: %v", err)
+	}
+	if needs, err := ps.NeedsStoryBranchBackfill(); err != nil || needs {
+		t.Fatalf("after RebuildFrom: the flag must survive a rebuild, got needs=%v (err=%v)", needs, err)
+	}
+}
+
 // TestRebuildFrom_RecoversDesyncedProjection models the exact failure that
 // engine.emitEventOrLog documents but that had no implementation: an event is
 // durably appended to the log, but its Project call fails (or is skipped by a
