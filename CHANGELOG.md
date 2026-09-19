@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - An event type this binary does not know is now logged when the projection skips it (once per type per process) instead of being ignored silently
+- `nxd archive` removes the worktree and branch of merged stories only; `--force` also removes unmerged ones (their uncommitted work is lost)
+- `nxd archive` takes the pipeline lock with or without `--force` and refuses while `nxd resume` is running: it removes worktrees a live run may be working in
 
 ### Security
 - Go toolchain 1.26.6 (clears the called stdlib advisories GO-2026-6218, -6090, -6089, -6088, -5972, -5026)
