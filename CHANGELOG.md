@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 - Go toolchain 1.26.6 (clears the called stdlib advisories GO-2026-6218, -6090, -6089, -6088, -5972, -5026)
+- Agent `write_file` / `edit_file` can no longer escape the work directory through a symlinked parent or a dangling symlink; rejections and I/O errors no longer carry host paths (the operator log records the real target and the story ID)
 
 ## [0.2.0] — 2026-06-02
 
