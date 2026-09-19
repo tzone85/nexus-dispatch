@@ -393,8 +393,10 @@ nxd pause <req-id>
 Archive a finished requirement so it stops appearing in `status` / `dashboard`. Use `--all` on those commands to see archived requirements again.
 
 ```bash
-nxd archive <req-id>
+nxd archive <req-id> [--force]
 ```
+
+**What it deletes:** the git worktree and branch of each **merged** story of the requirement (status `merged`, or a recorded merge time), in the requirement's repo. Each branch is reported as `removed …`, `already removed …` (the usual case — the monitor cleans up right after a merge) or `could not remove …: <git error>`. Stories that are not merged keep their worktree and branch and are listed as `kept …` (a story that never started is `nothing to remove …`, and a repo that cannot be checked is `could not check …`); pass `--force` to delete those too — any uncommitted work in them is lost. Takes the pipeline lock with or without `--force`, so it refuses to run while `nxd resume` is working in those worktrees.
 
 ---
 

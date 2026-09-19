@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `nxd gc` measures retention from the merge time, runs in each requirement's repo and reports every failure instead of hiding it (what it touches: cli-reference, `nxd gc`); the reaper projects the events it emits so the projection stays level with the log
 - `nxd gc` takes the pipeline lock and refuses to run while `nxd resume` is active (`--dry-run` is unaffected): it removes worktrees and branches a live run may be working in
 
+### Changed
+- `nxd archive` removes the worktree and branch of merged stories only; `--force` also removes unmerged ones (their uncommitted work is lost)
+- `nxd archive` takes the pipeline lock with or without `--force` and refuses while `nxd resume` is running: it removes worktrees a live run may be working in
+
 ### Security
 - Go toolchain 1.26.6 (clears the called stdlib advisories GO-2026-6218, -6090, -6089, -6088, -5972, -5026)
 - Agent `write_file` / `edit_file` can no longer escape the work directory through a symlinked parent or a dangling symlink; rejections and I/O errors no longer carry host paths (the operator log records the real target and the story ID)
