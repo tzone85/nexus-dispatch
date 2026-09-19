@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `STORY_STARTED` now persists the story branch in the projection (existing databases are backfilled once on startup), so `nxd merge`, `review`, `gc` and `archive` see it; a row without one resolves to the canonical `nxd/<story-id>` (`state.StoryBranch`)
+  - Upgrade note: restart a running `nxd resume` so new stories are projected with their branch (rows it projects without one still resolve through `state.StoryBranch`; nothing is lost)
+
 ### Security
 - Go toolchain 1.26.6 (clears the called stdlib advisories GO-2026-6218, -6090, -6089, -6088, -5972, -5026)
 

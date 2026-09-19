@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -361,7 +362,7 @@ func (s *SQLiteStore) projectLocked(evt Event) error {
 	case EventStoryAssigned:
 		return s.projectStoryAssigned(evt.StoryID, payload)
 	case EventStoryStarted:
-		return s.updateStoryStatus(evt.StoryID, "in_progress")
+		return s.projectStoryStarted(evt.StoryID, payload)
 	case EventStoryProgress:
 		return nil // progress events are informational only
 	case EventStoryCompleted:
@@ -866,6 +867,25 @@ func (s *SQLiteStore) updateStoryStatus(storyID, status string) error {
 	return err
 }
 
+// projectStoryStarted marks a story in_progress and persists the branch
+// carried in the STORY_STARTED payload. STORY_STARTED is the earliest event
+// that carries the assigned branch (STORY_ASSIGNED does not), and the branch
+// column feeds every CLI command that loads a story from the projection
+// (nxd merge/review/gc/archive/status). An empty payload branch (older
+// events on replay) never clobbers an already-set one; a non-empty branch
+// from a re-dispatch overwrites it.
+func (s *SQLiteStore) projectStoryStarted(storyID string, payload map[string]any) error {
+	branch := payloadStr(payload, "branch")
+	_, err := s.db.Exec(
+		`UPDATE stories SET status = 'in_progress', branch = COALESCE(NULLIF(?, ''), branch), updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+		branch, storyID,
+	)
+	if err != nil {
+		return fmt.Errorf("project story started %s: %w", storyID, err)
+	}
+	return nil
+}
+
 // BackfillAcceptanceCriteria updates stories that have an empty
 // acceptance_criteria by extracting it from STORY_CREATED events.
 // This handles databases created before the column was added.
@@ -951,7 +971,6 @@ func (s *SQLiteStore) projectAgentStatus(evt Event, payload map[string]any, stat
 	}
 	return nil
 }
-
 
 // InsertAgent inserts an agent record directly into the agents table.
 // Convenience for tests and direct seeding; live runs populate the table via

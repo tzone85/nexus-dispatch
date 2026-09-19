@@ -19,14 +19,12 @@ func danglingBranchesToClean(stories []state.Story, baseBranch string) []string 
 		if s.Status == "merged" || s.Status == "split" {
 			continue
 		}
-		branch := s.Branch
-		if branch == "" {
-			// Mirror the dispatcher's canonical branch naming
-			// (see Dispatcher.DispatchWave: "nxd/<storyID>"). Using any other
-			// prefix here points cleanup at a branch that never existed, so the
-			// real dangling branch is silently left behind.
-			branch = "nxd/" + s.ID
-		}
+		// state.StoryBranch mirrors the dispatcher's canonical naming for rows
+		// without a projected branch, so cleanup never targets a branch that
+		// never existed and never leaves the real dangling one behind.
+		branch := state.StoryBranch(s)
+		// StoryBranch can only return "" for a story with no ID; a cleanup
+		// pass must never delete the base branch, and "" is not a branch.
 		if branch == "" || branch == baseBranch || seen[branch] {
 			continue
 		}
