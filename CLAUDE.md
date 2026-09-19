@@ -25,6 +25,7 @@ nxd resume → dispatcher → executor → agents (parallel per wave)
 | `internal/engine/report.go` | Client delivery reports with actual token cost via `sumTokenUsage()` from metrics.jsonl |
 | `internal/runtime/gemma.go` | Native coding runtime with tool-calling loop, criteria-gated completion, self-correction, rejection budget, scratchboard tools |
 | `internal/runtime/safepath.go` | `safePath` / `errReason`: work-directory confinement for the runtime's file tools; rejections and I/O errors never carry host paths |
+| `internal/git/worktree_lookup.go` | `WorktreeForBranch`: which checkout has a branch (`git worktree list --porcelain`), used by `gc` / `archive` cleanup |
 | `internal/routing/bayesian.go` | Bayesian adaptive routing: Beta distribution priors per role/complexity, update rules, decay, persistence |
 | `internal/llm/semaphore.go` | Concurrency limiter wrapping `llm.Client` (default 1 for single-GPU Ollama) |
 | `internal/artifact/store.go` | Per-story artifact persistence (launch config, trace JSONL, diffs, QA/review results) |
