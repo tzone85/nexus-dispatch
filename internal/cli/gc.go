@@ -67,7 +67,7 @@ func runGC(cmd *cobra.Command, _ []string) error {
 	}
 
 	gitOps := &cliGitCleanupOps{}
-	reaper := engine.NewReaper(s.Config.Cleanup, gitOps, s.Events)
+	reaper := engine.NewReaper(s.Config.Cleanup, gitOps, s.Events, s.Proj)
 
 	repoDir := "."
 	deleted, err := reaper.GarbageCollect(repoDir, branches)
