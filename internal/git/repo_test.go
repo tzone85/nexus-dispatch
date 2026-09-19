@@ -34,6 +34,24 @@ func TestBranchExists(t *testing.T) {
 	}
 }
 
+// TestBranchExists_IgnoresTagsAndRemoteRefs: the answer feeds `branch -D`,
+// so only refs/heads counts. rev-parse --verify, which show-ref replaced,
+// resolves a tag and a remote ref of the same name and said yes to both.
+func TestBranchExists_IgnoresTagsAndRemoteRefs(t *testing.T) {
+	repo := createTestRepo(t)
+	runCmd(t, repo, "git", "tag", "nxd/s-1")
+	runCmd(t, repo, "git", "update-ref", "refs/remotes/origin/nxd/s-2", "HEAD")
+	if nxdgit.BranchExists(repo, "nxd/s-1") {
+		t.Error("a tag must not count as a branch")
+	}
+	if nxdgit.BranchExists(repo, "origin/nxd/s-2") {
+		t.Error("a remote ref must not count as a branch")
+	}
+	if nxdgit.BranchExists(repo, "nxd/s-2") {
+		t.Error("a remote-only branch must not count as a local branch")
+	}
+}
+
 func TestCreateBranch(t *testing.T) {
 	repo := createTestRepo(t)
 
