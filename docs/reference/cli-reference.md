@@ -470,6 +470,8 @@ Inspect a story's pending changes before merge.
 nxd review <story-id>
 ```
 
+Runs in the story's requirement repo and diffs `merge.base_branch...<story branch>`; an empty `merge.base_branch` (the default) is detected from the repo (`origin/HEAD`, then `main`, then `master`), the same resolution `nxd merge` and `nxd resume` use. A story that has not started yet prints `Changes: none yet`; a git failure is printed as `Changes: unavailable (…)` rather than hidden.
+
 ---
 
 ### nxd merge
@@ -479,6 +481,8 @@ Manually merge a story that has reached `merge_ready`. Used when `merge.auto_mer
 ```bash
 nxd merge <story-id>
 ```
+
+Runs in the story's requirement repo (`nxd resume` runs in the current directory); an empty `merge.base_branch` (the default) is detected from the repo the same way `nxd resume` does, in both `local` and `github` mode.
 
 ---
 

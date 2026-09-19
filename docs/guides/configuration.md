@@ -255,7 +255,7 @@ Controls how completed stories are integrated.
 ```yaml
 merge:
   auto_merge: true         # Automatically merge after review + QA pass
-  base_branch: main        # Target branch for merges
+  base_branch: main        # Target branch for merges; empty (the default) = detect from the repo (origin/HEAD, main, master)
   mode: local              # "local" (offline git merge) or "github" (push + PR)
   pr_template: |           # Template for PR body (github mode only)
     ## Story: {story_id}
