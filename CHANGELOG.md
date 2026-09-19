@@ -7,7 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_(no entries yet — open a PR to add a line under the relevant subsection.)_
+### Security
+- Go toolchain 1.26.6 (clears the called stdlib advisories GO-2026-6218, -6090, -6089, -6088, -5972, -5026)
 
 ## [0.2.0] — 2026-06-02
 
