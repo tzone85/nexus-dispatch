@@ -179,8 +179,11 @@ nxd gc [--dry-run]
 | `--dry-run` | false | Preview cleanup without deleting anything |
 
 **What it cleans:**
-- Branches of `merged` stories created more than `branch_retention_days` ago; emits `BRANCH_DELETED` and `GC_COMPLETED`. With `branch_retention_days: 0` nothing is deleted.
-- Worktrees are not touched: the monitor already removes each story's worktree right after merge, and `worktree_prune` is not read.
+- Takes the pipeline lock: a real run refuses while `nxd resume` is running (`--dry-run` does not need it), because it removes worktrees and branches a live run may be working in.
+- Branches of `merged` stories merged more than `branch_retention_days` ago; a story without a recorded merge time is skipped with a note naming it. Emits `BRANCH_DELETED` and `GC_COMPLETED` (with `repo_path`) per repo. With `branch_retention_days: 0` nothing is deleted.
+- Runs in each story's requirement repo. A requirement without a repo path falls back to the current directory (a note says so). A repo that is missing or not a git repository is reported — in `--dry-run` too — as an error for that repo, and the other repos are still cleaned.
+- When every deletion fails the summary reports the failures; "No branches eligible for cleanup" appears only when nothing failed.
+- A leftover worktree that still has such a branch checked out (e.g. the monitor crashed before cleanup) is force-removed before the branch is deleted; a worktree that cannot be removed (locked) is reported together with the branch failure. Otherwise worktrees are not touched: the monitor already removes each story's worktree right after merge, and `worktree_prune` is not read.
 
 ---
 

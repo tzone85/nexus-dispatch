@@ -326,9 +326,9 @@ The `status` field may be `kept` instead of `deleted` if `devdb.on_failure.keep_
 **Payload:** `{ "branch": "nxd/story-01", "reason": "gc_retention_expired" }`
 
 ### GC_COMPLETED
-**When:** `nxd gc` deleted at least one branch
-**Payload:** `{ "branches_deleted": 3 }`
-**Projection:** none (nor for `BRANCH_DELETED`); both are listed as explicit no-op cases in `Project` for documentation
+**When:** `nxd gc` deleted at least one branch — one event per repository it cleaned (gc runs per requirement repo), each with that repository's count
+**Payload:** `{ "branches_deleted": 3, "repo_path": "/path/to/repo" }`
+**Projection:** none (nor for `BRANCH_DELETED`); both are explicit no-op cases in `Project` (the switch is exhaustive over `events.go`, guarded by `TestProjectLocked_EveryKnownTypeHasACase`), and `nxd gc` projects them (the reaper takes the projection store) so the projection watermark stays level with the log
 
 ## Story Status State Machine
 

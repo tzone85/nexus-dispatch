@@ -235,7 +235,7 @@ cleanup:
 **What actually happens:**
 1. **After each merge:** the monitor removes the story's worktree and deletes its local and remote branch, whatever `worktree_prune` says. No `WORKTREE_PRUNED` event is emitted.
 2. **At requirement end:** branches from stories that never merged are deleted when `delete_dangling_branches` is true.
-3. **`nxd gc`:** deletes branches of `merged` stories created more than `branch_retention_days` ago, emitting `BRANCH_DELETED` and `GC_COMPLETED`. With `branch_retention_days: 0` it deletes nothing.
+3. **`nxd gc`:** deletes branches of `merged` stories merged more than `branch_retention_days` ago (stories with no recorded merge time are skipped), emitting `BRANCH_DELETED` and `GC_COMPLETED`. With `branch_retention_days: 0` it deletes nothing.
 
 ### updates
 
