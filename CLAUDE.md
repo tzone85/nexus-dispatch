@@ -24,6 +24,7 @@ nxd resume → dispatcher → executor → agents (parallel per wave)
 | `internal/engine/cost.go` | Cost estimation: `CalculateCost`, `CalculateLLMCost`, `CalculateCostWithTokens` with per-token billing |
 | `internal/engine/report.go` | Client delivery reports with actual token cost via `sumTokenUsage()` from metrics.jsonl |
 | `internal/runtime/gemma.go` | Native coding runtime with tool-calling loop, criteria-gated completion, self-correction, rejection budget, scratchboard tools |
+| `internal/runtime/safepath.go` | `safePath` / `errReason`: work-directory confinement for the runtime's file tools; rejections and I/O errors never carry host paths |
 | `internal/routing/bayesian.go` | Bayesian adaptive routing: Beta distribution priors per role/complexity, update rules, decay, persistence |
 | `internal/llm/semaphore.go` | Concurrency limiter wrapping `llm.Client` (default 1 for single-GPU Ollama) |
 | `internal/artifact/store.go` | Per-story artifact persistence (launch config, trace JSONL, diffs, QA/review results) |
@@ -59,6 +60,7 @@ make mempalace-check              # smoke the MemPalace bridge end-to-end
 ## Current State (2026-09-14) — branch projection, symlink-safe writes, gc/archive cleanup
 
 - **`stories.branch` is projected** from `STORY_STARTED` (`state/sqlite.go` `projectStoryStarted`; empty replay never clobbers, re-dispatch overwrites). Databases projected before this are backfilled once on startup (`state/backfill.go` `BackfillStoryBranches`, wired in `cli/helpers.go`, guarded by the `story_branch_backfill_done` row in `projection_meta`, which survives `RebuildFrom`). `Project`'s switch is exhaustive over the types in `events.go` (`TestProjectLocked_EveryKnownTypeHasACase`; informational types such as the reaper's are explicit no-op cases); only a type the binary does not know reaches `default:`, which `Project` ignores for forward compatibility. `state.StoryBranch` is the one rule for a story's branch name: the projected branch, else the dispatcher's canonical `nxd/<story-id>` (used by `gc`, `archive`, `merge`, `review` and the monitor's dangling-branch cleanup).
+- **`runtime/safepath.go` `safePath`** walks from the target up to the work directory: any existing component must resolve inside it; dangling links, loops and unreadable ancestors fail closed. Rejections and sink I/O errors (`errReason`) carry work-directory-relative paths only; the operator log gets the real paths and the underlying error (`pathRejection.Detail`: `[native-runtime] <story>: <tool> <path> rejected: …`). `os.Root` confinement is the follow-up.
 
 ## Current State (2026-08-08) — operator visibility: notifications, budget guard, timeline
 
@@ -258,7 +260,8 @@ Architectural ceilings (cannot reach 95% without major refactor):
 - `engine/helpers_test.go` — 12 tests: stripCodeFences, truncateDiff, tierForRole, configCriteriaToRuntime, executor setters
 - `llm/dryrun_test.go` — 15 tests: all response types, delay, cancellation, call tracking, model passthrough, usage, interface
 - `llm/errors_test.go` — 20+ tests: all error classification functions
-- `runtime/tools_test.go` — 24 tests: safePath, execReadFile, execWriteFile, execEditFile, execRunCommand, scratchboard ops, executeTool, CodingTools
+- `runtime/tools_test.go` — read/write/edit sinks, execRunCommand, scratchboard ops, executeTool, CodingTools
+- `runtime/safepath_test.go` — safePath (symlink and escape shapes, fail-closed cases), errReason, sink-level escape and host-path tests, operator-log assertions
 - `web/server_test.go` — 29 tests: all HandleCommand actions
 - `web/data_test.go` — 10 tests: BuildSnapshot, SnapshotJSON, mapStatusToBucket, intFromPayload
 - `web/eventbus_test.go` — 5 tests: pub/sub, unsubscribe, slow consumer

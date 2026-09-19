@@ -357,46 +357,16 @@ func TestIsCommandAllowed_MultiWordPattern(t *testing.T) {
 
 // ── safePath symlink (SG-5 security) ────────────────────────────────
 
-func TestSafePath_SymlinkOutsideWorkDir(t *testing.T) {
-	workDir := t.TempDir()
-	outsideDir := t.TempDir()
-
-	// Create a file outside the workDir
-	outsideFile := filepath.Join(outsideDir, "secret.txt")
-	os.WriteFile(outsideFile, []byte("sensitive data"), 0o644)
-
-	// Create a symlink inside workDir pointing outside
-	symlinkPath := filepath.Join(workDir, "escape")
-	if err := os.Symlink(outsideDir, symlinkPath); err != nil {
-		t.Skipf("symlink creation not supported: %v", err)
+// assertRejected accepts either rejection message: "path traversal blocked"
+// for a proven escape, "path rejected" for a component that cannot be verified.
+func assertRejected(t *testing.T, err error, component string) {
+	t.Helper()
+	msg := err.Error()
+	if !strings.Contains(msg, "path traversal blocked") && !strings.Contains(msg, "path rejected") {
+		t.Errorf("expected a rejection error, got: %v", err)
 	}
-
-	_, err := safePath("escape/secret.txt", workDir)
-	if err == nil {
-		t.Error("expected error for symlink pointing outside workDir")
-	}
-	if err != nil && !strings.Contains(err.Error(), "traversal") {
-		t.Errorf("expected 'traversal' in error, got: %v", err)
-	}
-}
-
-func TestSafePath_ValidSymlinkWithinWorkDir(t *testing.T) {
-	workDir := t.TempDir()
-
-	// Create a real subdir and file
-	subDir := filepath.Join(workDir, "real")
-	os.MkdirAll(subDir, 0o755)
-	os.WriteFile(filepath.Join(subDir, "data.txt"), []byte("ok"), 0o644)
-
-	// Create a symlink within workDir pointing to the subdir
-	os.Symlink(subDir, filepath.Join(workDir, "link"))
-
-	path, err := safePath("link/data.txt", workDir)
-	if err != nil {
-		t.Fatalf("expected success for intra-workdir symlink, got: %v", err)
-	}
-	if !strings.Contains(path, "real") {
-		t.Errorf("expected resolved path to contain 'real', got: %s", path)
+	if component != "" && !strings.Contains(msg, component) {
+		t.Errorf("expected the offending component %q in the error, got: %v", component, err)
 	}
 }
 
