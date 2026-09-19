@@ -5,7 +5,9 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 
@@ -290,7 +292,15 @@ func (s *SQLiteStore) Project(evt Event) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.projectLocked(evt); err != nil {
-		return err
+		if !errors.Is(err, errUnprojected) {
+			return err
+		}
+		// Forward compatibility: an older binary reading a newer log skips the
+		// event and advances the watermark past it — but never silently.
+		// %q: the type and id come from events.jsonl, which a newer binary —
+		// or anything that appends to the log — writes; a newline in either
+		// must not become a second log line.
+		log.Printf("[projection] ignoring unknown event type %q (%q): event log is newer than this binary?", string(evt.Type), evt.ID)
 	}
 	// Advance the watermark only after the projection write succeeded. A
 	// failed Project leaves the watermark behind the event-log length, which
@@ -361,7 +371,7 @@ func (s *SQLiteStore) projectLocked(evt Event) error {
 	case EventStoryAssigned:
 		return s.projectStoryAssigned(evt.StoryID, payload)
 	case EventStoryStarted:
-		return s.updateStoryStatus(evt.StoryID, "in_progress")
+		return s.projectStoryStarted(evt.StoryID, payload)
 	case EventStoryProgress:
 		return nil // progress events are informational only
 	case EventStoryCompleted:
@@ -431,12 +441,36 @@ func (s *SQLiteStore) projectLocked(evt Event) error {
 		// Planning heartbeat — informational only, no projection change.
 		return nil
 
-	default:
-		// Unhandled event types are silently ignored to allow forward
-		// compatibility as new event types are added.
+	case EventBranchDeleted, EventGCCompleted, EventWorktreePruned:
+		// Reaper events: informational, no projection change. Listed here so
+		// a reader of this switch sees that nxd gc projects them on purpose
+		// (to advance the watermark) rather than by falling through default.
 		return nil
+
+	case EventReqBudgetWarning, EventReqBudgetExceeded, EventRecoveryCompleted, EventReqEstimated,
+		EventAgentCheckpoint, EventSupervisorCheck, EventSupervisorReprioritize, EventSupervisorDriftDetected,
+		EventControllerAnalysis, EventControllerAction, EventControllerStuckDetected, EventUserDirective,
+		EventDirectiveAcked, EventHumanReviewNeeded, EventStageCompleted:
+		// Recorded in the log for diagnostics, metrics and the dashboard
+		// timeline; nothing in the projection tables represents them. Listed
+		// so TestProjectLocked_EveryKnownTypeHasACase keeps this switch
+		// exhaustive: a new event type must choose a projection or be added
+		// here on purpose.
+		return nil
+
+	default:
+		// An event type this switch does not know. Project ignores it for
+		// forward compatibility (an older binary reading a newer log); the
+		// exhaustiveness test makes sure no type defined in events.go relies
+		// on that.
+		return errUnprojected
 	}
 }
+
+// errUnprojected is projectLocked's answer for an event type it has no case
+// for. Project treats it as a no-op; the exhaustiveness test treats it as a
+// failure.
+var errUnprojected = errors.New("event type has no projection case")
 
 // GetRequirement returns a single requirement by ID.
 func (s *SQLiteStore) GetRequirement(id string) (Requirement, error) {
@@ -866,6 +900,25 @@ func (s *SQLiteStore) updateStoryStatus(storyID, status string) error {
 	return err
 }
 
+// projectStoryStarted marks a story in_progress and persists the branch
+// carried in the STORY_STARTED payload. STORY_STARTED is the earliest event
+// that carries the assigned branch (STORY_ASSIGNED does not), and the branch
+// column feeds every CLI command that loads a story from the projection
+// (nxd merge/review/gc/archive/status). An empty payload branch (older
+// events on replay) never clobbers an already-set one; a non-empty branch
+// from a re-dispatch overwrites it.
+func (s *SQLiteStore) projectStoryStarted(storyID string, payload map[string]any) error {
+	branch := payloadStr(payload, "branch")
+	_, err := s.db.Exec(
+		`UPDATE stories SET status = 'in_progress', branch = COALESCE(NULLIF(?, ''), branch), updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+		branch, storyID,
+	)
+	if err != nil {
+		return fmt.Errorf("project story started %s: %w", storyID, err)
+	}
+	return nil
+}
+
 // BackfillAcceptanceCriteria updates stories that have an empty
 // acceptance_criteria by extracting it from STORY_CREATED events.
 // This handles databases created before the column was added.
@@ -951,7 +1004,6 @@ func (s *SQLiteStore) projectAgentStatus(evt Event, payload map[string]any, stat
 	}
 	return nil
 }
-
 
 // InsertAgent inserts an agent record directly into the agents table.
 // Convenience for tests and direct seeding; live runs populate the table via

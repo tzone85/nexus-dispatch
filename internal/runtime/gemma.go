@@ -3,7 +3,9 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -409,7 +411,9 @@ func (g *GemmaRuntime) Execute(ctx context.Context, workDir, model, systemPrompt
 							ToolCallID: tc.ID,
 						})
 
-						log.Printf("[native-runtime] %s: task_complete rejected (%d/%d): %s",
+						// failSummary is multi-line and agent-influenced: %q keeps
+						// it on one log line, so it cannot forge a second.
+						log.Printf("[native-runtime] %s: task_complete rejected (%d/%d): %q",
 							g.StoryID, criteriaRejections, maxRetries, failSummary)
 						// Bail out of THIS iteration's tool-call loop. Subsequent
 						// tool calls in the same response are skipped: their
@@ -583,41 +587,6 @@ func (g *GemmaRuntime) executeTool(ctx context.Context, call llm.ToolCall, workD
 	}
 }
 
-// safePath resolves a relative path within the working directory and rejects
-// any path traversal attempts. Symlinks are resolved to prevent escaping
-// the work directory via symlink indirection.
-func safePath(relPath, workDir string) (string, error) {
-	abs := filepath.Join(workDir, relPath)
-	cleaned := filepath.Clean(abs)
-
-	cleanedWorkDir := filepath.Clean(workDir)
-
-	// Ensure the cleaned path is within workDir before symlink resolution.
-	if !strings.HasPrefix(cleaned, cleanedWorkDir+string(filepath.Separator)) &&
-		cleaned != cleanedWorkDir {
-		return "", fmt.Errorf("path traversal blocked: %s resolves outside work directory", relPath)
-	}
-
-	// Resolve symlinks to catch indirection that escapes the work directory.
-	// Only evaluate if the target exists (new files won't have symlinks).
-	realPath, err := filepath.EvalSymlinks(cleaned)
-	if err == nil {
-		// Target exists — verify the real path is still within workDir.
-		realWorkDir, wdErr := filepath.EvalSymlinks(cleanedWorkDir)
-		if wdErr != nil {
-			realWorkDir = cleanedWorkDir
-		}
-		if !strings.HasPrefix(realPath, realWorkDir+string(filepath.Separator)) &&
-			realPath != realWorkDir {
-			return "", fmt.Errorf("path traversal blocked: %s resolves outside work directory via symlink", relPath)
-		}
-		return realPath, nil
-	}
-
-	// Target doesn't exist yet (new file) — return cleaned path.
-	return cleaned, nil
-}
-
 // isCommandAllowed checks whether a command is permitted by the allowlist.
 // It extracts the binary name from the command (first whitespace-delimited token)
 // and validates that the full command starts with an allowlisted prefix followed
@@ -679,6 +648,9 @@ func (g *GemmaRuntime) execReadFile(call llm.ToolCall, workDir string) llm.ToolC
 
 	absPath, err := safePath(args.Path, workDir)
 	if err != nil {
+		// The agent gets the path-relative reason; the operator log gets the
+		// event, since a blocked escape attempt is worth noticing.
+		log.Printf("[native-runtime] %s: read_file %q rejected: %s", g.StoryID, args.Path, rejectionDetail(err))
 		result.IsError = true
 		result.Content = err.Error()
 		return result
@@ -686,8 +658,13 @@ func (g *GemmaRuntime) execReadFile(call llm.ToolCall, workDir string) llm.ToolC
 
 	content, err := os.ReadFile(absPath)
 	if err != nil {
+		// Agents probe for files that do not exist; only a real I/O error is
+		// worth a log line next to the rejections above.
+		if !errors.Is(err, fs.ErrNotExist) {
+			log.Printf("[native-runtime] %s: read_file %q: read error: %q", g.StoryID, args.Path, err.Error())
+		}
 		result.IsError = true
-		result.Content = fmt.Sprintf("read error: %v", err)
+		result.Content = fmt.Sprintf("read error: %v", errReason(err))
 		return result
 	}
 
@@ -746,6 +723,9 @@ func (g *GemmaRuntime) execWriteFile(call llm.ToolCall, workDir string) llm.Tool
 
 	absPath, err := safePath(args.Path, workDir)
 	if err != nil {
+		// The agent gets the path-relative reason; the operator log gets the
+		// event, since a blocked escape attempt is worth noticing.
+		log.Printf("[native-runtime] %s: write_file %q rejected: %s", g.StoryID, args.Path, rejectionDetail(err))
 		result.IsError = true
 		result.Content = err.Error()
 		return result
@@ -754,14 +734,16 @@ func (g *GemmaRuntime) execWriteFile(call llm.ToolCall, workDir string) llm.Tool
 	// Create parent directories if they don't exist.
 	dir := filepath.Dir(absPath)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
+		log.Printf("[native-runtime] %s: write_file %q: mkdir error: %q", g.StoryID, args.Path, err.Error())
 		result.IsError = true
-		result.Content = fmt.Sprintf("mkdir error: %v", err)
+		result.Content = fmt.Sprintf("mkdir error: %v", errReason(err))
 		return result
 	}
 
 	if err := os.WriteFile(absPath, []byte(args.Content), 0o644); err != nil {
+		log.Printf("[native-runtime] %s: write_file %q: write error: %q", g.StoryID, args.Path, err.Error())
 		result.IsError = true
-		result.Content = fmt.Sprintf("write error: %v", err)
+		result.Content = fmt.Sprintf("write error: %v", errReason(err))
 		return result
 	}
 
@@ -786,6 +768,9 @@ func (g *GemmaRuntime) execEditFile(call llm.ToolCall, workDir string) llm.ToolC
 
 	absPath, err := safePath(args.Path, workDir)
 	if err != nil {
+		// The agent gets the path-relative reason; the operator log gets the
+		// event, since a blocked escape attempt is worth noticing.
+		log.Printf("[native-runtime] %s: edit_file %q rejected: %s", g.StoryID, args.Path, rejectionDetail(err))
 		result.IsError = true
 		result.Content = err.Error()
 		return result
@@ -793,8 +778,11 @@ func (g *GemmaRuntime) execEditFile(call llm.ToolCall, workDir string) llm.ToolC
 
 	content, err := os.ReadFile(absPath)
 	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			log.Printf("[native-runtime] %s: edit_file %q: read error: %q", g.StoryID, args.Path, err.Error())
+		}
 		result.IsError = true
-		result.Content = fmt.Sprintf("read error: %v", err)
+		result.Content = fmt.Sprintf("read error: %v", errReason(err))
 		return result
 	}
 
@@ -807,8 +795,9 @@ func (g *GemmaRuntime) execEditFile(call llm.ToolCall, workDir string) llm.ToolC
 
 	updated := strings.Replace(original, args.OldText, args.NewText, 1)
 	if err := os.WriteFile(absPath, []byte(updated), 0o644); err != nil {
+		log.Printf("[native-runtime] %s: edit_file %q: write error: %q", g.StoryID, args.Path, err.Error())
 		result.IsError = true
-		result.Content = fmt.Sprintf("write error: %v", err)
+		result.Content = fmt.Sprintf("write error: %v", errReason(err))
 		return result
 	}
 

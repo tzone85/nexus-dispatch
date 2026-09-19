@@ -179,8 +179,11 @@ nxd gc [--dry-run]
 | `--dry-run` | false | Preview cleanup without deleting anything |
 
 **What it cleans:**
-- Branches of `merged` stories created more than `branch_retention_days` ago; emits `BRANCH_DELETED` and `GC_COMPLETED`. With `branch_retention_days: 0` nothing is deleted.
-- Worktrees are not touched: the monitor already removes each story's worktree right after merge, and `worktree_prune` is not read.
+- Takes the pipeline lock: a real run refuses while `nxd resume` is running (`--dry-run` does not need it), because it removes worktrees and branches a live run may be working in.
+- Branches of `merged` stories merged more than `branch_retention_days` ago; a story without a recorded merge time is skipped with a note naming it. Emits `BRANCH_DELETED` and `GC_COMPLETED` (with `repo_path`) per repo. With `branch_retention_days: 0` nothing is deleted.
+- Runs in each story's requirement repo. A requirement without a repo path falls back to the current directory (a note says so). A repo that is missing or not a git repository is reported — in `--dry-run` too — as an error for that repo, and the other repos are still cleaned.
+- When every deletion fails the summary reports the failures; "No branches eligible for cleanup" appears only when nothing failed.
+- A leftover worktree that still has such a branch checked out (e.g. the monitor crashed before cleanup) is force-removed before the branch is deleted; a worktree that cannot be removed (locked) is reported together with the branch failure. Otherwise worktrees are not touched: the monitor already removes each story's worktree right after merge, and `worktree_prune` is not read.
 
 ---
 
@@ -390,8 +393,10 @@ nxd pause <req-id>
 Archive a finished requirement so it stops appearing in `status` / `dashboard`. Use `--all` on those commands to see archived requirements again.
 
 ```bash
-nxd archive <req-id>
+nxd archive <req-id> [--force]
 ```
+
+**What it deletes:** the git worktree and branch of each **merged** story of the requirement (status `merged`, or a recorded merge time), in the requirement's repo. Each branch is reported as `removed …`, `already removed …` (the usual case — the monitor cleans up right after a merge) or `could not remove …: <git error>`. Stories that are not merged keep their worktree and branch and are listed as `kept …` (a story that never started is `nothing to remove …`, and a repo that cannot be checked is `could not check …`); pass `--force` to delete those too — any uncommitted work in them is lost. Takes the pipeline lock with or without `--force`, so it refuses to run while `nxd resume` is working in those worktrees.
 
 ---
 
@@ -465,6 +470,8 @@ Inspect a story's pending changes before merge.
 nxd review <story-id>
 ```
 
+Runs in the story's requirement repo and diffs `merge.base_branch...<story branch>`; an empty `merge.base_branch` (the default) is detected from the repo (`origin/HEAD`, then `main`, then `master`), the same resolution `nxd merge` and `nxd resume` use. A story that has not started yet prints `Changes: none yet`; a git failure is printed as `Changes: unavailable (…)` rather than hidden.
+
 ---
 
 ### nxd merge
@@ -474,6 +481,8 @@ Manually merge a story that has reached `merge_ready`. Used when `merge.auto_mer
 ```bash
 nxd merge <story-id>
 ```
+
+Runs in the story's requirement repo (`nxd resume` runs in the current directory); an empty `merge.base_branch` (the default) is detected from the repo the same way `nxd resume` does, in both `local` and `github` mode.
 
 ---
 

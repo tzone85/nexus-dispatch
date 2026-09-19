@@ -99,7 +99,7 @@ func (d *Dispatcher) DispatchWave(dag *graph.DAG, completed map[string]bool, req
 		agentCounter++
 		agentID := fmt.Sprintf("%s-%s-%d", role, reqID, agentCounter)
 		sessionName := fmt.Sprintf("nxd-%s-%s-%d", reqID, role, agentCounter)
-		branch := fmt.Sprintf("nxd/%s", story.ID)
+		branch := state.CanonicalStoryBranch(story.ID)
 
 		assignment := Assignment{
 			StoryID:     story.ID,
