@@ -13,11 +13,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `nxd` branch lookups no longer answer yes for a tag or a remote-tracking ref of the same name (`BranchExists`, whose answer feeds `branch -D`)
 - `nxd gc` measures retention from the merge time, runs in each requirement's repo and reports every failure instead of hiding it (what it touches: cli-reference, `nxd gc`); the reaper projects the events it emits so the projection stays level with the log
 - `nxd gc` takes the pipeline lock and refuses to run while `nxd resume` is active (`--dry-run` is unaffected): it removes worktrees and branches a live run may be working in
+- `nxd merge` and `nxd review` run in the story's requirement repo and detect the base branch when `merge.base_branch` is empty (the default), as `nxd resume` does; `review` prints a git failure instead of hiding it
+- `nxd diff` detects the base branch instead of diffing against a hardcoded `main`
+- Crash recovery uses the resolved base branch, so a stuck merge is recovered in a `master`-only repository; a branch checked out in a live worktree (which `git branch --merged` marks with `+ `) now counts as merged
 
 ### Changed
 - An event type this binary does not know is now logged when the projection skips it (once per type per process) instead of being ignored silently
 - `nxd archive` removes the worktree and branch of merged stories only; `--force` also removes unmerged ones (their uncommitted work is lost)
 - `nxd archive` takes the pipeline lock with or without `--force` and refuses while `nxd resume` is running: it removes worktrees a live run may be working in
+- `nxd status` shows a story's branch once it has started, and `status --json` reports it in `branch`; a story that never started shows none and reports `""`. `nxd review` prints the branch it would act on and marks it `(not started)` for such a story, and says `no longer exists` for a merged story whose branch was cleaned up
 
 ### Security
 - Go toolchain 1.26.6 (clears the called stdlib advisories GO-2026-6218, -6090, -6089, -6088, -5972, -5026)

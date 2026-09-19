@@ -55,6 +55,9 @@ func NewCompletionGate(
 	ps state.ProjectionStore,
 ) *CompletionGate {
 	if baseBranch == "" {
+		// resume passes a resolved base (cli.resolveMergeBase); this default
+		// only covers a caller that passes none, and keeps the gate usable
+		// without a repo to detect from.
 		baseBranch = "main"
 	}
 	return &CompletionGate{

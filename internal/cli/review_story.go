@@ -2,12 +2,13 @@ package cli
 
 import (
 	"fmt"
-	"os"
+	"io"
 	"os/exec"
 	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/tzone85/nexus-dispatch/internal/criteria"
+	"github.com/tzone85/nexus-dispatch/internal/state"
 )
 
 func newReviewStoryCmd() *cobra.Command {
@@ -35,9 +36,25 @@ func runReviewStory(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("story not found: %w", err)
 	}
+	// Resolve the repo and base branch before printing anything, so a
+	// requirement that cannot be read fails cleanly rather than after a
+	// half-printed report.
+	repoDir, mergeCfg, notes, err := storyRepo(s, story)
+	if err != nil {
+		return err
+	}
+	printLines(out, notes)
+	branch := state.StoryBranch(story)
+	// nxd status prints no branch at all for a row with no evidence it
+	// started. Saying the name and that the story never started agrees with
+	// it, and still tells the operator what review would act on.
+	shown := branch
+	if !state.StoryStarted(story) {
+		shown = branch + " (not started)"
+	}
 
 	fmt.Fprintf(out, "Story: %s\nID: %s\nStatus: %s\nComplexity: %d\nBranch: %s\n\n",
-		story.Title, story.ID, story.Status, story.Complexity, story.Branch)
+		story.Title, story.ID, story.Status, story.Complexity, shown)
 
 	// Surface the story's intent so a human reviewing the change can read the
 	// description and acceptance criteria as a clean bulleted list rather than
@@ -49,23 +66,23 @@ func runReviewStory(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(out, "Acceptance Criteria:\n%s\n\n", ac)
 	}
 
-	if story.Branch != "" {
-		repoDir, _ := os.Getwd()
-		baseBranch := s.Config.Merge.BaseBranch
-
-		// Diff stats
-		statCmd := exec.Command("git", "diff", baseBranch+"..."+story.Branch, "--stat")
-		statCmd.Dir = repoDir
-		if statOut, err := statCmd.CombinedOutput(); err == nil && len(statOut) > 0 {
-			fmt.Fprintf(out, "Changes:\n%s\n", string(statOut))
-		}
-
-		// Full diff
-		diffCmd := exec.Command("git", "diff", baseBranch+"..."+story.Branch)
-		diffCmd.Dir = repoDir
-		if diffOut, err := diffCmd.CombinedOutput(); err == nil && len(diffOut) > 0 {
-			fmt.Fprintf(out, "Diff:\n%s\n", string(diffOut))
-		}
+	// Diff in the story's requirement repo against the resolved base branch
+	// (the same resolution nxd merge uses); a git failure is printed, never
+	// swallowed, so a wrong directory is visible instead of an empty
+	// "Changes" section. A story that has not started has no branch yet;
+	// a merged story's branch is removed right after the merge; a repo that
+	// cannot be checked is neither — say which, instead of git noise or a
+	// false "none yet".
+	exists, err := storyBranchExists(repoDir, branch)
+	switch {
+	case err != nil:
+		fmt.Fprintf(out, "Changes: unavailable (%s)\n\n", oneLine(err.Error()))
+	case !exists && state.StoryStarted(story):
+		fmt.Fprintf(out, "Changes: branch %s no longer exists (removed after merge or cleanup)\n\n", branch)
+	case !exists:
+		fmt.Fprintf(out, "Changes: none yet (branch %s does not exist)\n\n", branch)
+	default:
+		printStoryDiff(out, repoDir, mergeCfg.BaseBranch, branch)
 	}
 
 	if story.Status == "merge_ready" {
@@ -73,4 +90,27 @@ func runReviewStory(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(out, "  nxd merge %s    # merge this story\n", storyID)
 	}
 	return nil
+}
+
+// printStoryDiff prints the diff stat and the full diff of branch against
+// base in repoDir; each git failure is printed as "unavailable" with git's
+// message.
+func printStoryDiff(out io.Writer, repoDir, base, branch string) {
+	for _, section := range []struct {
+		title string
+		args  []string
+	}{
+		{"Changes", []string{"diff", base + "..." + branch, "--stat"}},
+		{"Diff", []string{"diff", base + "..." + branch}},
+	} {
+		cmd := exec.Command("git", section.args...)
+		cmd.Dir = repoDir
+		gitOut, err := cmd.CombinedOutput()
+		switch {
+		case err != nil:
+			fmt.Fprintf(out, "%s: unavailable (%v: %s)\n", section.title, err, oneLine(string(gitOut)))
+		case len(gitOut) > 0:
+			fmt.Fprintf(out, "%s:\n%s\n", section.title, string(gitOut))
+		}
+	}
 }

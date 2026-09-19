@@ -21,10 +21,17 @@ type RecoveryAction struct {
 // RunRecovery inspects projection state, the filesystem, and tmux sessions
 // for inconsistencies that indicate a prior crash, then fixes them.  It
 // returns a slice of every corrective action taken (empty when healthy).
-func RunRecovery(repoDir string, es state.EventStore, ps *state.SQLiteStore) []RecoveryAction {
+//
+// baseBranch is the branch a stuck merge would have landed on — the caller's
+// resolved merge base (resolveMergeBase), so a master-only repository
+// recovers too; empty falls back to "main".
+func RunRecovery(repoDir, baseBranch string, es state.EventStore, ps *state.SQLiteStore) []RecoveryAction {
+	if baseBranch == "" {
+		baseBranch = "main"
+	}
 	var actions []RecoveryAction
 	actions = append(actions, recoverOrphanedWorktrees(repoDir, ps, es)...)
-	actions = append(actions, recoverStuckMerges(repoDir, ps, es)...)
+	actions = append(actions, recoverStuckMerges(repoDir, baseBranch, ps, es)...)
 	actions = append(actions, recoverStaleSessions(ps)...)
 	return actions
 }
@@ -72,8 +79,9 @@ func recoverOrphanedWorktrees(repoDir string, ps *state.SQLiteStore, es state.Ev
 }
 
 // recoverStuckMerges finds stories in pr_submitted whose branch has already
-// been merged into main, then emits STORY_MERGED so the pipeline can advance.
-func recoverStuckMerges(repoDir string, ps *state.SQLiteStore, es state.EventStore) []RecoveryAction {
+// been merged into the base branch, then emits STORY_MERGED so the pipeline
+// can advance.
+func recoverStuckMerges(repoDir, baseBranch string, ps *state.SQLiteStore, es state.EventStore) []RecoveryAction {
 	var actions []RecoveryAction
 
 	stories, err := ps.ListStories(state.StoryFilter{Status: "pr_submitted"})
@@ -83,8 +91,8 @@ func recoverStuckMerges(repoDir string, ps *state.SQLiteStore, es state.EventSto
 	}
 
 	for _, story := range stories {
-		branch := fmt.Sprintf("nxd/%s", story.ID)
-		if !isBranchMerged(repoDir, branch) {
+		branch := state.StoryBranch(story)
+		if !isBranchMerged(repoDir, baseBranch, branch) {
 			continue
 		}
 
@@ -213,17 +221,22 @@ func isValidWorktree(path string) bool {
 	return !info.IsDir()
 }
 
-// isBranchMerged reports whether the named branch has been merged into main.
-func isBranchMerged(repoDir, branch string) bool {
-	out, err := exec.Command("git", "-C", repoDir, "branch", "--merged", "main").Output()
+// isBranchMerged reports whether the named branch has been merged into base.
+// --format, not the display listing: that prefixes the current branch with
+// "* " and — since git 2.23 — a branch checked out in a linked worktree with
+// "+ ". A story stuck in pr_submitted still has its worktree (the monitor
+// removes it after the merge), which is exactly the case this recovers.
+func isBranchMerged(repoDir, base, branch string) bool {
+	out, err := exec.Command("git", "-C", repoDir, "branch", "--merged", base, "--format=%(refname:short)").Output()
 	if err != nil {
+		// Most often base does not exist locally (github mode with only
+		// origin/main). The stuck merge is then skipped, and an operator
+		// looking for why must not have to guess.
+		log.Printf("[recovery] cannot tell whether %s is merged into %s in %s: %v — leaving the story alone", branch, base, repoDir, err)
 		return false
 	}
 	for _, line := range strings.Split(string(out), "\n") {
-		name := strings.TrimSpace(line)
-		// Remove leading "* " marker for the current branch.
-		name = strings.TrimPrefix(name, "* ")
-		if name == branch {
+		if strings.TrimSpace(line) == branch {
 			return true
 		}
 	}
