@@ -56,6 +56,10 @@ make mempalace-check              # smoke the MemPalace bridge end-to-end
 - Native Windows: all read-only commands work (`status`, `dashboard`, `doctor`, `config`, `events`, `metrics`, `report`, `projects`). Full agent pipeline (`req`/`resume`) needs tmux → run inside WSL2.
 - Platform-specific code lives in `_unix.go` / `_windows.go` build-tagged pairs: `internal/cli/req_*.go` (daemon detach), `internal/engine/lockfile_*.go` (advisory lock + process liveness), `internal/devdb/docker/host_*.go` (docker default host). Shell command exec goes through `internal/shellexec` (`sh -c` on Unix, `cmd.exe /C` on Windows, override with `NXD_SHELL`).
 
+## Current State (2026-09-14) — branch projection, symlink-safe writes, gc/archive cleanup
+
+- **`stories.branch` is projected** from `STORY_STARTED` (`state/sqlite.go` `projectStoryStarted`; empty replay never clobbers, re-dispatch overwrites). Databases projected before this are backfilled once on startup (`state/backfill.go` `BackfillStoryBranches`, wired in `cli/helpers.go`, guarded by the `story_branch_backfill_done` row in `projection_meta`, which survives `RebuildFrom`). `Project`'s switch is exhaustive over the types in `events.go` (`TestProjectLocked_EveryKnownTypeHasACase`; informational types such as the reaper's are explicit no-op cases); only a type the binary does not know reaches `default:`, which `Project` ignores for forward compatibility. `state.StoryBranch` is the one rule for a story's branch name: the projected branch, else the dispatcher's canonical `nxd/<story-id>` (used by `gc`, `archive`, `merge`, `review` and the monitor's dangling-branch cleanup).
+
 ## Current State (2026-08-08) — operator visibility: notifications, budget guard, timeline
 
 Three operator-facing features (each TDD'd, wired in `resume.go` with source-scan wiring tests in `resume_wiring_test.go`):
