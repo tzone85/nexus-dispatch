@@ -661,6 +661,27 @@ func TestWiring_EventsProjectToSQLite(t *testing.T) {
 	if story.ReqID != "req-proj-001" {
 		t.Errorf("story ReqID = %q, want 'req-proj-001'", story.ReqID)
 	}
+
+	// Reaper events (nxd gc projects them so the watermark advances) are
+	// no-op projections: nil error, no row change. That they are explicit
+	// cases (not the default arm) is what state's
+	// TestProjectLocked_EveryKnownTypeHasACase guards.
+	for _, evt := range []state.Event{
+		state.NewEvent(state.EventBranchDeleted, "reaper", "s-proj-001", map[string]any{"branch": "nxd/s-proj-001", "reason": "gc_retention_expired"}),
+		state.NewEvent(state.EventGCCompleted, "reaper", "", map[string]any{"branches_deleted": 1, "repo_path": "/tmp/repo"}),
+		state.NewEvent(state.EventWorktreePruned, "reaper", "s-proj-001", map[string]any{"worktree_path": "/tmp/wt"}),
+	} {
+		if err := ps.Project(evt); err != nil {
+			t.Fatalf("project %s: %v", evt.Type, err)
+		}
+	}
+	after, err := ps.GetStory("s-proj-001")
+	if err != nil {
+		t.Fatalf("get story after reaper events: %v", err)
+	}
+	if after.Status != story.Status {
+		t.Errorf("reaper events must not change story status: %q -> %q", story.Status, after.Status)
+	}
 }
 
 // --- Test 13: InvalidConfigRejected ---
