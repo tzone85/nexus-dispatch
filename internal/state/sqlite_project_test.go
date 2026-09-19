@@ -1,7 +1,13 @@
 package state
 
 import (
+	"bytes"
+	"errors"
+	"log"
+	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -62,11 +68,11 @@ func TestProject_AllEventTypes_NoErrors(t *testing.T) {
 		{EventReqRejected, "", map[string]any{"id": "R2", "reason": "operator declined"}},
 		{EventStoryCreated, "S2", map[string]any{"id": "S2", "req_id": "R", "title": "split-parent", "complexity": 5}},
 		{EventStorySplit, "S2", map[string]any{"child_story_ids": []string{"S2-a"}}},
-		// Reaper events.
+		// Reaper events: explicit no-op cases.
 		{EventBranchDeleted, "S1", map[string]any{"branch": "nxd/S1", "reason": "gc_retention_expired"}},
 		{EventGCCompleted, "", map[string]any{"branches_deleted": 1, "repo_path": "/tmp/repo"}},
 		{EventWorktreePruned, "S1", map[string]any{"worktree_path": "/tmp/wt"}},
-		// Unknown event type: ignored for forward compatibility.
+		// Unknown event type: projectLocked returns errUnprojected, which Project ignores.
 		{EventType("UNKNOWN_TEST_TYPE"), "", nil},
 	}
 
@@ -317,5 +323,124 @@ func TestStoryBranch_FallsBackToCanonicalName(t *testing.T) {
 	}
 	if got := CanonicalStoryBranch("s-1"); got != "nxd/s-1" {
 		t.Errorf("canonical name: got %q", got)
+	}
+}
+
+// knownEventTypes reads every EventType constant declared in this package's
+// non-test files. The strict pattern is checked against a loose count of
+// `EventType = "` declarations, so a constant declared in another file, or
+// with a digit in its value, cannot slip past the test.
+func knownEventTypes(t *testing.T) []EventType {
+	t.Helper()
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	strict := regexp.MustCompile(`(?m)^\s*Event\w+\s+EventType\s*=\s*"([A-Z0-9_]+)"`)
+	loose := regexp.MustCompile(`EventType\s*=\s*"`)
+	var types []EventType
+	declared := 0
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range strict.FindAllStringSubmatch(string(src), -1) {
+			types = append(types, EventType(m[1]))
+		}
+		declared += len(loose.FindAllString(string(src), -1))
+	}
+	if len(types) == 0 || len(types) != declared {
+		t.Fatalf("matched %d event type constants but %d `EventType = \"` declarations; the pattern is stale", len(types), declared)
+	}
+	return types
+}
+
+// TestProjectLocked_EveryKnownTypeHasACase drives every EventType constant
+// through projectLocked: none may fall to the default arm. A new event type must pick a projection or be listed as
+// a deliberate no-op. Unknown types (a newer log read by an older binary)
+// are still ignored by Project.
+func TestProjectLocked_EveryKnownTypeHasACase(t *testing.T) {
+	types := knownEventTypes(t)
+
+	ps, err := NewSQLiteStore(filepath.Join(t.TempDir(), "nxd.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer func() { _ = ps.Close() }()
+	for _, typ := range types {
+		// Payloads are empty: handlers may fail on that, but only the default
+		// arm returns errUnprojected.
+		if err := ps.projectLocked(NewEvent(typ, "test", "S", nil)); errors.Is(err, errUnprojected) {
+			t.Errorf("%s has no projection case: add one, or list it as a deliberate no-op", typ)
+		}
+	}
+	if err := ps.projectLocked(NewEvent(EventType("UNKNOWN_TEST_TYPE"), "test", "", nil)); !errors.Is(err, errUnprojected) {
+		t.Errorf("an unknown type must reach the default arm, got %v", err)
+	}
+	if err := ps.Project(NewEvent(EventType("UNKNOWN_TEST_TYPE"), "test", "", nil)); err != nil {
+		t.Errorf("Project must ignore an unknown type for forward compatibility, got %v", err)
+	}
+}
+
+// TestProject_UnknownType_LogsAndAdvancesWatermark: forward compatibility is
+// not silence — the skipped event is logged and the watermark still moves
+// past it, so the next open does not rebuild forever.
+func TestProject_UnknownType_LogsAndAdvancesWatermark(t *testing.T) {
+	ps, err := NewSQLiteStore(filepath.Join(t.TempDir(), "nxd.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer func() { _ = ps.Close() }()
+	before, err := ps.AppliedEventCount()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(prev) })
+
+	if err := ps.Project(NewEvent(EventType("UNKNOWN_TEST_TYPE"), "test", "", nil)); err != nil {
+		t.Fatalf("Project must ignore an unknown type, got %v", err)
+	}
+	after, err := ps.AppliedEventCount()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after != before+1 {
+		t.Fatalf("watermark must advance past the ignored event: %d -> %d", before, after)
+	}
+	if !strings.Contains(logs.String(), `ignoring unknown event type "UNKNOWN_TEST_TYPE"`) {
+		t.Fatalf("the ignored event must be logged, got %q", logs.String())
+	}
+}
+
+// TestProject_UnknownType_LogQuoted: the event type and id come from
+// events.jsonl; a newline in either must not forge a second log line.
+func TestProject_UnknownType_LogQuoted(t *testing.T) {
+	ps, err := NewSQLiteStore(filepath.Join(t.TempDir(), "nxd.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer func() { _ = ps.Close() }()
+	var logs bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(prev) })
+
+	evt := NewEvent(EventType("UNKNOWN\nnxd: all clear"), "test", "", nil)
+	if err := ps.Project(evt); err != nil {
+		t.Fatalf("Project must ignore an unknown type, got %v", err)
+	}
+	body := strings.TrimSuffix(logs.String(), "\n")
+	if strings.Count(body, "\n") != 0 {
+		t.Fatalf("the ignored event must produce exactly one log line, got:\n%s", body)
+	}
+	if !strings.Contains(body, `\n`) {
+		t.Fatalf("the newline must be escaped by %%q, got: %s", body)
 	}
 }
