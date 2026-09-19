@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - `STORY_STARTED` now persists the story branch in the projection (existing databases are backfilled once on startup), so `nxd merge`, `review`, `gc` and `archive` see it; a row without one resolves to the canonical `nxd/<story-id>` (`state.StoryBranch`)
   - Upgrade note: restart a running `nxd resume` so new stories are projected with their branch (rows it projects without one still resolve through `state.StoryBranch`; nothing is lost)
+- `nxd` branch lookups no longer answer yes for a tag or a remote-tracking ref of the same name (`BranchExists`, whose answer feeds `branch -D`)
+- `nxd gc` measures retention from the merge time, runs in each requirement's repo and reports every failure instead of hiding it (what it touches: cli-reference, `nxd gc`); the reaper projects the events it emits so the projection stays level with the log
+- `nxd gc` takes the pipeline lock and refuses to run while `nxd resume` is active (`--dry-run` is unaffected): it removes worktrees and branches a live run may be working in
 
 ### Changed
 - An event type this binary does not know is now logged when the projection skips it (once per type per process) instead of being ignored silently

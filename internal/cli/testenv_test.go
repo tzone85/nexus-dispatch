@@ -3,8 +3,10 @@ package cli
 import (
 	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/tzone85/nexus-dispatch/internal/state"
@@ -107,4 +109,66 @@ func execCmd(t *testing.T, cmd *cobra.Command, cfgPath string, args ...string) (
 
 	err := cmd.Execute()
 	return buf.String(), err
+}
+
+// seedStartedStory projects a story with a branch (STORY_STARTED) that was
+// merged at mergedAt, or is still in progress when mergedAt is zero.
+func seedStartedStory(t *testing.T, env *testEnv, reqID, storyID, branch string, mergedAt time.Time) {
+	t.Helper()
+	created := state.NewEvent(state.EventStoryCreated, "system", storyID, map[string]any{
+		"id": storyID, "req_id": reqID, "title": "S", "description": "d", "complexity": 1,
+	})
+	created.Timestamp = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	started := state.NewEvent(state.EventStoryStarted, "a", storyID, map[string]any{"branch": branch})
+	events := []state.Event{created, started}
+	if !mergedAt.IsZero() {
+		merged := state.NewEvent(state.EventStoryMerged, "system", storyID, map[string]any{})
+		merged.Timestamp = mergedAt
+		events = append(events, merged)
+	}
+	for _, e := range events {
+		if err := env.Events.Append(e); err != nil {
+			t.Fatalf("append %s: %v", e.Type, err)
+		}
+		if err := env.Proj.Project(e); err != nil {
+			t.Fatalf("project %s: %v", e.Type, err)
+		}
+	}
+}
+
+// initTestRepoAt creates a git repo at <dir>/<name> and returns its path.
+func initTestRepoAt(t *testing.T, dir, name string) string {
+	t.Helper()
+	repo := filepath.Join(dir, name)
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	initTestRepo(t, repo)
+	return repo
+}
+
+// addTestWorktree checks branch out in a new worktree OUTSIDE the repo (as
+// the executor does, under a state dir) and returns the worktree path.
+func addTestWorktree(t *testing.T, repo, branch string) string {
+	t.Helper()
+	wt := filepath.Join(t.TempDir(), "worktrees", filepath.Base(branch))
+	add := exec.Command("git", "worktree", "add", "-b", branch, wt)
+	add.Dir = repo
+	if out, err := add.CombinedOutput(); err != nil {
+		t.Fatalf("git worktree add: %v\n%s", err, out)
+	}
+	return wt
+}
+
+// gitOutput runs git in repo and returns its output; a git failure fails
+// the test, so an assertion never passes on an error message.
+func gitOutput(t *testing.T, repo string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = repo
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+	return string(out)
 }

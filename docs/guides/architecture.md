@@ -301,7 +301,7 @@ The projection maps events to statuses: `STORY_COMPLETED` → `review`, `STORY_R
 
 Post-merge cleanup happens inside the monitor (see Post-Execution Pipeline, step 9) and emits no cleanup event. At the end of a requirement, dangling branches from stories that never merged are deleted when `cleanup.delete_dangling_branches` is true (default).
 
-`nxd gc` is the only caller of the Reaper, and it only calls `Reaper.GarbageCollect`: it deletes branches of `merged` stories older than `cleanup.branch_retention_days` (measured from the story's creation time) and emits `BRANCH_DELETED` and `GC_COMPLETED`. `Reaper.Reap` — the per-story worktree prune that would emit `WORKTREE_PRUNED` — has no callers, and `cleanup.worktree_prune` and `cleanup.log_archive` are not read by the pipeline.
+`nxd gc` is the only caller of the Reaper, and it only calls `Reaper.GarbageCollect`: it deletes branches of `merged` stories older than `cleanup.branch_retention_days` (measured from the story's merge time; stories with no recorded merge time are skipped) and emits `BRANCH_DELETED` and `GC_COMPLETED`. `Reaper.Reap` — the per-story worktree prune that would emit `WORKTREE_PRUNED` — has no callers, and `cleanup.worktree_prune` and `cleanup.log_archive` are not read by the pipeline.
 
 `nxd gc --dry-run` previews without deleting.
 
