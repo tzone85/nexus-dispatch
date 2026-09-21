@@ -83,6 +83,45 @@ func TestAcquireLock_ReleaseThenReacquire(t *testing.T) {
 	defer second.Release()
 }
 
+// TestAcquireLock_FlockHeldWithDeadPidOnDisk_DoesNotDoubleAcquire pins the
+// double-resume race: when the lock is genuinely flock-held but the on-disk pid
+// is dead (the window in which a holder has flocked the file but not yet
+// rewritten its pid), a second acquirer must NOT reclaim it. The old code read
+// the dead pid and unlinked the still-flocked file, letting two pipelines run.
+func TestAcquireLock_FlockHeldWithDeadPidOnDisk_DoesNotDoubleAcquire(t *testing.T) {
+	dir := t.TempDir()
+	lockPath := filepath.Join(dir, "nxd.lock")
+
+	// A live holder acquires the lock (holds the exclusive flock for the test).
+	held, err := AcquireLock(dir)
+	if err != nil {
+		t.Fatalf("first AcquireLock failed: %v", err)
+	}
+	defer held.Release()
+
+	// Simulate the race window: overwrite the lock file so it records a dead pid
+	// even though the flock is still held by `held`. (os.WriteFile opens its own
+	// fd; the holder's flock is unaffected.)
+	stale, err := json.Marshal(lockInfo{PID: 999999999, Command: "ghost-mid-acquire"})
+	if err != nil {
+		t.Fatalf("marshalling stale info: %v", err)
+	}
+	if err := os.WriteFile(lockPath, stale, 0o644); err != nil {
+		t.Fatalf("overwriting lock file: %v", err)
+	}
+
+	// A concurrent acquire must refuse: the flock is genuinely held, so
+	// reclaiming based on the dead pid would run two pipelines at once.
+	second, err := AcquireLock(dir)
+	if err == nil {
+		second.Release()
+		t.Fatal("AcquireLock reclaimed a flock-held lock from a stale on-disk pid — double-acquire race")
+	}
+	if msg := err.Error(); !strings.Contains(msg, "nxd.lock") {
+		t.Errorf("error should mention the lock file: %q", msg)
+	}
+}
+
 func TestAcquireLock_StaleLockDetection(t *testing.T) {
 	dir := t.TempDir()
 	lockPath := filepath.Join(dir, "nxd.lock")
