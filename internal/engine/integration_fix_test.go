@@ -92,13 +92,15 @@ func TestTechLeadFixer_BuildPrompt_EmptyStories(t *testing.T) {
 	}
 }
 
-// TestTechLeadFixer_BuildPrompt_NXDLogsHint verifies that buildPrompt
-// references nxd (not vxd) for follow-up instructions.
-func TestTechLeadFixer_BuildPrompt_NXDLogsHint(t *testing.T) {
+// TestTechLeadFixer_BuildPrompt_NoForeignCLIHint verifies that buildPrompt does
+// not leak a follow-up CLI invocation for any tool other than nxd. The prompt is
+// fully developer-controlled, so this guards against a future edit pasting a
+// foreign orchestrator's command (`<other> req`) into it — any `req` hint must
+// be `nxd req`.
+func TestTechLeadFixer_BuildPrompt_NoForeignCLIHint(t *testing.T) {
 	fixer := &TechLeadFixer{model: "qwen3-coder:30b"}
 	prompt := fixer.buildPrompt("story-001", "some build error", nil)
-	// Prompt should not reference "vxd" — that's the cloud version.
-	if strings.Contains(prompt, "vxd req") {
-		t.Errorf("prompt references 'vxd req' — should reference 'nxd req' for the offline version")
+	if strings.Contains(prompt, " req") && !strings.Contains(prompt, "nxd req") {
+		t.Errorf("prompt embeds a non-nxd 'req' CLI hint; follow-up commands must reference nxd:\n%s", prompt)
 	}
 }

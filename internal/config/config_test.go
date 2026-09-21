@@ -509,15 +509,35 @@ func TestValidation_InvalidQACriteriaKind(t *testing.T) {
 }
 
 func TestValidation_ValidQACriteriaKinds(t *testing.T) {
+	// Only kinds the criteria evaluator actually implements may validate — a
+	// kind accepted here but missing an evaluator case evaluates to
+	// "unknown criterion type" (Passed=false) forever, silently stalling QA.
 	validKinds := []string{
-		"output_contains", "output_not_contains",
-		"file_exists", "file_contains", "file_not_empty", "exit_code_zero",
+		"file_exists", "file_contains", "test_passes", "coverage_above",
+		"command_succeeds", "migration_succeeds", "schema_changed", "sql_query_returns",
 	}
 	for _, kind := range validKinds {
 		cfg := config.DefaultConfig()
 		cfg.QA.SuccessCriteria = []config.SuccessCriterion{{Kind: kind}}
 		if err := cfg.Validate(); err != nil {
 			t.Errorf("kind %q should be valid, got: %v", kind, err)
+		}
+	}
+}
+
+// TestValidation_RejectsUnimplementedQACriteriaKinds guards against config
+// blessing a criterion the evaluator cannot evaluate. These four kinds were
+// once accepted by the validator but never had an evaluator case, so any story
+// using one could never pass QA. Validation must reject them up front.
+func TestValidation_RejectsUnimplementedQACriteriaKinds(t *testing.T) {
+	unimplemented := []string{
+		"output_contains", "output_not_contains", "file_not_empty", "exit_code_zero",
+	}
+	for _, kind := range unimplemented {
+		cfg := config.DefaultConfig()
+		cfg.QA.SuccessCriteria = []config.SuccessCriterion{{Kind: kind}}
+		if err := cfg.Validate(); err == nil {
+			t.Errorf("kind %q has no evaluator case and must be rejected by Validate()", kind)
 		}
 	}
 }

@@ -201,6 +201,147 @@ func TestRunScanners_GovulncheckRunFailureIsReportedNotSwallowed(t *testing.T) {
 	}
 }
 
+// TestRunScanners_NpmAuditNoLockfileIsReportedNotSwallowed guards the coverage-
+// loss gap for npm audit: with no lockfile, `npm audit --json` writes a
+// well-formed {"error":{"code":"ENOLOCK",...}} report to stdout and exits
+// non-zero. It parses without error and carries no `vulnerabilities`, so before
+// the fix it was counted as a clean run. The failed audit must land in `failed`.
+func TestRunScanners_NpmAuditNoLockfileIsReportedNotSwallowed(t *testing.T) {
+	bin := installAllFakeScanners(t)
+	fakeTool(t, bin, "npm",
+		`{"error":{"code":"ENOLOCK","summary":"This command requires an existing lockfile.","detail":"Try creating one first with: npm i --package-lock-only"}}`, 1)
+	repo := seedRepo(t, map[string]string{
+		"go.mod":       "module example.com/x\n",
+		"package.json": "{}",
+	})
+
+	_, ran, _, failed := RunScanners(context.Background(), repo)
+
+	failedSet := map[ScannerKind]bool{}
+	for _, k := range failed {
+		failedSet[k] = true
+	}
+	if !failedSet[ScannerNpmAudit] {
+		t.Fatalf("npm audit that failed to run (no lockfile) must be in failed, got failed=%v", failed)
+	}
+	for _, k := range ran {
+		if k == ScannerNpmAudit {
+			t.Error("a failed npm audit must not be counted as ran (clean)")
+		}
+	}
+}
+
+// TestRunScanners_SemgrepRuleFetchFailureIsReportedNotSwallowed guards the
+// coverage-loss gap for semgrep: an offline `--config auto` run cannot fetch its
+// rules, so it emits {"errors":[...],"results":[]} and exits non-zero. The empty
+// results parse cleanly, so before the fix it masqueraded as a clean scan. A
+// fatal semgrep error with no results must be reported as failed.
+func TestRunScanners_SemgrepRuleFetchFailureIsReportedNotSwallowed(t *testing.T) {
+	bin := installAllFakeScanners(t)
+	fakeTool(t, bin, "semgrep",
+		`{"errors":[{"level":"error","message":"Rule fetch failed: could not reach semgrep registry"}],"results":[]}`, 2)
+	repo := seedRepo(t, map[string]string{"go.mod": "module example.com/x\n"})
+
+	_, ran, _, failed := RunScanners(context.Background(), repo)
+
+	failedSet := map[ScannerKind]bool{}
+	for _, k := range failed {
+		failedSet[k] = true
+	}
+	if !failedSet[ScannerSemgrep] {
+		t.Fatalf("semgrep that failed to fetch rules must be in failed, got failed=%v", failed)
+	}
+	for _, k := range ran {
+		if k == ScannerSemgrep {
+			t.Error("a failed semgrep must not be counted as ran (clean)")
+		}
+	}
+}
+
+// TestRunScanners_GosecLoadErrorIsReportedNotSwallowed guards the coverage-loss
+// gap for gosec: when it cannot build/load the packages it emits {"Golang
+// errors":{...},"Issues":null} and exits non-zero. Issues is null so it parses
+// as zero findings; before the fix that read as a clean run. A gosec load
+// failure with no issues must be reported as failed.
+func TestRunScanners_GosecLoadErrorIsReportedNotSwallowed(t *testing.T) {
+	bin := installAllFakeScanners(t)
+	fakeTool(t, bin, "gosec",
+		`{"Golang errors":{"main.go":[{"line":1,"column":1,"error":"expected 'package', found EOF"}]},"Issues":null,"Stats":{"files":0,"lines":0}}`, 1)
+	repo := seedRepo(t, map[string]string{"go.mod": "module example.com/x\n"})
+
+	_, ran, _, failed := RunScanners(context.Background(), repo)
+
+	failedSet := map[ScannerKind]bool{}
+	for _, k := range failed {
+		failedSet[k] = true
+	}
+	if !failedSet[ScannerGosec] {
+		t.Fatalf("gosec that failed to build the code must be in failed, got failed=%v", failed)
+	}
+	for _, k := range ran {
+		if k == ScannerGosec {
+			t.Error("a gosec load failure must not be counted as ran (clean)")
+		}
+	}
+}
+
+// TestRunScanners_CleanEmptyScansAreRanNotFailed confirms the structured-error
+// checks do not produce false positives: a genuinely clean scan (empty result
+// set, no error channel, exit 0) must still count as ran.
+func TestRunScanners_CleanEmptyScansAreRanNotFailed(t *testing.T) {
+	bin := installAllFakeScanners(t)
+	// npm audit on a clean project: no vulnerabilities, no error object, exit 0.
+	fakeTool(t, bin, "npm", `{"vulnerabilities":{},"metadata":{"vulnerabilities":{"total":0}}}`, 0)
+	// gosec: no issues, no build errors, exit 0.
+	fakeTool(t, bin, "gosec", `{"Issues":[],"Golang errors":{},"Stats":{"files":3,"lines":120}}`, 0)
+	// semgrep: no results, empty errors, exit 0.
+	fakeTool(t, bin, "semgrep", `{"results":[],"errors":[]}`, 0)
+	repo := seedRepo(t, map[string]string{
+		"go.mod":       "module example.com/x\n",
+		"package.json": "{}",
+	})
+
+	_, ran, _, failed := RunScanners(context.Background(), repo)
+
+	if len(failed) != 0 {
+		t.Fatalf("clean empty scans must not be reported as failed, got failed=%v", failed)
+	}
+	ranSet := map[ScannerKind]bool{}
+	for _, k := range ran {
+		ranSet[k] = true
+	}
+	for _, want := range []ScannerKind{ScannerNpmAudit, ScannerGosec, ScannerSemgrep} {
+		if !ranSet[want] {
+			t.Errorf("clean scanner %s must be counted as ran, got ran=%v", want, ran)
+		}
+	}
+}
+
+// TestRunScanners_SemgrepBenignWarningStillClean confirms a non-fatal semgrep
+// notice (level "warn") with no results does not get misreported as failed —
+// only fatal errors cost coverage.
+func TestRunScanners_SemgrepBenignWarningStillClean(t *testing.T) {
+	bin := installAllFakeScanners(t)
+	fakeTool(t, bin, "semgrep",
+		`{"errors":[{"level":"warn","message":"1 file skipped due to size limit"}],"results":[]}`, 0)
+	repo := seedRepo(t, map[string]string{"go.mod": "module example.com/x\n"})
+
+	_, ran, _, failed := RunScanners(context.Background(), repo)
+
+	for _, k := range failed {
+		if k == ScannerSemgrep {
+			t.Errorf("a benign semgrep warning must not be reported as failed: %v", failed)
+		}
+	}
+	ranSet := map[ScannerKind]bool{}
+	for _, k := range ran {
+		ranSet[k] = true
+	}
+	if !ranSet[ScannerSemgrep] {
+		t.Errorf("semgrep with only a benign warning must be counted as ran, got ran=%v", ran)
+	}
+}
+
 func TestRunScanners_MissingToolsSkippedVisibly(t *testing.T) {
 	bin := t.TempDir()
 	fakeTool(t, bin, "gitleaks", fakeGitleaksOut, 1) // only gitleaks installed

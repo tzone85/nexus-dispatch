@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // writeBridgeScript writes a Python script to tmp that always prints the given
@@ -255,6 +256,43 @@ func TestRunBridge_EmptyBridgePath_ReturnsError(t *testing.T) {
 	_, err := mp.runBridge("health")
 	if err == nil {
 		t.Fatal("expected error when bridgePath is empty")
+	}
+}
+
+func TestRunBridge_TimesOutOnHang(t *testing.T) {
+	// A bridge that never returns (the failure mode graceful-degradation does
+	// NOT cover) must not hang the caller: runBridge bounds it with a context
+	// deadline, kills the process on timeout, and returns an error.
+	tmp := t.TempDir()
+	script := filepath.Join(tmp, "mempalace_bridge.py")
+	content := "import time\ntime.sleep(60)\n"
+	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+		t.Fatalf("write hang script: %v", err)
+	}
+
+	prev := bridgeTimeout
+	bridgeTimeout = 200 * time.Millisecond
+	defer func() { bridgeTimeout = prev }()
+
+	mp := &MemPalace{bridgePath: script, available: true}
+
+	done := make(chan error, 1)
+	start := time.Now()
+	go func() {
+		_, err := mp.runBridge("health")
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected a timeout error from a hanging bridge, got nil")
+		}
+		if elapsed := time.Since(start); elapsed > 5*time.Second {
+			t.Errorf("runBridge took %s — the deadline did not bound the hang", elapsed)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("runBridge did not return — the bridge hang was not bounded by a deadline")
 	}
 }
 

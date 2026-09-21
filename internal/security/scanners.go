@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -389,13 +390,19 @@ func (s Scanner) Run(ctx context.Context, repoDir string) ([]Finding, error) {
 	cmd.Dir = repoDir
 	// Capture stdout only: scanners emit their machine-readable report on
 	// stdout and human log lines (often ANSI-coloured) on stderr. Combining
-	// the streams corrupted the JSON payload. Exit code is intentionally
-	// ignored for the JSON scanners: they exit non-zero when they find
-	// issues, and a genuine run failure corrupts the JSON so the parser
-	// returns an error (→ recorded as failed). govulncheck is the exception —
-	// its text output is empty both when it finds nothing AND when it never
-	// ran (offline, no go.mod, load error), so a clean parse cannot tell the
-	// two apart; we must inspect its exit code (see below).
+	// the streams corrupted the JSON payload. A non-zero exit is expected for
+	// the JSON scanners (they exit non-zero when they find issues), so we do
+	// not treat exit code alone as failure. But a clean parse yielding zero
+	// findings is NOT proof of a clean scan: gosec, semgrep and npm audit all
+	// emit a well-formed JSON *error* report with an empty result set when they
+	// fail to analyze the code (npm audit with no lockfile → {"error":{...}};
+	// semgrep offline rule-fetch failure → {"errors":[...],"results":[]}; gosec
+	// build/load failure → {"Golang errors":{...},"Issues":null}). Those parse
+	// without error, so a per-tool structured-error check routes them to the
+	// `failed` list instead of masquerading as clean (see *Result helpers).
+	// govulncheck is a further exception — its text output is empty both when it
+	// finds nothing AND when it never ran (offline, no go.mod, load error), so a
+	// clean parse cannot tell the two apart and we must inspect its exit code.
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -404,7 +411,7 @@ func (s Scanner) Run(ctx context.Context, repoDir string) ([]Finding, error) {
 
 	switch s.Kind {
 	case ScannerGosec:
-		return parseGosec(out, repoDir)
+		return gosecResult(out, repoDir)
 	case ScannerGovulncheck:
 		// Exit 0 (no vulnerabilities) and exit 3 (vulnerabilities found) are
 		// both successful analyses. Any other outcome — exit 1 (load/network/
@@ -423,11 +430,141 @@ func (s Scanner) Run(ctx context.Context, repoDir string) ([]Finding, error) {
 	case ScannerGitleaks:
 		return parseGitleaks(out, repoDir)
 	case ScannerSemgrep:
-		return parseSemgrep(out, repoDir)
+		return semgrepResult(out, repoDir)
 	case ScannerNpmAudit:
-		return parseNpmAudit(out)
+		return npmAuditResult(out)
 	default:
 		return nil, nil
+	}
+}
+
+// gosecResult parses gosec output and, when the scan produced no findings,
+// checks gosec's "Golang errors" channel: a populated map with no issues means
+// gosec could not build/load the code, so it inspected nothing. That is coverage
+// loss, not a clean run, and must be routed to RunScanners' `failed` list. When
+// findings ARE present they are returned as-is (partial coverage still surfaces
+// real issues rather than dropping them).
+func gosecResult(out []byte, repoDir string) ([]Finding, error) {
+	findings, err := parseGosec(out, repoDir)
+	if err != nil {
+		return nil, err
+	}
+	if len(findings) == 0 {
+		if reason := gosecRunError(out); reason != "" {
+			return nil, fmt.Errorf("gosec did not complete (Go SAST coverage lost): %s", reason)
+		}
+	}
+	return findings, nil
+}
+
+// semgrepResult parses semgrep output and, when no findings were produced,
+// inspects semgrep's `errors` array. A fatal error there (e.g. an offline
+// `--config auto` rule fetch that cannot reach the registry — the common case on
+// the offline-first hosts NXD targets) with an empty result set means semgrep
+// scanned nothing, so it is reported as failed rather than clean.
+func semgrepResult(out []byte, repoDir string) ([]Finding, error) {
+	findings, err := parseSemgrep(out, repoDir)
+	if err != nil {
+		return nil, err
+	}
+	if len(findings) == 0 {
+		if reason := semgrepRunError(out); reason != "" {
+			return nil, fmt.Errorf("semgrep did not complete (SAST coverage lost): %s", reason)
+		}
+	}
+	return findings, nil
+}
+
+// npmAuditResult parses npm audit output and, when no vulnerabilities were
+// produced, inspects npm's top-level `error` object. npm audit writes that
+// object and exits non-zero when the audit itself failed (no lockfile → ENOLOCK,
+// no network → ENETUNREACH); the absent `vulnerabilities` key otherwise parses
+// as a clean run. Detecting the error object keeps a failed audit out of the
+// clean `ran` list.
+func npmAuditResult(out []byte) ([]Finding, error) {
+	findings, err := parseNpmAudit(out)
+	if err != nil {
+		return nil, err
+	}
+	if len(findings) == 0 {
+		if reason := npmAuditRunError(out); reason != "" {
+			return nil, fmt.Errorf("npm audit did not complete (dependency-CVE coverage lost): %s", reason)
+		}
+	}
+	return findings, nil
+}
+
+// gosecRunError returns a non-empty reason when gosec self-reported build/load
+// errors (its "Golang errors" map). Returns "" when the map is absent/empty or
+// the output is not valid JSON (parseGosec already surfaces a parse error).
+func gosecRunError(out []byte) string {
+	var doc struct {
+		GolangErrors map[string]json.RawMessage `json:"Golang errors"`
+	}
+	if err := json.Unmarshal(out, &doc); err != nil {
+		return ""
+	}
+	if len(doc.GolangErrors) == 0 {
+		return ""
+	}
+	files := make([]string, 0, len(doc.GolangErrors))
+	for f := range doc.GolangErrors {
+		files = append(files, f)
+	}
+	sort.Strings(files)
+	return fmt.Sprintf("gosec reported build/load errors for %d file(s): %s", len(files), strings.Join(files, ", "))
+}
+
+// semgrepRunError returns a non-empty reason when semgrep's `errors` array
+// carries a fatal error (level "error", or an unlabelled entry — conservatively
+// treated as fatal). Benign per-file notices ("warn"/"info") do not count as
+// coverage loss. Returns "" when there is no such error or the output is not
+// valid JSON.
+func semgrepRunError(out []byte) string {
+	var doc struct {
+		Errors []struct {
+			Message string `json:"message"`
+			Level   string `json:"level"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal(out, &doc); err != nil {
+		return ""
+	}
+	for _, e := range doc.Errors {
+		if e.Level != "" && !strings.EqualFold(e.Level, "error") {
+			continue // warn/info: not a coverage-losing failure
+		}
+		if e.Message != "" {
+			return e.Message
+		}
+		return "semgrep reported a scan error"
+	}
+	return ""
+}
+
+// npmAuditRunError returns a non-empty reason when npm audit's top-level `error`
+// object is present (the audit failed to run). Returns "" otherwise or when the
+// output is not valid JSON.
+func npmAuditRunError(out []byte) string {
+	var doc struct {
+		Error struct {
+			Code    string `json:"code"`
+			Summary string `json:"summary"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(out, &doc); err != nil {
+		return ""
+	}
+	if doc.Error.Code == "" && doc.Error.Summary == "" {
+		return ""
+	}
+	switch {
+	case doc.Error.Code != "" && doc.Error.Summary != "":
+		return doc.Error.Code + ": " + doc.Error.Summary
+	case doc.Error.Code != "":
+		return doc.Error.Code
+	default:
+		return doc.Error.Summary
 	}
 }
 

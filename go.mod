@@ -4,12 +4,14 @@ go 1.26.1
 
 // toolchain pins the minimum Go toolchain so that builds (local and CI)
 // pull a patch level that clears the 1.26.x stdlib CVEs surfaced by
-// govulncheck (GO-2026-4866, -4870, -4918, -4946, -4947, -4971, -5037,
-// -5039, and -5856 — the crypto/tls Encrypted Client Hello privacy leak,
-// fixed in go1.26.5). With GOTOOLCHAIN=auto (default), older local installs
-// will fetch 1.26.5 on first build instead of compiling against a vulnerable
+// govulncheck. go1.26.6 fixes the currently-called set: GO-2026-6218
+// (net/url quadratic resolvePath), -6090 (crypto/tls post-handshake message
+// flood), -6089 (net/http HTTP/2 ReadHeaderTimeout), -6088 (encoding/xml
+// decode recursion), -5972 (encoding/asn1 recursion), and -5026 (net/http
+// idna Punycode). With GOTOOLCHAIN=auto (default), older local installs will
+// fetch 1.26.6 on first build instead of compiling against a vulnerable
 // stdlib.
-toolchain go1.26.5
+toolchain go1.26.6
 
 require (
 	github.com/charmbracelet/bubbletea v1.3.10
