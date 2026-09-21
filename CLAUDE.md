@@ -73,14 +73,14 @@ Three operator-facing features (each TDD'd, wired in `resume.go` with source-sca
 - **Security agent deltas**: `RunScanners` now returns a fourth `failed` list — a scanner that ran but errored (crash/timeout/parse) is logged and reported as coverage LOST, never counted as a clean run; `Report.Failed` renders in the markdown summary. `KnownScanners()` + `InstallHint()` expose the registry. Coverage: internal/security at 98.3% via a fake-scanner harness (shell scripts on a controlled PATH emitting canned tool output) driving RunScanners end-to-end.
 - **CI supply-chain**: all GitHub Actions pinned to full commit SHAs with version comments.
 
-## Current State (2026-06-26) — security agent (ported from VXD)
+## Current State (2026-06-26) — security agent (ported from the sibling CLI variant)
 
-Self-upskilling security agent, mirrored from vortex-dispatch (offline-friendly: scanners are local binaries, LLM layer uses the configured Ollama/cloud client).
+Self-upskilling security agent, mirrored from the sibling CLI variant (offline-friendly: scanners are local binaries, LLM layer uses the configured Ollama/cloud client).
 - **`internal/security/`** (LLM-free, unit-tested): growable OWASP Top 10 + CWE `KnowledgeBase` (JSON at `<state_dir>/security/knowledge.json`; `Add` immutable/versioned/dedup, `Covers` matches ID or CWE, `Checklist` renders for prompts) + a runner orchestrating **gosec, govulncheck, gitleaks, semgrep, npm audit** (language-aware applicability, PATH detection, graceful degrade — skipped tools are *listed*, never silently dropped; pure per-tool parsers → real findings).
 - **`engine/security_gate.go`** `SecurityGate`: `ScanRepo` (standalone) + `ReviewStory` (per-story, in `postExecutionPipeline` after QA before merge via `Monitor.SetSecurityGate`, wired in `resume.go` — `TestResume_WiresSecurityGate`). Findings ≥ `security.gate_severity` (default **critical**) pause the requirement; never escalate. Self-upskilling: confirmed high+ findings of a new vuln class → learned KB rule + `SECURITY_RULE_LEARNED`.
 - **CLI:** `nxd security scan [path] [--json] [--llm] [--min <sev>]` + `nxd security kb` (falls back to DefaultConfig so it runs in any repo). Planner prompt now carries the OWASP Top 10 so every story is designed secure.
 - **Config:** `security.{disable_gate, gate_severity (default critical), auto_learn (default true), kb_path}`.
-- **Verified:** scanned NXD itself (Go/JS/Python/Shell, all 5 scanners ran, crit=0). Full suite 31 pkgs + vet + golangci-lint clean. Mirrors VXD `internal/security` verbatim (zero VXD refs).
+- **Verified:** scanned NXD itself (Go/JS/Python/Shell, all 5 scanners ran, crit=0). Full suite 31 pkgs + vet + golangci-lint clean. Mirrors the sibling CLI variant's `internal/security` verbatim (zero sibling refs).
 
 ## Core Infrastructure: MemPalace
 
@@ -153,7 +153,7 @@ qa:
 
 ## Sibling Project
 
-VXD (vortex-dispatch) at `~/Sites/misc/vortex-dispatch` is the CLI-only variant (no native Gemma runtime). Shares: artifact store, scratchboard, DAG export, criteria, event store patterns. Does NOT share: semaphore, native runtime, controller, event bus.
+A private sibling CLI-only variant (no native Gemma runtime) shares: artifact store, scratchboard, DAG export, criteria, event store patterns. Does NOT share: semaphore, native runtime, controller, event bus.
 
 ## Smoke Test
 
@@ -199,7 +199,7 @@ rm -f ~/.nxd/nxd.lock ~/.nxd/events.jsonl ~/.nxd/nxd.db
 - **Security**: 7/8 vulnerabilities resolved (command injection, path traversal, input validation); SG-7 (secrets manager) deferred to Phase 2
 - **Anti-hallucination**: criteria-gated completion + rejection budget (max 2 retries) + escalation; reviewer text fallback scans for rejection keywords; same-model review warning
 - **Live-tested**: full end-to-end pipeline validated on a private smoke-test project with gemma4 — requirement → PR merged in 3 minutes
-- **Ephemeral DBs (shipped 2026-05-22)**: full SP1+SP3+SP4+SP5+SP6-A/B/E ports from VXD. Docker-only (no Ghost). `.nxd-db/` worktree injection, `STORY_DB_CREATED/FAILED/DELETED` events, `nxd db` CLI, Lifecycle wired into Executor + Monitor + resume orphan recovery. Pending: dashboard column, metrics DB section.
+- **Ephemeral DBs (shipped 2026-05-22)**: full SP1+SP3+SP4+SP5+SP6-A/B/E ports from the sibling CLI variant. Docker-only (no Ghost). `.nxd-db/` worktree injection, `STORY_DB_CREATED/FAILED/DELETED` events, `nxd db` CLI, Lifecycle wired into Executor + Monitor + resume orphan recovery. Pending: dashboard column, metrics DB section.
 ### Per-Package Coverage (2026-05-11)
 
 Above 95%: sanitize (100%), memory (99%), graph (96%), nlog (96%)
