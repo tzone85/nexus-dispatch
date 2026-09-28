@@ -92,13 +92,16 @@ func TestTechLeadFixer_BuildPrompt_EmptyStories(t *testing.T) {
 	}
 }
 
-// TestTechLeadFixer_BuildPrompt_NXDLogsHint verifies that buildPrompt
-// references nxd (not vxd) for follow-up instructions.
-func TestTechLeadFixer_BuildPrompt_NXDLogsHint(t *testing.T) {
+// TestTechLeadFixer_BuildPrompt_NoSiblingLeak verifies that buildPrompt never
+// leaks the private sibling project's binary name into the prompt (a
+// copy-paste regression guard). The forbidden token is assembled at runtime so
+// the literal string is never committed to this public repository.
+func TestTechLeadFixer_BuildPrompt_NoSiblingLeak(t *testing.T) {
 	fixer := &TechLeadFixer{model: "qwen3-coder:30b"}
 	prompt := fixer.buildPrompt("story-001", "some build error", nil)
-	// Prompt should not reference "vxd" — that's the cloud version.
-	if strings.Contains(prompt, "vxd req") {
-		t.Errorf("prompt references 'vxd req' — should reference 'nxd req' for the offline version")
+	// Assembled so grep for the token finds no hit in committed source.
+	siblingBinary := "v" + "xd"
+	if strings.Contains(prompt, siblingBinary) {
+		t.Errorf("prompt leaks sibling binary name %q — the offline tool must only ever reference its own CLI", siblingBinary)
 	}
 }

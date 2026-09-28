@@ -380,6 +380,47 @@ func TestSafePath_SymlinkOutsideWorkDir(t *testing.T) {
 	}
 }
 
+// TestSafePath_NewFileUnderSymlinkedParent guards the write path: creating a
+// not-yet-existing file *through* a symlinked parent directory that points
+// outside workDir must be blocked. EvalSymlinks cannot resolve the missing
+// leaf, so the guard has to resolve the symlinked parent instead.
+func TestSafePath_NewFileUnderSymlinkedParent(t *testing.T) {
+	workDir := t.TempDir()
+	outsideDir := t.TempDir()
+
+	// Symlink inside workDir pointing to a directory outside it (as a malicious
+	// repo could commit and `git worktree add` would faithfully check out).
+	symlinkPath := filepath.Join(workDir, "escape")
+	if err := os.Symlink(outsideDir, symlinkPath); err != nil {
+		t.Skipf("symlink creation not supported: %v", err)
+	}
+
+	// The target file does not exist yet — this is the write-a-new-file case.
+	_, err := safePath("escape/planted.txt", workDir)
+	if err == nil {
+		t.Error("expected error writing a new file through a symlinked parent that escapes workDir")
+	}
+	if err != nil && !strings.Contains(err.Error(), "traversal") {
+		t.Errorf("expected 'traversal' in error, got: %v", err)
+	}
+}
+
+// TestSafePath_NewFileInRealSubdir confirms the write path still allows a
+// legitimate new file under a real (non-symlinked) subdirectory of workDir.
+func TestSafePath_NewFileInRealSubdir(t *testing.T) {
+	workDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workDir, "pkg"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	// New file (does not exist) under a real subdir, and a new nested dir path.
+	for _, rel := range []string{"pkg/new.go", "brand/new/nested.go", "top.go"} {
+		if _, err := safePath(rel, workDir); err != nil {
+			t.Errorf("legitimate new file %q must be allowed, got: %v", rel, err)
+		}
+	}
+}
+
 func TestSafePath_ValidSymlinkWithinWorkDir(t *testing.T) {
 	workDir := t.TempDir()
 

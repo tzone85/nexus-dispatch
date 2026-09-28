@@ -599,14 +599,14 @@ func safePath(relPath, workDir string) (string, error) {
 	}
 
 	// Resolve symlinks to catch indirection that escapes the work directory.
-	// Only evaluate if the target exists (new files won't have symlinks).
+	realWorkDir, wdErr := filepath.EvalSymlinks(cleanedWorkDir)
+	if wdErr != nil {
+		realWorkDir = cleanedWorkDir
+	}
+
 	realPath, err := filepath.EvalSymlinks(cleaned)
 	if err == nil {
 		// Target exists — verify the real path is still within workDir.
-		realWorkDir, wdErr := filepath.EvalSymlinks(cleanedWorkDir)
-		if wdErr != nil {
-			realWorkDir = cleanedWorkDir
-		}
 		if !strings.HasPrefix(realPath, realWorkDir+string(filepath.Separator)) &&
 			realPath != realWorkDir {
 			return "", fmt.Errorf("path traversal blocked: %s resolves outside work directory via symlink", relPath)
@@ -614,7 +614,27 @@ func safePath(relPath, workDir string) (string, error) {
 		return realPath, nil
 	}
 
-	// Target doesn't exist yet (new file) — return cleaned path.
+	// Target doesn't exist yet (new file). EvalSymlinks needs every path
+	// component to exist, so it cannot resolve the leaf — but a symlinked
+	// PARENT directory (e.g. a committed symlink checked out into the worktree)
+	// can still redirect the write outside workDir. Resolve the deepest
+	// existing ancestor and re-check containment so such a parent is caught.
+	for ancestor := filepath.Dir(cleaned); ; {
+		realAncestor, aErr := filepath.EvalSymlinks(ancestor)
+		if aErr == nil {
+			if !strings.HasPrefix(realAncestor, realWorkDir+string(filepath.Separator)) &&
+				realAncestor != realWorkDir {
+				return "", fmt.Errorf("path traversal blocked: %s resolves outside work directory via symlinked parent", relPath)
+			}
+			break
+		}
+		parent := filepath.Dir(ancestor)
+		if parent == ancestor {
+			break // reached filesystem root without an existing ancestor
+		}
+		ancestor = parent
+	}
+
 	return cleaned, nil
 }
 

@@ -84,6 +84,17 @@ func TestBudgetGuard_Check(t *testing.T) {
 		}
 	})
 
+	t.Run("unreadable metrics reports an error (fail closed)", func(t *testing.T) {
+		// A metrics path that is a directory triggers a genuine read error
+		// (not os.IsNotExist), exercising the fail-open regression: the guard
+		// must surface Err instead of silently reporting $0/OK.
+		g := NewBudgetGuard(budgetBilling(4, 80), dir) // dir, not a file
+		st := g.Check("req-a")
+		if st.Err == nil {
+			t.Fatal("a genuine metrics read failure must set BudgetStatus.Err, not report clean")
+		}
+	})
+
 	t.Run("subscription mode never trips", func(t *testing.T) {
 		b := budgetBilling(1, 80)
 		b.LLMCosts.Mode = "subscription"
@@ -150,6 +161,20 @@ func TestMonitor_EnforceBudget(t *testing.T) {
 		}
 		if evts, _ := es.List(state.EventFilter{Type: state.EventReqPaused}); len(evts) != 0 {
 			t.Errorf("warning must not pause, got %d pause events", len(evts))
+		}
+	})
+
+	t.Run("unreadable metrics pauses (fail closed)", func(t *testing.T) {
+		es, ps := capacityTestStores(t)
+		seedCapacityStory(t, es, ps, "req-bg", "story-bg")
+		// Point the guard at a directory so ReadAll returns a genuine error.
+		m := NewMonitor(nil, nil, nil, nil, nil, config.Config{}, es, ps)
+		m.SetBudgetGuard(NewBudgetGuard(budgetBilling(100, 80), t.TempDir()))
+		if !m.enforceBudget("story-bg") {
+			t.Fatal("an unreadable metrics file must pause (fail closed), not continue")
+		}
+		if evts, _ := es.List(state.EventFilter{Type: state.EventReqPaused}); len(evts) != 1 {
+			t.Errorf("want the requirement paused on a metrics read error, got %d pause events", len(evts))
 		}
 	})
 

@@ -8,6 +8,26 @@ import (
 	"testing"
 )
 
+// TestNewNetworkGitCmd_DisablesPrompt guards that remote git operations run
+// with interactive credential prompting disabled, so a missing-credential
+// situation on a private remote fails fast instead of hanging the (lock-held)
+// merge pipeline forever.
+func TestNewNetworkGitCmd_DisablesPrompt(t *testing.T) {
+	cmd := newNetworkGitCmd("/some/repo", "fetch", "origin", "main")
+	if cmd.Dir != "/some/repo" {
+		t.Errorf("cmd.Dir = %q, want /some/repo", cmd.Dir)
+	}
+	var found bool
+	for _, kv := range cmd.Env {
+		if kv == "GIT_TERMINAL_PROMPT=0" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("network git command must set GIT_TERMINAL_PROMPT=0 to avoid an indefinite credential-prompt hang; env=%v", cmd.Env)
+	}
+}
+
 // TestMergePR_FakeGH tests MergePR using a fake gh script.
 func TestMergePR_FakeGH(t *testing.T) {
 	fakeDir := t.TempDir()
