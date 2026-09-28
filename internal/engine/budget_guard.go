@@ -25,6 +25,11 @@ type BudgetStatus struct {
 	SpentUSD  float64
 	BudgetUSD float64
 	WarnUSD   float64
+	// Err is set when the usage metrics could not be read, so the reported
+	// spend is unreliable (partial or zero). Callers must fail closed on a
+	// non-nil Err rather than trust SpentUSD/State — under-counting spend is
+	// the one direction this guard must never take (see Check).
+	Err error
 }
 
 // BudgetGuard enforces billing.budget_usd: it prices the requirement's actual
@@ -73,15 +78,22 @@ func (g *BudgetGuard) Check(reqID string) BudgetStatus {
 		WarnUSD:   g.billing.BudgetUSD * g.warnPct() / 100,
 	}
 
+	// A missing metrics file is not an error: ReadAll returns (nil, nil) for it,
+	// which correctly prices as $0 spent. A non-nil err is a genuine read
+	// failure (permission denied, an over-long JSONL line, etc.). ReadAll still
+	// returns whatever records it parsed before the failure, so price those —
+	// counting more spend fails safe — but surface the error so the caller can
+	// fail closed instead of concluding "under budget" from an unreliable total.
 	entries, err := metrics.NewRecorder(g.metricsPath).ReadAll()
-	if err != nil {
-		return status // no metrics yet — nothing spent
-	}
 	for _, e := range entries {
 		if e.ReqID != "" && e.ReqID != reqID {
 			continue
 		}
 		status.SpentUSD += g.costFor(e.Model, e.TokensIn, e.TokensOut)
+	}
+	if err != nil {
+		status.Err = err
+		return status
 	}
 
 	switch {
