@@ -16,6 +16,8 @@ type ToolStory struct {
 	Complexity         int      `json:"complexity"`
 	AcceptanceCriteria string   `json:"acceptance_criteria"`
 	DependsOn          []string `json:"depends_on"`
+	OwnedFiles         []string `json:"owned_files"`
+	WaveHint           string   `json:"wave_hint"`
 }
 
 // ClarificationRequest holds a question the planner needs answered before
@@ -62,6 +64,16 @@ func PlannerTools() []llm.ToolDefinition {
 						"type": "array",
 						"items": {"type": "string"},
 						"description": "Story IDs this story depends on (empty if none)"
+					},
+					"owned_files": {
+						"type": "array",
+						"items": {"type": "string"},
+						"description": "Exact repo-relative file paths this story owns and will create or modify. Each path MUST appear in exactly ONE story's owned_files so the dispatcher can run non-overlapping stories in parallel and serialize stories that share a file."
+					},
+					"wave_hint": {
+						"type": "string",
+						"enum": ["parallel", "sequential"],
+						"description": "'sequential' if this story touches shared/core files (e.g. entry point, go.mod, package.json) and must run alone; 'parallel' otherwise."
 					}
 				},
 				"required": ["title", "description", "complexity", "acceptance_criteria"]
@@ -147,11 +159,13 @@ func ProcessPlannerToolCalls(calls []llm.ToolCall) (PlannerToolResult, error) {
 
 // createStoryArgs mirrors the JSON schema for the create_story tool.
 type createStoryArgs struct {
-	Title              string   `json:"title"`
-	Description        string   `json:"description"`
-	Complexity         int      `json:"complexity"`
-	AcceptanceCriteria string   `json:"acceptance_criteria"`
-	Dependencies       []string `json:"dependencies"`
+	Title              string              `json:"title"`
+	Description        string              `json:"description"`
+	Complexity         int                 `json:"complexity"`
+	AcceptanceCriteria string              `json:"acceptance_criteria"`
+	Dependencies       []string            `json:"dependencies"`
+	OwnedFiles         FlexibleStringSlice `json:"owned_files"`
+	WaveHint           string              `json:"wave_hint"`
 }
 
 func parseCreateStory(raw json.RawMessage, seq int) (ToolStory, error) {
@@ -175,6 +189,8 @@ func parseCreateStory(raw json.RawMessage, seq int) (ToolStory, error) {
 		Complexity:         args.Complexity,
 		AcceptanceCriteria: args.AcceptanceCriteria,
 		DependsOn:          deps,
+		OwnedFiles:         []string(args.OwnedFiles),
+		WaveHint:           args.WaveHint,
 	}, nil
 }
 
