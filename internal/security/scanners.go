@@ -300,6 +300,20 @@ func parseSemgrep(out []byte, repoDir string) ([]Finding, error) {
 
 func parseNpmAudit(out []byte) ([]Finding, error) {
 	var doc struct {
+		// npm emits a well-formed JSON error envelope (and exits non-zero) when
+		// it cannot actually audit — e.g. ENOLOCK when the worktree has a
+		// package.json but no committed lockfile, which is the normal state of a
+		// story worktree before the post-merge `npm install`. That envelope
+		// unmarshals cleanly into the fields below with a nil Vulnerabilities
+		// map, so without inspecting Error the scan would report zero findings
+		// and a nil error — routing a scan that never ran into RunScanners'
+		// `ran` (clean) list. This is the exact false-negative the `failed` list
+		// exists to prevent, and the same hazard govulncheckCompleted guards
+		// against for the Go CVE scanner.
+		Error *struct {
+			Code    string `json:"code"`
+			Summary string `json:"summary"`
+		} `json:"error"`
 		Vulnerabilities map[string]struct {
 			Name     string            `json:"name"`
 			Severity string            `json:"severity"`
@@ -309,6 +323,13 @@ func parseNpmAudit(out []byte) ([]Finding, error) {
 	}
 	if err := json.Unmarshal(out, &doc); err != nil {
 		return nil, err
+	}
+	if doc.Error != nil {
+		detail := doc.Error.Code
+		if detail == "" {
+			detail = doc.Error.Summary
+		}
+		return nil, fmt.Errorf("npm audit did not complete (dependency-CVE coverage lost): %s", detail)
 	}
 	findings := make([]Finding, 0, len(doc.Vulnerabilities))
 	for pkg, v := range doc.Vulnerabilities {

@@ -195,6 +195,36 @@ func TestParseNpmAudit_FallsBackToMapKeyForName(t *testing.T) {
 	}
 }
 
+func TestParseNpmAudit_ErrorEnvelopeIsCoverageLoss(t *testing.T) {
+	// npm audit --json emits this well-formed envelope and exits non-zero when
+	// it cannot audit (no lockfile). It must be reported as a failed scan, not a
+	// clean run, or dependency-CVE coverage is silently lost at the gate.
+	out := []byte(`{"error":{"code":"ENOLOCK","summary":"This command requires an existing lockfile.","detail":"Try creating one first with: npm i --package-lock-only"}}`)
+	fs, err := parseNpmAudit(out)
+	if err == nil {
+		t.Fatal("parseNpmAudit must surface npm's error envelope as a failure, not report a clean run")
+	}
+	if len(fs) != 0 {
+		t.Errorf("a non-completing audit must yield no findings, got %d", len(fs))
+	}
+	if !strings.Contains(err.Error(), "ENOLOCK") {
+		t.Errorf("error should name the npm failure code, got %q", err.Error())
+	}
+}
+
+func TestParseNpmAudit_CleanReportHasNoError(t *testing.T) {
+	// A genuine clean audit (modern schema, empty vulnerabilities) must still
+	// parse as success with zero findings — the error guard must not false-trip.
+	out := []byte(`{"auditReportVersion":2,"vulnerabilities":{},"metadata":{"vulnerabilities":{"total":0}}}`)
+	fs, err := parseNpmAudit(out)
+	if err != nil {
+		t.Fatalf("clean audit must not error: %v", err)
+	}
+	if len(fs) != 0 {
+		t.Errorf("clean audit must yield no findings, got %d", len(fs))
+	}
+}
+
 func TestParseGovulncheck_MalformedLinesSkipped(t *testing.T) {
 	out := []byte("Vulnerability #1 without colon\nVulnerability #2:   \nVulnerability #3: GO-2025-999\n")
 	fs, err := parseGovulncheck(out)
