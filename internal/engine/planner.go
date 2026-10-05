@@ -609,6 +609,8 @@ func mapToolStories(toolStories []ToolStory) []PlannedStory {
 			AcceptanceCriteria: FlexibleString(ts.AcceptanceCriteria),
 			Complexity:         ts.Complexity,
 			DependsOn:          ts.DependsOn,
+			OwnedFiles:         ts.OwnedFiles,
+			WaveHint:           ts.WaveHint,
 		}
 	}
 	return stories
