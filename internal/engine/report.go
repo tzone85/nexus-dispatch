@@ -124,7 +124,7 @@ func (rb *ReportBuilder) Build(reqID string) (ReportData, error) {
 		return ReportData{}, fmt.Errorf("build stories: %w", err)
 	}
 
-	effort := rb.buildEffort(stories)
+	effort := rb.buildEffort(reqID, stories)
 	timeline := rb.buildTimeline(reqID, stories)
 	agentStats := rb.buildAgentStats(stories)
 	llmUsage := rb.buildLLMUsage(reqID)
@@ -223,7 +223,7 @@ func (rb *ReportBuilder) storyDuration(s state.Story) time.Duration {
 
 // buildEffort maps the stories to StoryEstimate values and calls CalculateCostWithTokens
 // using actual token usage from the metrics store when available.
-func (rb *ReportBuilder) buildEffort(stories []state.Story) Estimate {
+func (rb *ReportBuilder) buildEffort(reqID string, stories []state.Story) Estimate {
 	estimates := make([]StoryEstimate, 0, len(stories))
 	for _, s := range stories {
 		estimates = append(estimates, StoryEstimate{
@@ -233,16 +233,23 @@ func (rb *ReportBuilder) buildEffort(stories []state.Story) Estimate {
 		})
 	}
 
-	// Sum actual token usage from the metrics store.
-	inputTokens, outputTokens := rb.sumTokenUsage()
+	// Sum actual token usage from the metrics store for THIS requirement.
+	inputTokens, outputTokens := rb.sumTokenUsage(reqID)
 	return CalculateCostWithTokens(estimates, rb.cfg.Billing, 0, inputTokens, outputTokens)
 }
 
-// sumTokenUsage reads the metrics.jsonl file and sums all token counts.
+// sumTokenUsage reads the metrics.jsonl file and sums token counts for reqID.
+// metrics.jsonl is shared across every requirement ever run, so entries owned
+// by other requirements must be excluded or the report's effort cost
+// cross-counts their spend (buildLLMUsage and BudgetGuard.Check scope the same
+// file the same way). Entries with an empty ReqID (older records) are included.
 // Returns (0, 0) if the file doesn't exist or can't be read.
-func (rb *ReportBuilder) sumTokenUsage() (inputTokens, outputTokens int) {
+func (rb *ReportBuilder) sumTokenUsage(reqID string) (inputTokens, outputTokens int) {
 	entries := rb.readMetricEntries()
 	for _, e := range entries {
+		if e.ReqID != "" && e.ReqID != reqID {
+			continue
+		}
 		inputTokens += e.TokensIn
 		outputTokens += e.TokensOut
 	}
