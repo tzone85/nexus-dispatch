@@ -336,6 +336,115 @@ func TestRunScanners_GovulncheckCleanExitZero(t *testing.T) {
 	}
 }
 
+// A semgrep run that cannot load its rules (e.g. "--config auto" cannot reach
+// the registry on NXD's offline-first host) emits well-formed JSON with an
+// empty "results" array and a populated top-level "errors" array, exiting
+// non-zero. The finding parser reads only "results" and would decode zero
+// findings, so without an explicit completion check the scan would masquerade
+// as a clean SAST pass. It must be reported as failed (coverage lost).
+func TestRunScanners_SemgrepRuleLoadFailureIsReportedNotSwallowed(t *testing.T) {
+	bin := installAllFakeScanners(t)
+	fakeTool(t, bin, "semgrep",
+		`{"results":[],"errors":[{"message":"invalid configuration: unable to fetch registry rules"}],"paths":{"scanned":[]}}`, 2)
+	repo := seedRepo(t, map[string]string{"go.mod": "module example.com/x\n"})
+
+	_, ran, _, failed := RunScanners(context.Background(), repo)
+
+	failedSet := map[ScannerKind]bool{}
+	for _, k := range failed {
+		failedSet[k] = true
+	}
+	if !failedSet[ScannerSemgrep] {
+		t.Fatalf("a semgrep run that inspected nothing must be in failed, got ran=%v failed=%v", ran, failed)
+	}
+	for _, k := range ran {
+		if k == ScannerSemgrep {
+			t.Error("a semgrep run that lost coverage must not be counted as ran (clean)")
+		}
+	}
+}
+
+// A semgrep run that produced findings but also reported a per-file parse
+// warning clearly executed; it must stay in `ran`, not be downgraded to failed
+// by the completion check.
+func TestRunScanners_SemgrepPartialErrorsWithResultsIsRan(t *testing.T) {
+	bin := installAllFakeScanners(t)
+	fakeTool(t, bin, "semgrep",
+		`{"results":[{"check_id":"go.sqli","path":"db.go","start":{"line":42},"extra":{"message":"SQLi","severity":"ERROR","metadata":{"cwe":["CWE-89"]}}}],"errors":[{"message":"could not parse generated.go"}]}`, 1)
+	repo := seedRepo(t, map[string]string{"go.mod": "module example.com/x\n"})
+
+	findings, ran, _, failed := RunScanners(context.Background(), repo)
+
+	ranSet := map[ScannerKind]bool{}
+	for _, k := range ran {
+		ranSet[k] = true
+	}
+	if !ranSet[ScannerSemgrep] {
+		t.Errorf("a semgrep run with results must be counted as ran despite per-file errors, got ran=%v failed=%v", ran, failed)
+	}
+	var gotSemgrep bool
+	for _, f := range findings {
+		if f.Tool == "semgrep" {
+			gotSemgrep = true
+		}
+	}
+	if !gotSemgrep {
+		t.Error("semgrep findings must still be parsed on a partially-errored run")
+	}
+}
+
+// An `npm audit --json` run with no lockfile emits a top-level "error" object
+// (ENOLOCK) and no "vulnerabilities" key, exiting non-zero. The parser reads
+// only "vulnerabilities" and would decode zero findings, so the un-audited
+// package set would masquerade as a clean dependency scan. It must be failed.
+func TestRunScanners_NpmAuditNoLockfileIsReportedNotSwallowed(t *testing.T) {
+	bin := installAllFakeScanners(t)
+	fakeTool(t, bin, "npm",
+		`{"error":{"code":"ENOLOCK","summary":"This command requires an existing lockfile.","detail":"Try 'npm i --package-lock-only'."}}`, 1)
+	repo := seedRepo(t, map[string]string{"package.json": "{}"})
+
+	_, ran, _, failed := RunScanners(context.Background(), repo)
+
+	failedSet := map[ScannerKind]bool{}
+	for _, k := range failed {
+		failedSet[k] = true
+	}
+	if !failedSet[ScannerNpmAudit] {
+		t.Fatalf("npm audit that never ran (ENOLOCK) must be in failed, got ran=%v failed=%v", ran, failed)
+	}
+	for _, k := range ran {
+		if k == ScannerNpmAudit {
+			t.Error("an npm audit that never audited must not be counted as ran (clean)")
+		}
+	}
+}
+
+// A gosec run on packages that fail to compile emits a top-level "Golang errors"
+// map with an empty "Issues" array, exiting non-zero. The parser reads only
+// "Issues", so the un-analyzed packages would masquerade as a clean SAST pass.
+// It must be reported as failed.
+func TestRunScanners_GosecLoadErrorIsReportedNotSwallowed(t *testing.T) {
+	bin := installAllFakeScanners(t)
+	fakeTool(t, bin, "gosec",
+		`{"Golang errors":{"main.go":[{"line":3,"column":8,"error":"could not import missing/pkg"}]},"Issues":[]}`, 1)
+	repo := seedRepo(t, map[string]string{"go.mod": "module example.com/x\n"})
+
+	_, ran, _, failed := RunScanners(context.Background(), repo)
+
+	failedSet := map[ScannerKind]bool{}
+	for _, k := range failed {
+		failedSet[k] = true
+	}
+	if !failedSet[ScannerGosec] {
+		t.Fatalf("gosec with Golang load errors must be in failed, got ran=%v failed=%v", ran, failed)
+	}
+	for _, k := range ran {
+		if k == ScannerGosec {
+			t.Error("a gosec run that could not compile the code must not be counted as ran (clean)")
+		}
+	}
+}
+
 func TestDetectScanners_CombinesLanguageAndAvailability(t *testing.T) {
 	bin := t.TempDir()
 	fakeTool(t, bin, "gosec", "", 0)
