@@ -4,14 +4,15 @@ go 1.26.1
 
 // toolchain pins the minimum Go toolchain so that builds (local and CI)
 // pull a patch level that clears the 1.26.x stdlib CVEs surfaced by
-// govulncheck. go1.26.6 clears the latest batch of CALLED standard-library
-// vulnerabilities (GO-2026-6089 net/http, GO-2026-6088 encoding/xml,
-// GO-2026-5972 encoding/asn1, GO-2026-5026 net/http/x-net idna, among others
-// — all "Fixed in go1.26.6") on top of the earlier crypto/tls ECH leak fixed
-// in go1.26.5. With GOTOOLCHAIN=auto (default), older local installs will
-// fetch 1.26.6 on first build instead of compiling against a vulnerable
-// stdlib.
-toolchain go1.26.6
+// govulncheck. go1.26.9 clears the latest batch of CALLED standard-library
+// vulnerabilities (GO-2026-6603/6605/6607/6608/6609/6610/6611/6612/6613/6617
+// across net/http, net/textproto and crypto/tls — all "Fixed in go1.26.9")
+// on top of the earlier net/http, encoding/xml, encoding/asn1 and crypto/tls
+// batches cleared by go1.26.6 and the ECH leak fixed in go1.26.5. With
+// GOTOOLCHAIN=auto (default), older local installs will fetch 1.26.9 on first
+// build instead of compiling against a vulnerable stdlib. The called
+// golang.org/x/text CVE (GO-2026-6629) is cleared by the v0.41.0 bump below.
+toolchain go1.26.9
 
 require (
 	github.com/charmbracelet/bubbletea v1.3.10
@@ -47,5 +48,5 @@ require (
 	github.com/rogpeppe/go-internal v1.15.0 // indirect
 	github.com/spf13/pflag v1.0.9 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
-	golang.org/x/text v0.39.0 // indirect
+	golang.org/x/text v0.41.0 // indirect
 )
