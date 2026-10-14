@@ -171,7 +171,8 @@ func relPath(repoDir, p string) string {
 
 func parseGosec(out []byte, repoDir string) ([]Finding, error) {
 	var doc struct {
-		Issues []struct {
+		GolangErrors map[string]json.RawMessage `json:"Golang errors"`
+		Issues       []struct {
 			Severity string `json:"severity"`
 			RuleID   string `json:"rule_id"`
 			Details  string `json:"details"`
@@ -184,6 +185,19 @@ func parseGosec(out []byte, repoDir string) ([]Finding, error) {
 	}
 	if err := json.Unmarshal(out, &doc); err != nil {
 		return nil, err
+	}
+	// gosec reports packages it could not load/compile in a "Golang errors" map
+	// while still emitting valid JSON with an empty (or partial) Issues array and
+	// a non-zero exit — which Scanner.Run intentionally ignores for the JSON
+	// scanners. When Issues is empty AND compile errors are present, gosec
+	// inspected nothing, so a clean parse would masquerade as a clean SAST run
+	// (the same coverage-loss trap the npm/govulncheck paths guard against).
+	// Surface that as an error so RunScanners records gosec as failed, not ran.
+	// A PARTIAL run (some packages compiled → real Issues, others errored) keeps
+	// its findings: routing the whole run to `failed` would discard genuine
+	// findings, which is worse than the narrower coverage note it would add.
+	if len(doc.Issues) == 0 && len(doc.GolangErrors) > 0 {
+		return nil, fmt.Errorf("gosec did not analyze any code (%d package(s) failed to compile; SAST coverage lost): %s", len(doc.GolangErrors), gosecCompileErrorDetail(doc.GolangErrors))
 	}
 	findings := make([]Finding, 0, len(doc.Issues))
 	for _, i := range doc.Issues {
@@ -300,6 +314,7 @@ func parseSemgrep(out []byte, repoDir string) ([]Finding, error) {
 
 func parseNpmAudit(out []byte) ([]Finding, error) {
 	var doc struct {
+		Error           json.RawMessage `json:"error"`
 		Vulnerabilities map[string]struct {
 			Name     string            `json:"name"`
 			Severity string            `json:"severity"`
@@ -309,6 +324,16 @@ func parseNpmAudit(out []byte) ([]Finding, error) {
 	}
 	if err := json.Unmarshal(out, &doc); err != nil {
 		return nil, err
+	}
+	// npm v7+ writes a JSON *error object* to stdout (in place of a report) when
+	// it cannot actually audit — no lockfile (ENOLOCK) or, on NXD's offline-first
+	// host, the advisory registry is unreachable. That object unmarshals cleanly
+	// into the report struct, leaving Vulnerabilities nil, so without this guard
+	// a scan that never inspected a single dependency would masquerade as a clean
+	// run — the exact coverage-loss trap the govulncheck path guards against.
+	// Surface it as an error so RunScanners records npm-audit as failed, not ran.
+	if errDetail := bytes.TrimSpace(doc.Error); len(errDetail) > 0 && !bytes.Equal(errDetail, []byte("null")) {
+		return nil, fmt.Errorf("npm audit did not complete (dependency-CVE coverage lost): %s", npmAuditErrorDetail(doc.Error))
 	}
 	findings := make([]Finding, 0, len(doc.Vulnerabilities))
 	for pkg, v := range doc.Vulnerabilities {
@@ -328,6 +353,49 @@ func parseNpmAudit(out []byte) ([]Finding, error) {
 		})
 	}
 	return findings, nil
+}
+
+// gosecCompileErrorDetail renders a short reason from gosec's "Golang errors"
+// map (path → []{line,column,error}) for logging: the first error message it
+// can find, falling back to the offending package path.
+func gosecCompileErrorDetail(golangErrors map[string]json.RawMessage) string {
+	for path, raw := range golangErrors {
+		var errs []struct {
+			Error string `json:"error"`
+		}
+		if err := json.Unmarshal(raw, &errs); err == nil {
+			for _, e := range errs {
+				if strings.TrimSpace(e.Error) != "" {
+					return e.Error
+				}
+			}
+		}
+		if strings.TrimSpace(path) != "" {
+			return path
+		}
+	}
+	return "compile errors reported"
+}
+
+// npmAuditErrorDetail renders npm's failure object (`{"error":{"code","summary"}}`)
+// as a short, log-friendly reason. It degrades gracefully if `error` is a bare
+// string or an unexpected shape, falling back to the raw JSON.
+func npmAuditErrorDetail(raw json.RawMessage) string {
+	var e struct {
+		Code    string `json:"code"`
+		Summary string `json:"summary"`
+	}
+	if err := json.Unmarshal(raw, &e); err == nil {
+		switch {
+		case e.Code != "" && e.Summary != "":
+			return e.Code + ": " + e.Summary
+		case e.Summary != "":
+			return e.Summary
+		case e.Code != "":
+			return e.Code
+		}
+	}
+	return strings.TrimSpace(string(raw))
 }
 
 func parseGovulncheck(out []byte) ([]Finding, error) {

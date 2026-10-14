@@ -313,6 +313,116 @@ func TestRunScanners_GovulncheckHardFailureNotClean(t *testing.T) {
 	}
 }
 
+// TestRunScanners_GosecCompileFailureNotClean guards the coverage-loss gap for
+// gosec: when it cannot compile the packages it emits valid JSON with a
+// "Golang errors" map and an empty Issues array (and a non-zero exit that
+// Scanner.Run ignores for JSON scanners). Nothing was inspected, so it must be
+// routed to `failed`, never counted as a clean SAST run.
+func TestRunScanners_GosecCompileFailureNotClean(t *testing.T) {
+	bin := installAllFakeScanners(t)
+	fakeTool(t, bin, "gosec", `{"Golang errors":{"pkg/foo.go":[{"line":3,"column":8,"error":"could not import x"}]},"Issues":[]}`, 1)
+	repo := seedRepo(t, map[string]string{"go.mod": "module example.com/x\n"})
+
+	_, ran, _, failed := RunScanners(context.Background(), repo)
+
+	failedSet := map[ScannerKind]bool{}
+	for _, k := range failed {
+		failedSet[k] = true
+	}
+	if !failedSet[ScannerGosec] {
+		t.Fatalf("a gosec run that compiled nothing must be in failed, got failed=%v", failed)
+	}
+	for _, k := range ran {
+		if k == ScannerGosec {
+			t.Error("a gosec run that inspected no code must not be counted as ran (clean)")
+		}
+	}
+}
+
+// TestRunScanners_GosecPartialRunIsRanWithFindings verifies the narrow guard
+// keeps real findings from a partial run (some packages compiled, others
+// errored): gosec is recorded as ran and its finding flows through.
+func TestRunScanners_GosecPartialRunIsRanWithFindings(t *testing.T) {
+	bin := installAllFakeScanners(t)
+	fakeTool(t, bin, "gosec", `{"Golang errors":{"pkg/broken.go":[{"line":1,"column":1,"error":"boom"}]},"Issues":[{"severity":"HIGH","rule_id":"G101","details":"hardcoded creds","file":"main.go","line":"7","cwe":{"id":"798"}}]}`, 1)
+	repo := seedRepo(t, map[string]string{"go.mod": "module example.com/x\n"})
+
+	findings, ran, _, failed := RunScanners(context.Background(), repo)
+
+	for _, k := range failed {
+		if k == ScannerGosec {
+			t.Errorf("a partial gosec run with real findings must not be in failed: %v", failed)
+		}
+	}
+	ranSet := map[ScannerKind]bool{}
+	for _, k := range ran {
+		ranSet[k] = true
+	}
+	if !ranSet[ScannerGosec] {
+		t.Errorf("a partial gosec run must be counted as ran, got ran=%v", ran)
+	}
+	var haveG101 bool
+	for _, f := range findings {
+		if f.RuleID == "G101" {
+			haveG101 = true
+		}
+	}
+	if !haveG101 {
+		t.Errorf("the real finding from the partial run must be preserved, got %v", findings)
+	}
+}
+
+// TestRunScanners_NpmAuditErrorObjectNotClean guards the same coverage-loss gap
+// for npm audit: npm v7+ emits a JSON *error object* (rather than a report) when
+// it cannot audit — no lockfile (ENOLOCK) or, on NXD's offline-first hosts, an
+// unreachable advisory registry. That object unmarshals without error and leaves
+// no vulnerabilities, so it must be routed to `failed`, never counted as a clean
+// dependency-CVE scan.
+func TestRunScanners_NpmAuditErrorObjectNotClean(t *testing.T) {
+	bin := installAllFakeScanners(t)
+	// npm audit cannot run: it writes an error object to stdout and exits non-zero.
+	fakeTool(t, bin, "npm", `{"error":{"code":"ENOLOCK","summary":"This command requires an existing lockfile.","detail":""}}`, 1)
+	repo := seedRepo(t, map[string]string{"package.json": `{"name":"x"}`})
+
+	_, ran, _, failed := RunScanners(context.Background(), repo)
+
+	failedSet := map[ScannerKind]bool{}
+	for _, k := range failed {
+		failedSet[k] = true
+	}
+	if !failedSet[ScannerNpmAudit] {
+		t.Fatalf("an npm audit that could not run must be in failed, got failed=%v", failed)
+	}
+	for _, k := range ran {
+		if k == ScannerNpmAudit {
+			t.Error("an npm audit that never inspected dependencies must not be counted as ran (clean)")
+		}
+	}
+}
+
+// TestRunScanners_NpmAuditCleanReportIsRan confirms the guard does not mistake a
+// genuine clean audit (report present, zero vulnerabilities) for a failure.
+func TestRunScanners_NpmAuditCleanReportIsRan(t *testing.T) {
+	bin := installAllFakeScanners(t)
+	fakeTool(t, bin, "npm", `{"vulnerabilities":{},"metadata":{"vulnerabilities":{"total":0}}}`, 0)
+	repo := seedRepo(t, map[string]string{"package.json": `{"name":"x"}`})
+
+	_, ran, _, failed := RunScanners(context.Background(), repo)
+
+	for _, k := range failed {
+		if k == ScannerNpmAudit {
+			t.Errorf("a clean npm audit (empty vulnerabilities) must not be in failed: %v", failed)
+		}
+	}
+	ranSet := map[ScannerKind]bool{}
+	for _, k := range ran {
+		ranSet[k] = true
+	}
+	if !ranSet[ScannerNpmAudit] {
+		t.Errorf("a clean npm audit must be counted as ran, got ran=%v", ran)
+	}
+}
+
 // TestRunScanners_GovulncheckCleanExitZero confirms the fix does not mistake a
 // genuine clean run (exit 0, no vulnerabilities) for a failure.
 func TestRunScanners_GovulncheckCleanExitZero(t *testing.T) {
