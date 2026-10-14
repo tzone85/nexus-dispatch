@@ -1,52 +1,99 @@
+# NXD example configuration.
+# `nxd init` generates an nxd.yaml with these defaults (internal/config/loader.go);
+# this file is a documented reference copy. Validate edits with `nxd config validate`.
 version: "1.0"
 
 workspace:
   state_dir: ~/.nxd
-  backend: sqlite
-  log_level: info
+  backend: sqlite          # sqlite | dolt
+  log_level: info          # debug | info | warn | error (env NXD_LOG_LEVEL overrides)
   log_retention_days: 30
+  update_check: true       # env NXD_UPDATE_CHECK=false also disables
+  update_interval_hours: 48
 
+# One model binding per agent role. Default provider "google+ollama" tries the
+# Google API when GOOGLE_AI_API_KEY is set and falls back to local Ollama —
+# with no key it is Ollama-only, fully offline. Use provider "ollama" to pin
+# local-only, or anthropic/openai/google for cloud mode (API keys via env).
 models:
   tech_lead:
-    provider: ollama
-    model: deepseek-coder-v2:latest
+    provider: google+ollama
+    model: gemma4:26b
+    google_model: gemma-4-26b-a4b-it
     max_tokens: 16000
+    fallback_cooldown_s: 60
   senior:
-    provider: ollama
-    model: qwen2.5-coder:32b
+    provider: google+ollama
+    model: gemma4:26b
+    google_model: gemma-4-26b-a4b-it
     max_tokens: 8000
+    fallback_cooldown_s: 60
   intermediate:
-    provider: ollama
-    model: qwen2.5-coder:14b
+    provider: google+ollama
+    model: gemma4:26b
+    google_model: gemma-4-26b-a4b-it
     max_tokens: 4000
+    fallback_cooldown_s: 60
   junior:
-    provider: ollama
-    model: qwen2.5-coder:7b
+    provider: google+ollama
+    model: gemma4:26b
+    google_model: gemma-4-26b-a4b-it
     max_tokens: 4000
+    fallback_cooldown_s: 60
   qa:
-    provider: ollama
-    model: qwen2.5-coder:14b
+    provider: google+ollama
+    model: gemma4:26b
+    google_model: gemma-4-26b-a4b-it
     max_tokens: 8000
+    fallback_cooldown_s: 60
   supervisor:
-    provider: ollama
-    model: deepseek-coder-v2:latest
+    provider: google+ollama
+    model: gemma4:26b
+    google_model: gemma-4-26b-a4b-it
     max_tokens: 4000
+    fallback_cooldown_s: 60
+  manager:
+    provider: google+ollama
+    model: gemma4:26b
+    google_model: gemma-4-26b-a4b-it
+    max_tokens: 8000
+    fallback_cooldown_s: 60
+  investigator:
+    provider: google+ollama
+    model: gemma4:26b
+    google_model: gemma-4-26b-a4b-it
+    max_tokens: 16000
+    fallback_cooldown_s: 60
 
 routing:
-  junior_max_complexity: 3
-  intermediate_max_complexity: 5
+  junior_max_complexity: 3        # 1-13 (Fibonacci points)
+  intermediate_max_complexity: 5  # must be >= junior_max_complexity
   max_retries_before_escalation: 2
   max_qa_failures_before_escalation: 3
+  max_senior_retries: 2
+  max_manager_attempts: 2
 
 monitor:
   poll_interval_ms: 10000
   stuck_threshold_s: 120
   context_freshness_tokens: 150000
 
+# Active controller: periodic stuck detection with corrective actions.
+# Disabled by default; enable once you trust auto-restart behaviour.
+controller:
+  enabled: false
+  interval_s: 60
+  max_stuck_duration_s: 300
+  auto_restart: true        # reset stuck stories to draft
+  auto_reprioritize: false  # escalate tier + reset (takes priority over restart)
+  auto_cancel: false        # just cancel, no reset
+  max_actions_per_tick: 1
+  cooldown_s: 120
+
 cleanup:
-  worktree_prune: immediate
+  worktree_prune: immediate  # immediate | deferred
   branch_retention_days: 7
-  log_archive: file
+  log_archive: file          # file | dolt | none
 
 planning:
   sequential_file_patterns:
@@ -54,19 +101,77 @@ planning:
     - "*.config.*"
     - "src/core/*"
   max_story_complexity: 5
-  godmode: false  # Set to true to skip permission prompts on agent runtimes that support it
+  godmode: false  # true skips permission prompts on runtimes that support it
 
 merge:
   auto_merge: true
+  review_before_merge: false
   base_branch: main
-  mode: local  # "local" for offline, "github" for cloud
+  mode: local  # "local" for offline, "github" for cloud PRs
   pr_template: |
     ## Story: {story_id}
     {description}
     ### Acceptance Criteria
     {acceptance_criteria}
 
+# Cost estimation and client quoting (`nxd estimate`, `nxd report`).
+billing:
+  default_rate: 150
+  currency: USD
+  llm_costs:
+    mode: subscription  # "subscription" ($0 LLM cost) or "per_token"
+    # per_token mode requires a rate entry for every model used in runtimes:
+    # rates:
+    #   gemma4:
+    #     input_per_1k: 0.0   # free via Ollama
+    #     output_per_1k: 0.0
+
+# MemPalace semantic memory (see scripts/mempalace_bridge.py).
+memory:
+  enabled: true
+  # palace_path: ~/.nxd/palace
+
+# Commands the investigation agent may run (prefix-matched allowlist).
+investigation:
+  command_allowlist:
+    - ls
+    - grep
+    - cat
+    - git log
+    - git status
+    - git diff
+    - go build
+    - go test
+    - go vet
+    - make
+
+# Declarative success criteria evaluated before a story is accepted.
+# Kinds: output_contains, output_not_contains, file_exists, file_contains,
+# file_not_empty, exit_code_zero, test_passes, coverage_above, command_succeeds.
+qa:
+  success_criteria:
+    - kind: command_succeeds
+      value: go build ./...
+    - kind: command_succeeds
+      value: go vet ./...
+    - kind: test_passes
+      value: go test ./...
+
+# Default design/testing methodology applied at planning time.
+methodology:
+  ddd: true
+  tdd: true
+  min_coverage_pct: 80
+  allow_override: true  # per-requirement opt-out via "methodology: relaxed"
+
 runtimes:
+  # Native in-process Gemma runtime (goroutines + Ollama function calling).
+  gemma:
+    native: true
+    max_iterations: 20
+    models: ["gemma4"]
+    command_allowlist: ["go build ./...", "go test ./...", "npm test", "npm run build", "make", "make test"]
+  # CLI runtimes run in tmux sessions and are monitored via output polling.
   aider:
     command: aider
     args: ["--model", "ollama_chat/deepseek-coder-v2:latest", "--no-auto-commits"]
@@ -84,7 +189,7 @@ runtimes:
       plan_mode_pattern: "Plan mode"
   codex:
     command: codex
-    args: ["--approval-mode", "full-auto"]
+    args: ["--full-auto"]
     models: ["o3", "o4-mini"]
     detection:
       idle_pattern: "Codex>"

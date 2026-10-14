@@ -2,7 +2,7 @@
 
 **Offline-first AI agent orchestration. Hand off a requirement, walk away, come back to merged code.**
 
-[![Go](https://img.shields.io/badge/Go-1.23+-00ADD8?logo=go&logoColor=white)](https://go.dev)
+[![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![CI](https://github.com/tzone85/nexus-dispatch/actions/workflows/ci.yml/badge.svg)](https://github.com/tzone85/nexus-dispatch/actions/workflows/ci.yml)
 
@@ -96,6 +96,7 @@ See the [full getting started guide](docs/guides/getting-started.md) for a step-
 ## Features
 
 - **Agent hierarchy with complexity-based routing** — Fibonacci scoring routes stories to the right tier
+- **Bayesian adaptive routing** — Beta-distribution priors per role/complexity learn from outcomes and refine assignments over time (persisted to `bayesian_priors.json`)
 - **Ollama-powered LLM inference** — all planning, review, and supervision runs locally
 - **Local git merge** — stories merge directly into your base branch, no PRs needed
 - **Event-sourced architecture** — append-only event log with materialized SQLite projections
@@ -122,10 +123,19 @@ See the [full getting started guide](docs/guides/getting-started.md) for a step-
 |---------|-------------|
 | `nxd init` | Initialize workspace, create `~/.nxd/` dirs, set up stores, check Ollama |
 | `nxd req <requirement>` | Submit a requirement for Tech Lead decomposition into stories |
+| `nxd plan <requirement>` | Dry-run planning: decompose into stories without dispatching |
 | `nxd status [--req ID]` | Show requirement and story status, optionally filtered by requirement |
-| `nxd resume <req-id>` | Resume a paused pipeline, dispatch the next wave of ready stories |
+| `nxd approve <req-id>` | Approve a planned requirement for execution |
+| `nxd reject <req-id>` | Reject a planned requirement |
+| `nxd resume [req-id]` | Resume a paused pipeline, dispatch the next wave of ready stories |
+| `nxd pause <req-id>` | Pause a running requirement |
+| `nxd archive <req-id>` | Archive a completed requirement |
 | `nxd agents [--status S]` | List all agents with current story, session, and status |
+| `nxd watch` | Stream pipeline events in real time |
+| `nxd direct <id> [instruction]` | Inject an operator directive that the next agent iteration will read |
 | `nxd escalations` | List all escalation events with story, agent, reason, and status |
+| `nxd review <story-id>` | Review a story's changes before merge |
+| `nxd merge <story-id>` | Manually merge a story that is ready for merge |
 | `nxd gc [--dry-run]` | Garbage-collect merged branches and worktrees past retention |
 | `nxd config show` | Pretty-print the current configuration as YAML |
 | `nxd config validate` | Load and validate the configuration file |
@@ -136,6 +146,11 @@ See the [full getting started guide](docs/guides/getting-started.md) for a step-
 | `nxd diff <story-id>` | Show git diff for a story's worktree against the base branch |
 | `nxd estimate <requirement>` | Estimate cost and effort for a requirement |
 | `nxd report <req-id>` | Generate a client delivery report for a completed requirement |
+| `nxd metrics` | Show pipeline metrics and token usage |
+| `nxd models check` | Check for model updates from Ollama and Google AI Studio |
+| `nxd learn [repo-path]` | Analyse a repository and build a persistent profile |
+| `nxd improve` | Surface offline + online suggestions for improving the project |
+| `nxd spec init\|assemble\|validate` | Manage the structured `.spec/` for the target project |
 | `nxd doctor` | Run preflight checks (Go, git, tmux, Ollama, config) |
 
 ## Configuration
@@ -154,6 +169,12 @@ Run `nxd init` to generate `nxd.yaml` with sensible defaults, then customize:
 | `controller` | Active stuck detection: auto-restart, auto-reprioritize, cooldown |
 | `billing` | Cost estimation rates, currency, per-token LLM cost tracking |
 | `qa` | Declarative success criteria evaluated after agent task completion |
+| `memory` | MemPalace semantic memory toggle and palace path |
+| `investigation` | Command allowlist for the investigation agent |
+| `methodology` | DDD/TDD defaults, coverage gate, per-requirement override |
+| `plugins` | Plugin system configuration |
+
+A documented reference copy lives at [`nxd.config.example.yaml`](nxd.config.example.yaml). Optional environment variables (log level/format, `OLLAMA_HOST`, cloud API keys) are documented in [`.env.example`](.env.example) — fully offline runs need none of them.
 
 ### Offline vs Cloud Mode
 
@@ -260,10 +281,13 @@ internal/
     reaper.go         Tiered cleanup and GC
   git/                Branch, worktree, local merge, and GitHub PR operations
   graph/              Dependency DAG with topological sort
-  llm/                Ollama, Anthropic, and OpenAI clients + model registry
-  runtime/            Pluggable runtime registry (Aider, Claude Code, Codex)
+  llm/                Ollama, Anthropic, OpenAI, and Google clients + model registry
+  memory/             MemPalace semantic memory bridge
+  routing/            Bayesian adaptive routing (Beta priors per role/complexity)
+  runtime/            Pluggable runtime registry (Aider, Claude Code, Codex, native Gemma)
   state/              Event store (file-based) + SQLite projections
   tmux/               Session management (create, capture, send-keys)
+  web/                Web dashboard server (WebSocket, health probes, event bus)
 migrations/           SQLite schema migrations
 test/                 E2E tests
 ```
@@ -336,6 +360,8 @@ nxd --help
 | [Troubleshooting](docs/guides/troubleshooting.md) | Common issues, diagnostics, and fixes |
 | [CLI Reference](docs/reference/cli-reference.md) | Complete command, flag, and option reference |
 | [Event Reference](docs/reference/event-reference.md) | All 31 event types with payloads and state transitions |
+| [Deployment Runbook](docs/DEPLOYMENT.md) | Build, release, Docker, state/backup, and operations |
+| [Production Readiness](docs/PRODUCTION_READINESS.md) | Current state, gap checklist, and launch-day runbook |
 
 ## Acknowledgements
 
