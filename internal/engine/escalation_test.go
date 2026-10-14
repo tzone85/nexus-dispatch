@@ -251,11 +251,29 @@ func TestValidateSplit_OverlappingFiles(t *testing.T) {
 	esc := NewEscalationMachine(fs, defaultRoutingConfig())
 
 	children := []SplitChild{
-		{Suffix: "a", OwnedFiles: []string{"src/main.go"}, Complexity: 2},
-		{Suffix: "b", OwnedFiles: []string{"src/main.go"}, Complexity: 2},
+		{ID: "s1-a", Suffix: "a", OwnedFiles: []string{"src/main.go"}, Complexity: 2},
+		{ID: "s1-b", Suffix: "b", OwnedFiles: []string{"src/main.go"}, Complexity: 2},
 	}
 	if err := esc.ValidateSplit(0, children, 5); err == nil {
 		t.Error("expected error for overlapping files")
+	}
+}
+
+// TestValidateSplit_InvalidChildID pins the guard added for the audit: a child
+// ID built from an LLM-supplied suffix that is not a plain identifier (here a
+// path separator) must be rejected before the split is applied, so no split
+// path can mint an ID the executor would have to reject at the worktree sink.
+func TestValidateSplit_InvalidChildID(t *testing.T) {
+	fs := testEscalationStore(t)
+	esc := NewEscalationMachine(fs, defaultRoutingConfig())
+
+	for _, badSuffix := range []string{"../evil", "a/b", "has space"} {
+		children := []SplitChild{
+			{ID: "s1-" + badSuffix, Suffix: badSuffix, OwnedFiles: []string{"a.go"}, Complexity: 2},
+		}
+		if err := esc.ValidateSplit(0, children, 5); err == nil {
+			t.Errorf("expected error for invalid child id from suffix %q", badSuffix)
+		}
 	}
 }
 
@@ -273,7 +291,7 @@ func TestValidateSplit_ExceedsComplexity(t *testing.T) {
 	fs := testEscalationStore(t)
 	esc := NewEscalationMachine(fs, defaultRoutingConfig())
 
-	children := []SplitChild{{OwnedFiles: []string{"a.go"}, Complexity: 10}}
+	children := []SplitChild{{ID: "s1-a", Suffix: "a", OwnedFiles: []string{"a.go"}, Complexity: 10}}
 	if err := esc.ValidateSplit(0, children, 5); err == nil {
 		t.Error("expected error for exceeding max complexity")
 	}
@@ -284,8 +302,8 @@ func TestValidateSplit_Valid(t *testing.T) {
 	esc := NewEscalationMachine(fs, defaultRoutingConfig())
 
 	children := []SplitChild{
-		{Suffix: "a", OwnedFiles: []string{"src/a.go"}, Complexity: 3},
-		{Suffix: "b", OwnedFiles: []string{"src/b.go"}, Complexity: 2},
+		{ID: "s1-a", Suffix: "a", OwnedFiles: []string{"src/a.go"}, Complexity: 3},
+		{ID: "s1-b", Suffix: "b", OwnedFiles: []string{"src/b.go"}, Complexity: 2},
 	}
 	if err := esc.ValidateSplit(0, children, 5); err != nil {
 		t.Errorf("expected valid split, got error: %v", err)

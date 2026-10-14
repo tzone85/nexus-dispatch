@@ -288,6 +288,16 @@ architecture and conventions when planning stories.`, profileContext)
 			return PlanResult{}, fmt.Errorf("LLM returned duplicate story ID: %s", s.ID)
 		}
 		newID := prefix + "-" + s.ID
+		// Story IDs flow unmodified into filesystem paths (worktree dirs, artifact
+		// dirs), git branch refs, and shell arguments. A raw LLM-supplied ID
+		// containing "/", "..", or other path/shell metacharacters would let a
+		// crafted (or hallucinated) plan escape the worktree root — the executor
+		// then os.RemoveAll's the resulting path. Reject anything that is not a
+		// plain identifier before it is ever persisted, matching the validation
+		// the artifact store and CLI already apply to story IDs.
+		if !sanitize.ValidIdentifier(newID) {
+			return PlanResult{}, fmt.Errorf("story ID %q is not a valid identifier (only letters, digits, '_', '-', '.' are allowed)", s.ID)
+		}
 		idMap[s.ID] = newID
 		stories[i].ID = newID
 	}
@@ -529,6 +539,14 @@ Respond ONLY with the JSON array, no other text.`, reqTitle, storyID, storyTitle
 	for _, s := range stories {
 		if len(s.OwnedFiles) == 0 && s.Description == "" {
 			log.Printf("[replan] skipping empty sub-story %s", s.ID)
+			continue
+		}
+		// Sub-story IDs flow into worktree paths and branch refs unmodified, so
+		// reject any that is not a plain identifier — matching the plan-time
+		// validation the primary planner applies. A hallucinated ID with a "/"
+		// or ".." would otherwise strand the story at the executor's guard.
+		if !sanitize.ValidIdentifier(s.ID) {
+			log.Printf("[replan] skipping sub-story with invalid id %q", s.ID)
 			continue
 		}
 		valid = append(valid, s)

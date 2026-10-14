@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -8,7 +9,15 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
+
+// defaultBridgeTimeout bounds a single Python bridge invocation. MemPalace
+// operations (embedding, ChromaDB queries) are local and normally sub-second;
+// this ceiling exists only so a wedged bridge process (ChromaDB lock, model
+// load hang) can never block the caller — and, transitively, the post-execution
+// pipeline goroutine that waits on it — indefinitely.
+const defaultBridgeTimeout = 120 * time.Second
 
 // SearchResult represents a single result returned by a MemPalace search.
 type SearchResult struct {
@@ -26,6 +35,16 @@ type MemPalace struct {
 	bridgePath string
 	palacePath string
 	available  bool
+	// timeout bounds each runBridge invocation. Zero means defaultBridgeTimeout.
+	timeout time.Duration
+}
+
+// bridgeTimeout returns the effective per-invocation timeout.
+func (mp *MemPalace) bridgeTimeout() time.Duration {
+	if mp.timeout > 0 {
+		return mp.timeout
+	}
+	return defaultBridgeTimeout
 }
 
 // bridgeOutput is the envelope returned by mempalace_bridge.py.
@@ -141,9 +160,15 @@ func (mp *MemPalace) runBridge(args ...string) (string, error) {
 	}
 	cmdArgs = append(cmdArgs, args...)
 
-	cmd := exec.Command("python3", cmdArgs...)
+	ctx, cancel := context.WithTimeout(context.Background(), mp.bridgeTimeout())
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "python3", cmdArgs...)
 	out, err := cmd.Output()
 	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return "", fmt.Errorf("bridge command timed out after %s: %w", mp.bridgeTimeout(), ctx.Err())
+		}
 		return "", fmt.Errorf("bridge command failed: %w", err)
 	}
 	return strings.TrimSpace(string(out)), nil
