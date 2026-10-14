@@ -237,6 +237,46 @@ func TestParseNpmAudit(t *testing.T) {
 	}
 }
 
+// TestParseNpmAudit_ErrorObjectIsFailureNotClean guards the coverage-loss
+// anti-pattern: npm audit emits {"error":{...}} and exits non-zero when it ran
+// but could not audit (no lockfile, no package.json, or an unreachable registry
+// — the norm on NXD's offline-first host). That payload is valid JSON with no
+// "vulnerabilities" key, so a naive parse would return zero findings and no
+// error and RunScanners would count a clean run when coverage was actually
+// lost. parseNpmAudit must surface it as an error (→ the `failed` list),
+// mirroring the govulncheck guard.
+func TestParseNpmAudit_ErrorObjectIsFailureNotClean(t *testing.T) {
+	cases := map[string][]byte{
+		"no lockfile (ENOLOCK)": []byte(`{"error":{"code":"ENOLOCK","summary":"This command requires an existing lockfile.","detail":"npm audit --package-lock-only"}}`),
+		"registry unreachable":  []byte(`{"error":{"code":"ENETUNREACH","summary":"request to https://registry.npmjs.org/-/npm/v1/security/audits failed"}}`),
+		"summary only":          []byte(`{"error":{"summary":"audit endpoint returned an error"}}`),
+	}
+	for name, out := range cases {
+		t.Run(name, func(t *testing.T) {
+			got, err := parseNpmAudit(out)
+			if err == nil {
+				t.Fatalf("parseNpmAudit must surface an npm error object as failure, got %d findings and nil error", len(got))
+			}
+			if got != nil {
+				t.Errorf("expected no findings on a failed audit, got %+v", got)
+			}
+		})
+	}
+}
+
+// A clean audit with zero vulnerabilities and no error key must remain a clean
+// pass, not a failure.
+func TestParseNpmAudit_CleanNoVulnerabilities(t *testing.T) {
+	out := []byte(`{"auditReportVersion":2,"vulnerabilities":{},"metadata":{"vulnerabilities":{"total":0}}}`)
+	got, err := parseNpmAudit(out)
+	if err != nil {
+		t.Fatalf("clean audit must not error: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("clean audit must yield zero findings, got %+v", got)
+	}
+}
+
 func TestParseGovulncheck(t *testing.T) {
 	// govulncheck text output (the human format): we extract called vulns.
 	out := []byte(`=== Symbol Results ===
