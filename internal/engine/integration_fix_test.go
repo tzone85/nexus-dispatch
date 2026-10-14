@@ -92,13 +92,17 @@ func TestTechLeadFixer_BuildPrompt_EmptyStories(t *testing.T) {
 	}
 }
 
-// TestTechLeadFixer_BuildPrompt_NXDLogsHint verifies that buildPrompt
-// references nxd (not vxd) for follow-up instructions.
-func TestTechLeadFixer_BuildPrompt_NXDLogsHint(t *testing.T) {
-	fixer := &TechLeadFixer{model: "qwen3-coder:30b"}
-	prompt := fixer.buildPrompt("story-001", "some build error", nil)
-	// Prompt should not reference "vxd" — that's the cloud version.
-	if strings.Contains(prompt, "vxd req") {
-		t.Errorf("prompt references 'vxd req' — should reference 'nxd req' for the offline version")
+// TestTechLeadFixer_DispatchHint verifies that the operator-facing dispatch
+// hint re-dispatches through the nxd CLI (this project's offline-first tool)
+// and embeds the suggested fix, so the hint an operator copies from the
+// integration-fixer log is directly actionable.
+func TestTechLeadFixer_DispatchHint(t *testing.T) {
+	const fix = "reconcile the HTTP handler signature with the server wiring"
+	hint := dispatchHint(fix)
+	if !strings.HasPrefix(hint, "nxd req ") {
+		t.Errorf("dispatch hint must re-dispatch via 'nxd req', got: %q", hint)
+	}
+	if !strings.Contains(hint, fix) {
+		t.Errorf("dispatch hint must embed the fix description, got: %q", hint)
 	}
 }
