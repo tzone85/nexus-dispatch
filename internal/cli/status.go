@@ -129,8 +129,16 @@ func showRequirementStatus(cmd *cobra.Command, s stores, reqID string) error {
 		}
 		fmt.Fprintf(out, "  %d. [%s] %s\n", i+1, statusLabel, story.Title)
 		fmt.Fprintf(out, "     ID: %s | Complexity: %d | Wave: %d | Agent: %s\n", story.ID, story.Complexity, story.Wave, agent)
-		if story.Branch != "" {
-			fmt.Fprintf(out, "     Branch: %s\n", story.Branch)
+		// The branch the other commands act on (state.StoryBranch resolves a
+		// row with no projected branch to the canonical name). A row with
+		// neither a branch nor a merge time has no evidence it ever started,
+		// so no branch line is printed — including the one case the fallback
+		// exists for, an in-flight row an older resume projected without a
+		// branch. nxd review prints the canonical name there and marks it
+		// "(not started)", which says the same thing rather than the
+		// opposite: neither command shows a branch as if the row proved it.
+		if state.StoryStarted(story) {
+			fmt.Fprintf(out, "     Branch: %s\n", state.StoryBranch(story))
 		}
 		if story.PRUrl != "" {
 			prInfo := story.PRUrl
@@ -229,7 +237,7 @@ func runStatusJSON(cmd *cobra.Command, s stores, reqFilter string, showAll bool)
 				Status:     story.Status,
 				Complexity: story.Complexity,
 				Wave:       story.Wave,
-				Branch:     story.Branch,
+				Branch:     jsonStoryBranch(story),
 			})
 		}
 
@@ -248,4 +256,14 @@ func runStatusJSON(cmd *cobra.Command, s stores, reqFilter string, showAll bool)
 	}
 	fmt.Fprintln(out, string(data))
 	return nil
+}
+
+// jsonStoryBranch is the branch --json reports: the one the other commands
+// act on for a started story, and "" for a story that never started (rather
+// than a canonical name for a branch that does not exist).
+func jsonStoryBranch(story state.Story) string {
+	if !state.StoryStarted(story) {
+		return ""
+	}
+	return state.StoryBranch(story)
 }

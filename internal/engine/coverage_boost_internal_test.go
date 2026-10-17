@@ -423,7 +423,7 @@ func TestIsBranchMerged_NotMerged(t *testing.T) {
 	exec.Command("git", "-C", dir, "commit", "-m", "feat").Run()
 	exec.Command("git", "-C", dir, "checkout", "main").Run()
 
-	if isBranchMerged(dir, "nxd/unmerged") {
+	if isBranchMerged(dir, "main", "nxd/unmerged") {
 		t.Error("unmerged branch should return false")
 	}
 }
@@ -439,13 +439,13 @@ func TestIsBranchMerged_Merged(t *testing.T) {
 	exec.Command("git", "-C", dir, "checkout", "main").Run()
 	exec.Command("git", "-C", dir, "merge", "--no-ff", "nxd/merged", "-m", "Merge").Run()
 
-	if !isBranchMerged(dir, "nxd/merged") {
+	if !isBranchMerged(dir, "main", "nxd/merged") {
 		t.Error("merged branch should return true")
 	}
 }
 
 func TestIsBranchMerged_InvalidRepo(t *testing.T) {
-	if isBranchMerged(t.TempDir(), "nxd/any") {
+	if isBranchMerged(t.TempDir(), "main", "nxd/any") {
 		t.Error("non-git dir should return false")
 	}
 }
@@ -568,7 +568,7 @@ func TestRecoverOrphanedWorktrees_ResetsInProgress(t *testing.T) {
 		ps.Project(evt)
 	}
 
-	actions := RunRecovery(t.TempDir(), es, ps)
+	actions := RunRecovery(t.TempDir(), "main", es, ps)
 
 	var found bool
 	for _, a := range actions {
@@ -995,7 +995,7 @@ func TestRecoverStuckMerges_MergedBranch(t *testing.T) {
 		ps.Project(evt)
 	}
 
-	actions := RunRecovery(repoDir, es, ps)
+	actions := RunRecovery(repoDir, "main", es, ps)
 
 	var found bool
 	for _, a := range actions {
@@ -1014,6 +1014,63 @@ func TestRecoverStuckMerges_MergedBranch(t *testing.T) {
 	}
 	if story.Status != "merged" {
 		t.Errorf("expected merged status, got %s", story.Status)
+	}
+}
+
+// TestRecoverStuckMerges_UsesProjectedBranch: recovery checks the branch the
+// story actually has (state.StoryBranch), not a name derived from its ID. The
+// dispatcher only ever uses the canonical name today, so the branch here is a
+// hypothetical non-canonical one: the test pins the rule, not a flow the
+// pipeline currently produces.
+func TestRecoverStuckMerges_UsesProjectedBranch(t *testing.T) {
+	repoDir := t.TempDir()
+	boostSetupGitRepo(t, repoDir)
+
+	storyID := "stuck-002"
+	branch := "nxd/stuck-002-retry"
+	exec.Command("git", "-C", repoDir, "checkout", "-b", branch).Run()
+	os.WriteFile(filepath.Join(repoDir, "retry.go"), []byte("package main\n"), 0o644)
+	exec.Command("git", "-C", repoDir, "add", ".").Run()
+	exec.Command("git", "-C", repoDir, "commit", "-m", "retry feature").Run()
+	exec.Command("git", "-C", repoDir, "checkout", "main").Run()
+	exec.Command("git", "-C", repoDir, "merge", "--no-ff", branch, "-m", "Merge").Run()
+
+	dir := t.TempDir()
+	es, err := state.NewFileStore(filepath.Join(dir, "events.jsonl"))
+	if err != nil {
+		t.Fatalf("create event store: %v", err)
+	}
+	defer es.Close()
+	ps, err := state.NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatalf("create proj store: %v", err)
+	}
+	defer ps.Close()
+	for _, evt := range []state.Event{
+		state.NewEvent(state.EventStoryCreated, "tl", storyID, map[string]any{
+			"id": storyID, "req_id": "r-001", "title": "Retried story", "description": "d", "complexity": 2,
+		}),
+		state.NewEvent(state.EventStoryStarted, "ag-1", storyID, map[string]any{"agent_id": "ag-1", "branch": branch}),
+		state.NewEvent(state.EventStoryPRCreated, "ag-1", storyID, map[string]any{
+			"pr_number": 11, "pr_url": "https://github.com/org/repo/pull/11",
+		}),
+	} {
+		if err := es.Append(evt); err != nil {
+			t.Fatal(err)
+		}
+		if err := ps.Project(evt); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	RunRecovery(repoDir, "main", es, ps)
+
+	story, err := ps.GetStory(storyID)
+	if err != nil {
+		t.Fatalf("GetStory: %v", err)
+	}
+	if story.Status != "merged" {
+		t.Fatalf("a story merged under its projected branch %s must be recovered as merged, got %s", branch, story.Status)
 	}
 }
 
@@ -1224,4 +1281,141 @@ func boostSetupGitRepo(t *testing.T, dir string) {
 	os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Test\n"), 0o644)
 	exec.Command("git", "-C", dir, "add", ".").Run()
 	exec.Command("git", "-C", dir, "commit", "-m", "init").Run()
+}
+
+// TestRecoverStuckMerges_MasterOnlyRepo: a repository whose default branch is
+// master recovers a stuck merge too — `git branch --merged main` would fail
+// and silently recover nothing. The caller passes its resolved merge base.
+func TestRecoverStuckMerges_MasterOnlyRepo(t *testing.T) {
+	repoDir := t.TempDir()
+	if out, err := exec.Command("git", "init", "-b", "master", repoDir).CombinedOutput(); err != nil {
+		t.Skipf("git init -b master: %v (%s)", err, out)
+	}
+	for _, args := range [][]string{
+		{"config", "user.email", "test@test.com"}, {"config", "user.name", "Test"},
+		{"config", "core.autocrlf", "false"}, {"config", "core.eol", "lf"},
+		{"commit", "--allow-empty", "-m", "init"},
+	} {
+		cmd := exec.Command("git", append([]string{"-C", repoDir}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v (%s)", args, err, out)
+		}
+	}
+	storyID, branch := "stuck-003", "nxd/stuck-003"
+	for _, args := range [][]string{
+		{"checkout", "-b", branch}, {"commit", "--allow-empty", "-m", "work"},
+		{"checkout", "master"}, {"merge", "--no-ff", branch, "-m", "Merge"},
+	} {
+		cmd := exec.Command("git", append([]string{"-C", repoDir}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v (%s)", args, err, out)
+		}
+	}
+
+	dir := t.TempDir()
+	es, err := state.NewFileStore(filepath.Join(dir, "events.jsonl"))
+	if err != nil {
+		t.Fatalf("create event store: %v", err)
+	}
+	defer es.Close()
+	ps, err := state.NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatalf("create proj store: %v", err)
+	}
+	defer ps.Close()
+	for _, evt := range []state.Event{
+		state.NewEvent(state.EventStoryCreated, "tl", storyID, map[string]any{
+			"id": storyID, "req_id": "r-001", "title": "Stuck on master", "description": "d", "complexity": 2,
+		}),
+		state.NewEvent(state.EventStoryStarted, "ag-1", storyID, map[string]any{"agent_id": "ag-1", "branch": branch}),
+		state.NewEvent(state.EventStoryPRCreated, "ag-1", storyID, map[string]any{
+			"pr_number": 12, "pr_url": "https://github.com/org/repo/pull/12",
+		}),
+	} {
+		if err := es.Append(evt); err != nil {
+			t.Fatal(err)
+		}
+		if err := ps.Project(evt); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if actions := RunRecovery(repoDir, "master", es, ps); len(actions) == 0 {
+		t.Fatal("a stuck merge on a master-only repo must be recovered")
+	}
+	story, err := ps.GetStory(storyID)
+	if err != nil {
+		t.Fatalf("GetStory: %v", err)
+	}
+	if story.Status != "merged" {
+		t.Fatalf("want merged after recovery on master, got %s", story.Status)
+	}
+	// The hard-coded "main" this replaced: recovery against a branch the repo
+	// does not have finds nothing at all.
+	if isBranchMerged(repoDir, "main", branch) {
+		t.Error("a base branch that does not exist cannot report a merge")
+	}
+}
+
+// TestRecoverStuckMerges_BranchCheckedOutInWorktree: a story stuck in
+// pr_submitted still has its worktree — the monitor removes it after the
+// merge — and `git branch --merged` prints a branch checked out in a linked
+// worktree with a "+ " marker. Reading the display format missed exactly the
+// case recovery exists for.
+func TestRecoverStuckMerges_BranchCheckedOutInWorktree(t *testing.T) {
+	repoDir := t.TempDir()
+	boostSetupGitRepo(t, repoDir)
+	storyID, branch := "stuck-004", "nxd/stuck-004"
+	for _, args := range [][]string{
+		{"checkout", "-b", branch}, {"commit", "--allow-empty", "-m", "work"},
+		{"checkout", "main"}, {"merge", "--no-ff", branch, "-m", "Merge"},
+	} {
+		cmd := exec.Command("git", append([]string{"-C", repoDir}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v (%s)", args, err, out)
+		}
+	}
+	wt := filepath.Join(t.TempDir(), "wt")
+	if out, err := exec.Command("git", "-C", repoDir, "worktree", "add", wt, branch).CombinedOutput(); err != nil {
+		t.Skipf("git worktree add: %v (%s)", err, out)
+	}
+
+	dir := t.TempDir()
+	es, err := state.NewFileStore(filepath.Join(dir, "events.jsonl"))
+	if err != nil {
+		t.Fatalf("create event store: %v", err)
+	}
+	defer es.Close()
+	ps, err := state.NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatalf("create proj store: %v", err)
+	}
+	defer ps.Close()
+	for _, evt := range []state.Event{
+		state.NewEvent(state.EventStoryCreated, "tl", storyID, map[string]any{
+			"id": storyID, "req_id": "r-001", "title": "Stuck with a worktree", "description": "d", "complexity": 2,
+		}),
+		state.NewEvent(state.EventStoryStarted, "ag-1", storyID, map[string]any{"agent_id": "ag-1", "branch": branch}),
+		state.NewEvent(state.EventStoryPRCreated, "ag-1", storyID, map[string]any{
+			"pr_number": 13, "pr_url": "https://github.com/org/repo/pull/13",
+		}),
+	} {
+		if err := es.Append(evt); err != nil {
+			t.Fatal(err)
+		}
+		if err := ps.Project(evt); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if actions := RunRecovery(repoDir, "main", es, ps); len(actions) == 0 {
+		t.Fatal("a merged branch that is checked out in a worktree is still merged")
+	}
+	story, err := ps.GetStory(storyID)
+	if err != nil {
+		t.Fatalf("GetStory: %v", err)
+	}
+	if story.Status != "merged" {
+		t.Fatalf("want merged after recovery, got %s", story.Status)
+	}
 }

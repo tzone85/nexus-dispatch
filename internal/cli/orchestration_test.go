@@ -51,9 +51,11 @@ func initTestRepo(t *testing.T, dir string) {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
 	}
-	run("init")
+	run("init", "-q", "-b", "main")
 	run("config", "user.email", "test@test.com")
 	run("config", "user.name", "test")
+	run("config", "core.autocrlf", "false")
+	run("config", "core.eol", "lf")
 	os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Test"), 0o644)
 	run("add", ".")
 	run("commit", "-m", "initial")

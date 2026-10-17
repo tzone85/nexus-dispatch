@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -28,15 +29,33 @@ type Reaper struct {
 	config     config.CleanupConfig
 	gitOps     GitCleanupOps
 	eventStore state.EventStore
+	projStore  state.ProjectionStore
+	now        func() time.Time // the retention clock; tests pin it
+}
+
+// SetNow replaces the clock the retention cutoff is measured from.
+func (r *Reaper) SetNow(now func() time.Time) { r.now = now }
+
+// emit appends evt and projects it, so the projection watermark stays level
+// with the log (BRANCH_DELETED and GC_COMPLETED have no projection of their
+// own; projecting them just advances the watermark). Without the projection a
+// standalone gc run would leave the projection behind the log and the next
+// command's RebuildFrom would replay every archive's REQ_COMPLETED as plain
+// "completed" — which is why the projection store is a constructor argument,
+// like every other engine component, and not optional.
+func (r *Reaper) emit(evt state.Event) {
+	emitEventOrLog(r.eventStore, r.projStore, evt)
 }
 
 // NewReaper creates a Reaper wired to the given configuration, git
-// operations, and event store.
-func NewReaper(cfg config.CleanupConfig, gitOps GitCleanupOps, es state.EventStore) *Reaper {
+// operations, event store and projection store.
+func NewReaper(cfg config.CleanupConfig, gitOps GitCleanupOps, es state.EventStore, ps state.ProjectionStore) *Reaper {
 	return &Reaper{
 		config:     cfg,
 		gitOps:     gitOps,
 		eventStore: es,
+		projStore:  ps,
+		now:        time.Now,
 	}
 }
 
@@ -54,7 +73,7 @@ func (r *Reaper) Reap(storyID, repoDir, worktreePath, branch string) (ReapResult
 		}
 		result.WorktreePruned = true
 
-		_ = r.eventStore.Append(state.NewEvent(state.EventWorktreePruned, "reaper", storyID, map[string]any{
+		r.emit(state.NewEvent(state.EventWorktreePruned, "reaper", storyID, map[string]any{
 			"worktree_path": worktreePath,
 			"mode":          "immediate",
 		}))
@@ -70,7 +89,7 @@ func (r *Reaper) Reap(storyID, repoDir, worktreePath, branch string) (ReapResult
 			}
 			result.BranchDeleted = true
 
-			_ = r.eventStore.Append(state.NewEvent(state.EventBranchDeleted, "reaper", storyID, map[string]any{
+			r.emit(state.NewEvent(state.EventBranchDeleted, "reaper", storyID, map[string]any{
 				"branch": branch,
 			}))
 		}
@@ -87,17 +106,22 @@ func (r *Reaper) GarbageCollect(repoDir string, branches []BranchInfo) (int, err
 		return 0, nil
 	}
 
-	cutoff := time.Now().AddDate(0, 0, -r.config.BranchRetentionDays)
+	cutoff := r.now().AddDate(0, 0, -r.config.BranchRetentionDays)
 	deleted := 0
+	var errs []error
 
 	for _, b := range branches {
 		if b.MergedAt.Before(cutoff) && r.gitOps.BranchExists(repoDir, b.Name) {
+			// Keep going on failure: one branch that git refuses to delete
+			// must not skip every later branch, nor the GC_COMPLETED event
+			// for the ones that were deleted.
 			if err := r.gitOps.DeleteBranch(repoDir, b.Name); err != nil {
-				return deleted, fmt.Errorf("gc delete branch %s: %w", b.Name, err)
+				errs = append(errs, fmt.Errorf("gc delete branch %s: %w", b.Name, err))
+				continue
 			}
 			deleted++
 
-			_ = r.eventStore.Append(state.NewEvent(state.EventBranchDeleted, "reaper", b.StoryID, map[string]any{
+			r.emit(state.NewEvent(state.EventBranchDeleted, "reaper", b.StoryID, map[string]any{
 				"branch": b.Name,
 				"reason": "gc_retention_expired",
 			}))
@@ -105,12 +129,13 @@ func (r *Reaper) GarbageCollect(repoDir string, branches []BranchInfo) (int, err
 	}
 
 	if deleted > 0 {
-		_ = r.eventStore.Append(state.NewEvent(state.EventGCCompleted, "reaper", "", map[string]any{
+		r.emit(state.NewEvent(state.EventGCCompleted, "reaper", "", map[string]any{
 			"branches_deleted": deleted,
+			"repo_path":        repoDir, // one event per repo, so consumers can attribute it
 		}))
 	}
 
-	return deleted, nil
+	return deleted, errors.Join(errs...)
 }
 
 // BranchInfo holds metadata about a branch eligible for garbage collection.

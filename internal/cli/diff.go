@@ -46,10 +46,9 @@ func runDiff(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	baseBranch := cfg.Merge.BaseBranch
-	if baseBranch == "" {
-		baseBranch = "main"
-	}
+	// The same rule as merge, review and resume: an empty merge.base_branch
+	// is detected from the repo, never assumed to be main.
+	baseBranch := resolveMergeBase(cfg.Merge, worktreePath).BaseBranch
 
 	out := cmd.OutOrStdout()
 	fmt.Fprintf(out, "Diff for story: %s\n", storyID)

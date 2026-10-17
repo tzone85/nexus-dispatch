@@ -1082,7 +1082,7 @@ func TestTailLog_MissingFile(t *testing.T) {
 
 func TestRunGC_MergedNoBranch(t *testing.T) {
 	env := setupTestEnv(t)
-	seedTestReq(t, env, "r-001", "Test Req", env.Dir)
+	seedTestReq(t, env, "r-001", "Test Req", initTestRepoAt(t, env.Dir, "repo"))
 	seedTestStory(t, env, "s-001", "r-001", "Story 1", 3)
 
 	// Merge without a branch name
@@ -1097,7 +1097,11 @@ func TestRunGC_MergedNoBranch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("gc with no branch: %v", err)
 	}
-	_ = out
+	// The row has no projected branch, so gc checks the canonical name — which
+	// does not exist in the repo — and finds nothing to delete.
+	if !strings.Contains(out, "No branches eligible for cleanup") {
+		t.Fatalf("want nothing eligible, got: %s", out)
+	}
 }
 
 // ─── report.go with valid requirement ────────────────────────────────────────
@@ -1469,7 +1473,7 @@ func TestRunDiff_CachedFlag_NoWorktree(t *testing.T) {
 
 func TestRunGC_ReaperNoEligible(t *testing.T) {
 	env := setupTestEnv(t)
-	seedTestReq(t, env, "req-00700", "GC test req", env.Dir)
+	seedTestReq(t, env, "req-00700", "GC test req", initTestRepoAt(t, env.Dir, "repo"))
 	seedTestStory(t, env, "s-gc01", "req-00700", "Story A", 3)
 
 	// Merge the story WITH a branch

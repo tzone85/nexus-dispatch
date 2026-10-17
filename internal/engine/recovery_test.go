@@ -84,7 +84,7 @@ func TestRecovery_OrphanedWorktree(t *testing.T) {
 	// on "not a git repository".
 	initRecoveryRepo(t, repoDir)
 
-	actions := engine.RunRecovery(repoDir, es, ps)
+	actions := engine.RunRecovery(repoDir, "main", es, ps)
 	if len(actions) != 1 {
 		t.Fatalf("expected 1 action, got %d: %v", len(actions), actions)
 	}
@@ -116,7 +116,7 @@ func TestRecovery_ReviewStatusOrphan(t *testing.T) {
 	repoDir := t.TempDir()
 	initRecoveryRepo(t, repoDir)
 
-	actions := engine.RunRecovery(repoDir, es, ps)
+	actions := engine.RunRecovery(repoDir, "main", es, ps)
 	if len(actions) != 1 {
 		t.Fatalf("expected 1 action, got %d: %v", len(actions), actions)
 	}
@@ -141,7 +141,7 @@ func TestRecovery_NoIssues(t *testing.T) {
 	repoDir := t.TempDir()
 	initRecoveryRepo(t, repoDir)
 
-	actions := engine.RunRecovery(repoDir, es, ps)
+	actions := engine.RunRecovery(repoDir, "main", es, ps)
 	if len(actions) != 0 {
 		t.Fatalf("expected 0 actions, got %d: %v", len(actions), actions)
 	}
@@ -157,7 +157,7 @@ func TestRecovery_DraftStoriesUntouched(t *testing.T) {
 	repoDir := t.TempDir()
 	initRecoveryRepo(t, repoDir)
 
-	actions := engine.RunRecovery(repoDir, es, ps)
+	actions := engine.RunRecovery(repoDir, "main", es, ps)
 	if len(actions) != 0 {
 		t.Fatalf("expected 0 actions for draft story, got %d: %v", len(actions), actions)
 	}
@@ -173,7 +173,7 @@ func TestRecovery_MergedStoriesUntouched(t *testing.T) {
 	repoDir := t.TempDir()
 	initRecoveryRepo(t, repoDir)
 
-	actions := engine.RunRecovery(repoDir, es, ps)
+	actions := engine.RunRecovery(repoDir, "main", es, ps)
 	if len(actions) != 0 {
 		t.Fatalf("expected 0 actions for merged story, got %d: %v", len(actions), actions)
 	}

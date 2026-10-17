@@ -90,9 +90,32 @@ func loadStores(cfgPath string) (stores, error) {
 		return stores{}, fmt.Errorf("rebuild projection: %w", err)
 	}
 
-	// Backfill acceptance_criteria for stories created before the column existed.
-	allEvents, _ := es.List(state.EventFilter{Type: state.EventStoryCreated})
-	ps.BackfillAcceptanceCriteria(allEvents)
+	// Backfill acceptance_criteria for stories created before the column
+	// existed. Unlike the branch backfill below it has no once-only flag and
+	// rescans STORY_CREATED on every load (cheap: one column, idempotent).
+	if allEvents, err := es.List(state.EventFilter{Type: state.EventStoryCreated}); err != nil {
+		log.Printf("[startup] backfill acceptance criteria: list STORY_CREATED events: %v", err)
+	} else {
+		ps.BackfillAcceptanceCriteria(allEvents)
+	}
+
+	// Backfill stories.branch for rows projected before STORY_STARTED persisted
+	// it. RebuildFrom only runs when the watermark is behind the log, so an
+	// up-to-date projection would otherwise keep an empty branch forever and
+	// nxd gc / merge / review would keep skipping those stories. Runs once per
+	// database (projection_meta flag), so read-only commands do not rescan the
+	// log or take the write lock afterwards. Best-effort: a failure is logged,
+	// never fatal for the command.
+	if needs, err := ps.NeedsStoryBranchBackfill(); err != nil {
+		log.Printf("[startup] backfill story branches: %v", err)
+	} else if needs {
+		startedEvents, err := es.List(state.EventFilter{Type: state.EventStoryStarted})
+		if err != nil {
+			log.Printf("[startup] backfill story branches: list STORY_STARTED events: %v", err)
+		} else if err := ps.BackfillStoryBranches(startedEvents); err != nil {
+			log.Printf("[startup] backfill story branches: %v", err)
+		}
+	}
 
 	return stores{
 		Config: cfg,

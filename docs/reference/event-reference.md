@@ -102,22 +102,32 @@ Every action in NXD produces an immutable event. `internal/state/events.go` defi
 **Projection:** Updates story status to "estimated", sets complexity
 
 ### STORY_ASSIGNED
-**When:** Dispatcher assigns story to an agent role
+**When:** Dispatcher assigns story to an agent
 **Payload:**
 ```json
 {
   "agent_id": "junior-req01-1",
-  "role": "junior",
-  "session_name": "nxd-req01-junior-1",
-  "branch": "nxd/story-01"
+  "wave": 1
 }
 ```
-**Projection:** Updates story status to "assigned", sets agent_id and branch
+**Projection:** Updates story status to "assigned", sets agent_id and wave. The branch is not known yet — it arrives with `STORY_STARTED`.
 
 ### STORY_STARTED
-**When:** Agent begins working on the story
-**Payload:** `{ "worktree_path": "~/.nxd/worktrees/nxd-req01-junior-1" }`
-**Projection:** Updates story status to "in_progress"
+**When:** Executor spawns the agent and begins the story
+**Payload:**
+```json
+{
+  "worktree_path": "~/.nxd/worktrees/story-01",
+  "runtime": "claude-code",
+  "session_name": "nxd-req01-junior-1",
+  "branch": "nxd/story-01",
+  "tier": 0,
+  "role": "junior"
+}
+```
+`session_name` is sent by the CLI runtimes only; the native (Gemma) runtime omits it.
+
+**Projection:** Updates story status to "in_progress" and sets branch from the payload (an empty branch never overwrites one already set; a non-empty branch from a re-dispatch replaces it). `stories.branch` is what `nxd merge`, `nxd review`, `nxd gc` and `nxd archive` use when they load a story from the projection. Projections created before the branch was persisted are backfilled from the event log on startup (`BackfillStoryBranches`).
 
 ### STORY_PROGRESS
 **When:** Agent reports intermediate progress
@@ -316,8 +326,9 @@ The `status` field may be `kept` instead of `deleted` if `devdb.on_failure.keep_
 **Payload:** `{ "branch": "nxd/story-01", "reason": "gc_retention_expired" }`
 
 ### GC_COMPLETED
-**When:** `nxd gc` deleted at least one branch
-**Payload:** `{ "branches_deleted": 3 }`
+**When:** `nxd gc` deleted at least one branch — one event per repository it cleaned (gc runs per requirement repo), each with that repository's count
+**Payload:** `{ "branches_deleted": 3, "repo_path": "/path/to/repo" }`
+**Projection:** none (nor for `BRANCH_DELETED`); both are explicit no-op cases in `Project` (the switch is exhaustive over `events.go`, guarded by `TestProjectLocked_EveryKnownTypeHasACase`), and `nxd gc` projects them (the reaper takes the projection store) so the projection watermark stays level with the log
 
 ## Story Status State Machine
 

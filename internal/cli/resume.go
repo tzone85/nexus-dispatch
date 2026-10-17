@@ -169,12 +169,10 @@ func runResume(cmd *cobra.Command, args []string) error {
 	// actual default (master vs main); assuming main breaks every merge on
 	// older, master-based repos, and an empty value makes `git checkout ""`
 	// fail outright.
-	if s.Config.Merge.BaseBranch == "" {
-		s.Config.Merge.BaseBranch = nxdgit.DetectDefaultBranch(repoDir)
-	}
+	s.Config.Merge = resolveMergeBase(s.Config.Merge, repoDir)
 
 	// Run crash recovery before dispatching.
-	recoveryActions := engine.RunRecovery(repoDir, s.Events, s.Proj)
+	recoveryActions := engine.RunRecovery(repoDir, s.Config.Merge.BaseBranch, s.Events, s.Proj)
 	if len(recoveryActions) > 0 {
 		fmt.Fprintf(out, "Recovery: fixed %d issues\n", len(recoveryActions))
 		for _, a := range recoveryActions {
@@ -559,10 +557,7 @@ func runResume(cmd *cobra.Command, args []string) error {
 	// Skipped in dry-run and when qa.disable_completion_gate is set.
 	if !dryRun && !s.Config.QA.DisableCompletionGate {
 		senior := s.Config.Models.Senior
-		gateBase := s.Config.Merge.BaseBranch
-		if gateBase == "" {
-			gateBase = nxdgit.DetectDefaultBranch(repoDir)
-		}
+		gateBase := resolveMergeBase(s.Config.Merge, repoDir).BaseBranch
 		monitor.SetCompletionGate(engine.NewCompletionGate(
 			llmClient, senior.Model, senior.MaxTokens,
 			completionFixCycles(s.Config.QA.CompletionFixCycles),

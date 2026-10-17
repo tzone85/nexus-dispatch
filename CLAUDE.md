@@ -24,6 +24,8 @@ nxd resume → dispatcher → executor → agents (parallel per wave)
 | `internal/engine/cost.go` | Cost estimation: `CalculateCost`, `CalculateLLMCost`, `CalculateCostWithTokens` with per-token billing |
 | `internal/engine/report.go` | Client delivery reports with actual token cost via `sumTokenUsage()` from metrics.jsonl |
 | `internal/runtime/gemma.go` | Native coding runtime with tool-calling loop, criteria-gated completion, self-correction, rejection budget, scratchboard tools |
+| `internal/runtime/safepath.go` | `safePath` / `errReason`: work-directory confinement for the runtime's file tools; rejections and I/O errors never carry host paths |
+| `internal/git/worktree_lookup.go` | `WorktreeForBranch`: which checkout has a branch (`git worktree list --porcelain`), used by `gc` / `archive` cleanup |
 | `internal/routing/bayesian.go` | Bayesian adaptive routing: Beta distribution priors per role/complexity, update rules, decay, persistence |
 | `internal/llm/semaphore.go` | Concurrency limiter wrapping `llm.Client` (default 1 for single-GPU Ollama) |
 | `internal/artifact/store.go` | Per-story artifact persistence (launch config, trace JSONL, diffs, QA/review results) |
@@ -55,6 +57,12 @@ make mempalace-check              # smoke the MemPalace bridge end-to-end
 - `GOOS=windows GOARCH=amd64 go build -o dist/nxd.exe ./cmd/nxd` cross-compiles a Windows PE32+ binary.
 - Native Windows: all read-only commands work (`status`, `dashboard`, `doctor`, `config`, `events`, `metrics`, `report`, `projects`). Full agent pipeline (`req`/`resume`) needs tmux → run inside WSL2.
 - Platform-specific code lives in `_unix.go` / `_windows.go` build-tagged pairs: `internal/cli/req_*.go` (daemon detach), `internal/engine/lockfile_*.go` (advisory lock + process liveness), `internal/devdb/docker/host_*.go` (docker default host). Shell command exec goes through `internal/shellexec` (`sh -c` on Unix, `cmd.exe /C` on Windows, override with `NXD_SHELL`).
+
+## Current State (2026-09-14) — branch projection, symlink-safe writes, gc/archive cleanup
+
+- **`stories.branch` is projected** from `STORY_STARTED` (`state/sqlite.go` `projectStoryStarted`; empty replay never clobbers, re-dispatch overwrites). Databases projected before this are backfilled once on startup (`state/backfill.go` `BackfillStoryBranches`, wired in `cli/helpers.go`, guarded by the `story_branch_backfill_done` row in `projection_meta`, which survives `RebuildFrom`). `Project`'s switch is exhaustive over the types in `events.go` (`TestProjectLocked_EveryKnownTypeHasACase`; informational types such as the reaper's are explicit no-op cases); only a type the binary does not know reaches `default:`, which `Project` ignores for forward compatibility. `state.StoryBranch` is the one rule for a story's branch name: the projected branch, else the dispatcher's canonical `nxd/<story-id>` (used by `gc`, `archive`, `merge`, `review` and the monitor's dangling-branch cleanup).
+- **`runtime/safepath.go` `safePath`** walks from the target up to the work directory: any existing component must resolve inside it; dangling links, loops and unreadable ancestors fail closed. Rejections and sink I/O errors (`errReason`) carry work-directory-relative paths only; the operator log gets the real paths and the underlying error (`pathRejection.Detail`: `[native-runtime] <story>: <tool> <path> rejected: …`). `os.Root` confinement is the follow-up.
+- **`nxd gc`** retains from `MergedAt` (clock: `gcNow`, pinned in tests), runs per requirement repo (`resolveRepoDir`, shared with `archive`), force-removes a leftover worktree before `branch -D`, continues across repos and reports every failure — including a row with no recorded merge time — and takes the pipeline lock like `archive` (a real run refuses while `nxd resume` is active; `--dry-run` does not need it); `NewReaper` takes the projection store and projects what it emits so the watermark advances. **`nxd archive [--force]`** takes the pipeline lock (with or without `--force`: it removes worktrees and appends the archive event, so it refuses while `nxd resume` runs) and removes merged stories' worktrees/branches (`internal/git.WorktreeForBranch`); `--force` includes unmerged ones. `nxd merge` and `nxd review` run in the story's requirement repo (`storyRepo` → `resolveRepoDir`; `resume` itself runs in the cwd) and fill an empty `merge.base_branch` from the repo's default branch (`resolveMergeBase`, shared with `resume` and the completion gate); `review` prints git failures as `Changes: unavailable (…)` and says `none yet` for an unstarted story. `nxd status` shows the same branch the other commands act on (`state.StoryBranch`) for a started story, and nothing for one that never started.
 
 ## Current State (2026-08-08) — operator visibility: notifications, budget guard, timeline
 
@@ -254,7 +262,11 @@ Architectural ceilings (cannot reach 95% without major refactor):
 - `engine/helpers_test.go` — 12 tests: stripCodeFences, truncateDiff, tierForRole, configCriteriaToRuntime, executor setters
 - `llm/dryrun_test.go` — 15 tests: all response types, delay, cancellation, call tracking, model passthrough, usage, interface
 - `llm/errors_test.go` — 20+ tests: all error classification functions
-- `runtime/tools_test.go` — 24 tests: safePath, execReadFile, execWriteFile, execEditFile, execRunCommand, scratchboard ops, executeTool, CodingTools
+- `runtime/tools_test.go` — read/write/edit sinks, execRunCommand, scratchboard ops, executeTool, CodingTools
+- `runtime/safepath_test.go` — safePath (symlink and escape shapes, fail-closed cases), errReason, sink-level escape and host-path tests, operator-log assertions
+- `cli/gc_branch_test.go` — gc against real git repos: retention from the merge time, per-repo runs, leftover worktrees, failures reported, the pipeline lock
+- `cli/archive_branch_test.go` — archive worktree/branch cleanup, `--force`, the pipeline lock, missing or locked repos, one line per story
+- `cli/story_repo_test.go` — storyRepo / resolveMergeBase, review and diff against the detected base, merge end to end
 - `web/server_test.go` — 29 tests: all HandleCommand actions
 - `web/data_test.go` — 10 tests: BuildSnapshot, SnapshotJSON, mapStatusToBucket, intFromPayload
 - `web/eventbus_test.go` — 5 tests: pub/sub, unsubscribe, slow consumer

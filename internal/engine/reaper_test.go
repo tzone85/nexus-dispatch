@@ -1,6 +1,8 @@
 package engine_test
 
 import (
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -40,7 +42,7 @@ func (m *mockGitCleanupOps) BranchExists(_, branch string) bool {
 }
 
 func TestReaper_Reap_Immediate(t *testing.T) {
-	es, _, cleanup := newTestStores(t)
+	es, ps, cleanup := newTestStores(t)
 	defer cleanup()
 
 	gitOps := &mockGitCleanupOps{
@@ -52,7 +54,7 @@ func TestReaper_Reap_Immediate(t *testing.T) {
 		BranchRetentionDays: 0, // delete immediately
 	}
 
-	reaper := engine.NewReaper(cfg, gitOps, es)
+	reaper := engine.NewReaper(cfg, gitOps, es, ps)
 	result, err := reaper.Reap("s-001", "/tmp/repo", "/tmp/worktree/s-001", "nxd/s-001")
 	if err != nil {
 		t.Fatalf("reap: %v", err)
@@ -92,7 +94,7 @@ func TestReaper_Reap_Immediate(t *testing.T) {
 }
 
 func TestReaper_Reap_Deferred(t *testing.T) {
-	es, _, cleanup := newTestStores(t)
+	es, ps, cleanup := newTestStores(t)
 	defer cleanup()
 
 	gitOps := &mockGitCleanupOps{
@@ -104,7 +106,7 @@ func TestReaper_Reap_Deferred(t *testing.T) {
 		BranchRetentionDays: 7, // retain branch
 	}
 
-	reaper := engine.NewReaper(cfg, gitOps, es)
+	reaper := engine.NewReaper(cfg, gitOps, es, ps)
 	result, err := reaper.Reap("s-001", "/tmp/repo", "/tmp/worktree/s-001", "nxd/s-001")
 	if err != nil {
 		t.Fatalf("reap: %v", err)
@@ -121,7 +123,7 @@ func TestReaper_Reap_Deferred(t *testing.T) {
 }
 
 func TestReaper_GarbageCollect(t *testing.T) {
-	es, _, cleanup := newTestStores(t)
+	es, ps, cleanup := newTestStores(t)
 	defer cleanup()
 
 	gitOps := &mockGitCleanupOps{
@@ -137,12 +139,14 @@ func TestReaper_GarbageCollect(t *testing.T) {
 		BranchRetentionDays: 7,
 	}
 
-	reaper := engine.NewReaper(cfg, gitOps, es)
+	reaper := engine.NewReaper(cfg, gitOps, es, ps)
+	now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	reaper.SetNow(func() time.Time { return now })
 
 	branches := []engine.BranchInfo{
-		{Name: "nxd/s-001", StoryID: "s-001", MergedAt: time.Now().AddDate(0, 0, -10)}, // expired
-		{Name: "nxd/s-002", StoryID: "s-002", MergedAt: time.Now().AddDate(0, 0, -3)},  // still valid
-		{Name: "nxd/s-003", StoryID: "s-003", MergedAt: time.Now().AddDate(0, 0, -8)},  // expired
+		{Name: "nxd/s-001", StoryID: "s-001", MergedAt: now.AddDate(0, 0, -10)}, // expired
+		{Name: "nxd/s-002", StoryID: "s-002", MergedAt: now.AddDate(0, 0, -3)},  // still valid
+		{Name: "nxd/s-003", StoryID: "s-003", MergedAt: now.AddDate(0, 0, -8)},  // expired
 	}
 
 	deleted, err := reaper.GarbageCollect("/tmp/repo", branches)
@@ -167,13 +171,13 @@ func TestReaper_GarbageCollect(t *testing.T) {
 }
 
 func TestReaper_GarbageCollect_NoBranches(t *testing.T) {
-	es, _, cleanup := newTestStores(t)
+	es, ps, cleanup := newTestStores(t)
 	defer cleanup()
 
 	gitOps := &mockGitCleanupOps{}
 	cfg := config.CleanupConfig{BranchRetentionDays: 7}
 
-	reaper := engine.NewReaper(cfg, gitOps, es)
+	reaper := engine.NewReaper(cfg, gitOps, es, ps)
 	deleted, err := reaper.GarbageCollect("/tmp/repo", nil)
 	if err != nil {
 		t.Fatalf("gc: %v", err)
@@ -184,13 +188,13 @@ func TestReaper_GarbageCollect_NoBranches(t *testing.T) {
 }
 
 func TestReaper_GarbageCollect_ZeroRetention(t *testing.T) {
-	es, _, cleanup := newTestStores(t)
+	es, ps, cleanup := newTestStores(t)
 	defer cleanup()
 
 	gitOps := &mockGitCleanupOps{}
 	cfg := config.CleanupConfig{BranchRetentionDays: 0}
 
-	reaper := engine.NewReaper(cfg, gitOps, es)
+	reaper := engine.NewReaper(cfg, gitOps, es, ps)
 	deleted, err := reaper.GarbageCollect("/tmp/repo", []engine.BranchInfo{
 		{Name: "nxd/s-001", StoryID: "s-001", MergedAt: time.Now()},
 	})
@@ -199,5 +203,63 @@ func TestReaper_GarbageCollect_ZeroRetention(t *testing.T) {
 	}
 	if deleted != 0 {
 		t.Fatalf("expected 0 deletions with zero retention, got %d", deleted)
+	}
+}
+
+// failOnceGitOps refuses to delete one named branch and deletes the rest.
+type failOnceGitOps struct {
+	mockGitCleanupOps
+	refuse string
+}
+
+func (f *failOnceGitOps) DeleteBranch(repoDir, branch string) error {
+	if branch == f.refuse {
+		return errors.New("branch is checked out at /elsewhere")
+	}
+	return f.mockGitCleanupOps.DeleteBranch(repoDir, branch)
+}
+
+// TestGarbageCollect_ContinuesPastFailedBranch: one undeletable branch must
+// not skip the later ones, and GC_COMPLETED is still emitted for the
+// branches that were deleted; the failure is returned at the end. With a
+// projector wired, the projection watermark stays level with the log.
+func TestGarbageCollect_ContinuesPastFailedBranch(t *testing.T) {
+	es, ps, cleanup := newTestStores(t)
+	defer cleanup()
+	gitOps := &failOnceGitOps{
+		mockGitCleanupOps: mockGitCleanupOps{existingBranches: map[string]bool{"nxd/a": true, "nxd/b": true, "nxd/c": true}},
+		refuse:            "nxd/b",
+	}
+	reaper := engine.NewReaper(config.CleanupConfig{BranchRetentionDays: 7}, gitOps, es, ps)
+	now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	reaper.SetNow(func() time.Time { return now })
+	old := now.AddDate(0, 0, -30)
+	deleted, err := reaper.GarbageCollect("/tmp/repo", []engine.BranchInfo{
+		{Name: "nxd/a", StoryID: "a", MergedAt: old},
+		{Name: "nxd/b", StoryID: "b", MergedAt: old},
+		{Name: "nxd/c", StoryID: "c", MergedAt: old},
+	})
+	if err == nil || !strings.Contains(err.Error(), "nxd/b") {
+		t.Fatalf("expected the nxd/b failure to be returned, got %v", err)
+	}
+	if deleted != 2 {
+		t.Fatalf("want 2 deleted (a and c), got %d", deleted)
+	}
+	gcEvents, _ := es.List(state.EventFilter{Type: state.EventGCCompleted})
+	brEvents, _ := es.List(state.EventFilter{Type: state.EventBranchDeleted})
+	if len(gcEvents) != 1 || len(brEvents) != 2 {
+		t.Fatalf("want 1 GC_COMPLETED and 2 BRANCH_DELETED, got %d/%d", len(gcEvents), len(brEvents))
+	}
+	logged, _ := es.Count(state.EventFilter{})
+	sqlite, ok := ps.(*state.SQLiteStore)
+	if !ok {
+		t.Fatalf("test store is %T, want *state.SQLiteStore", ps)
+	}
+	applied, err := sqlite.AppliedEventCount()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied != logged {
+		t.Fatalf("projection watermark %d != log %d: the reaper must project what it appends", applied, logged)
 	}
 }
