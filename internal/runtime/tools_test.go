@@ -400,6 +400,64 @@ func TestSafePath_ValidSymlinkWithinWorkDir(t *testing.T) {
 	}
 }
 
+// TestSafePath_ParentDirSymlinkEscape covers the new-file write hole: a path
+// whose parent directory is a symlink pointing outside the work directory must
+// be rejected even though the final component does not exist yet. An untrusted
+// repo checkout can plant such a link.
+func TestSafePath_ParentDirSymlinkEscape(t *testing.T) {
+	workDir := t.TempDir()
+	outsideDir := t.TempDir()
+
+	if err := os.Symlink(outsideDir, filepath.Join(workDir, "evil")); err != nil {
+		t.Skipf("symlink creation not supported: %v", err)
+	}
+
+	// "evil" resolves outside workDir; the final component does not exist.
+	if _, err := safePath("evil/authorized_keys", workDir); err == nil {
+		t.Fatal("expected error: write through a parent-dir symlink escapes workDir")
+	}
+}
+
+// TestSafePath_DanglingFinalSymlinkEscape covers a dangling final symlink: the
+// link itself exists but its target does not, so EvalSymlinks fails and the
+// old code treated it as an ordinary new file — letting os.WriteFile create
+// the link's out-of-tree target.
+func TestSafePath_DanglingFinalSymlinkEscape(t *testing.T) {
+	workDir := t.TempDir()
+	outsideTarget := filepath.Join(t.TempDir(), "does-not-exist-yet")
+
+	if err := os.Symlink(outsideTarget, filepath.Join(workDir, "config")); err != nil {
+		t.Skipf("symlink creation not supported: %v", err)
+	}
+
+	if _, err := safePath("config", workDir); err == nil {
+		t.Fatal("expected error: a dangling final symlink pointing outside must fail closed")
+	}
+}
+
+// TestExecWriteFile_ParentSymlinkEscapeBlocked drives the real write sink to
+// prove the escape is blocked end-to-end: no file is created in the external
+// directory the planted symlink points at.
+func TestExecWriteFile_ParentSymlinkEscapeBlocked(t *testing.T) {
+	workDir := t.TempDir()
+	outsideDir := t.TempDir()
+	rt := newTestRuntime(t)
+
+	if err := os.Symlink(outsideDir, filepath.Join(workDir, "evil")); err != nil {
+		t.Skipf("symlink creation not supported: %v", err)
+	}
+
+	result := rt.execWriteFile(makeToolCall("write_file", map[string]string{
+		"path": "evil/pwned.txt", "content": "escaped",
+	}), workDir)
+	if !result.IsError {
+		t.Fatal("expected write_file through a parent-dir symlink to be rejected")
+	}
+	if _, err := os.Stat(filepath.Join(outsideDir, "pwned.txt")); err == nil {
+		t.Fatal("file was written outside the work directory — escape not blocked")
+	}
+}
+
 // ── execWriteScratchboard / execReadScratchboard ─────────────────────
 
 func TestExecWriteScratchboard_Success(t *testing.T) {

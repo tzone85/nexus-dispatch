@@ -7,7 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_(no entries yet — open a PR to add a line under the relevant subsection.)_
+### Security
+- Native runtime `safePath`: block the work-directory escape on new-file writes. The guard now walks from the target up to the work directory and validates the nearest existing component after resolving every symlink, so a parent-directory symlink pointing outside the worktree — or a dangling final symlink — can no longer let `write_file`/`edit_file` follow the link out of confinement (an untrusted repo checkout can plant such links).
+
+### Fixed
+- `STORY_STARTED` now projects the story branch into `stories.branch` (it was dropped, leaving the column permanently empty). This repairs the projection-backed CLI commands that read it — `nxd merge`/`gc`/`archive`/`review`/`status` — which previously acted on an empty branch name.
 
 ## [0.2.0] — 2026-06-02
 

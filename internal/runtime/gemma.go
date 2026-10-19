@@ -584,38 +584,73 @@ func (g *GemmaRuntime) executeTool(ctx context.Context, call llm.ToolCall, workD
 }
 
 // safePath resolves a relative path within the working directory and rejects
-// any path traversal attempts. Symlinks are resolved to prevent escaping
-// the work directory via symlink indirection.
+// any attempt to escape it, including via symlinks. It walks from the target
+// up toward workDir and validates the first component that already exists on
+// disk: that component must resolve (following every link) to a location
+// inside workDir. A dangling symlink, a symlink loop, a non-directory ancestor
+// (ENOTDIR), or an unreadable ancestor fails closed.
+//
+// Resolving only an existing target (as the previous implementation did) left
+// a write-escape hole: os.MkdirAll/os.WriteFile open with O_CREATE and no
+// O_NOFOLLOW, so a path whose parent is a symlink pointing outside the
+// worktree, or a dangling final symlink, would have EvalSymlinks fail, look
+// like an ordinary new file, and let the write follow the link out of the
+// work directory. An untrusted repo checkout can contain exactly such links.
 func safePath(relPath, workDir string) (string, error) {
-	abs := filepath.Join(workDir, relPath)
-	cleaned := filepath.Clean(abs)
-
 	cleanedWorkDir := filepath.Clean(workDir)
+	cleaned := filepath.Clean(filepath.Join(cleanedWorkDir, relPath))
 
-	// Ensure the cleaned path is within workDir before symlink resolution.
-	if !strings.HasPrefix(cleaned, cleanedWorkDir+string(filepath.Separator)) &&
-		cleaned != cleanedWorkDir {
+	// Lexical guard: the cleaned path must lie within workDir.
+	if cleaned != cleanedWorkDir &&
+		!strings.HasPrefix(cleaned, cleanedWorkDir+string(filepath.Separator)) {
 		return "", fmt.Errorf("path traversal blocked: %s resolves outside work directory", relPath)
 	}
 
-	// Resolve symlinks to catch indirection that escapes the work directory.
-	// Only evaluate if the target exists (new files won't have symlinks).
-	realPath, err := filepath.EvalSymlinks(cleaned)
-	if err == nil {
-		// Target exists — verify the real path is still within workDir.
-		realWorkDir, wdErr := filepath.EvalSymlinks(cleanedWorkDir)
-		if wdErr != nil {
-			realWorkDir = cleanedWorkDir
-		}
-		if !strings.HasPrefix(realPath, realWorkDir+string(filepath.Separator)) &&
-			realPath != realWorkDir {
-			return "", fmt.Errorf("path traversal blocked: %s resolves outside work directory via symlink", relPath)
-		}
-		return realPath, nil
+	// Resolve workDir once; every existing component must live under its real path.
+	realWorkDir, err := filepath.EvalSymlinks(cleanedWorkDir)
+	if err != nil {
+		// workDir does not exist yet — accept the lexically-bounded result.
+		realWorkDir = cleanedWorkDir
 	}
 
-	// Target doesn't exist yet (new file) — return cleaned path.
-	return cleaned, nil
+	// Walk from the target up toward workDir, stopping at the first component
+	// that exists on disk.
+	for p := cleaned; ; {
+		if _, lerr := os.Lstat(p); lerr == nil {
+			// p exists. Fully resolve it (following links) and require the
+			// result to stay inside workDir. Lstat does not follow a final
+			// symlink, so EvalSymlinks here catches a dangling final link (it
+			// errors) and a final link pointing outside (the prefix check fails).
+			real, rerr := filepath.EvalSymlinks(p)
+			if rerr != nil {
+				return "", fmt.Errorf("path traversal blocked: %s cannot be resolved safely", relPath)
+			}
+			if real != realWorkDir &&
+				!strings.HasPrefix(real, realWorkDir+string(filepath.Separator)) {
+				return "", fmt.Errorf("path traversal blocked: %s resolves outside work directory via symlink", relPath)
+			}
+			if p == cleaned {
+				// The target itself exists: return its resolved path.
+				return real, nil
+			}
+			// An ancestor resolves safely inside workDir; the remaining
+			// not-yet-existing components are created as real dirs/files under
+			// it, so no symlink can be followed out of workDir.
+			return cleaned, nil
+		} else if !os.IsNotExist(lerr) {
+			// ENOTDIR, EACCES, etc. — fail closed rather than guess.
+			return "", fmt.Errorf("path traversal blocked: %s cannot be resolved safely", relPath)
+		}
+		// p does not exist; step up to its parent.
+		parent := filepath.Dir(p)
+		if parent == p || len(parent) < len(cleanedWorkDir) {
+			// Reached the filesystem root, or stepped above a non-existent
+			// workDir, without finding an existing component. The lexical guard
+			// already proved containment, so accept the cleaned path.
+			return cleaned, nil
+		}
+		p = parent
+	}
 }
 
 // isCommandAllowed checks whether a command is permitted by the allowlist.

@@ -361,7 +361,7 @@ func (s *SQLiteStore) projectLocked(evt Event) error {
 	case EventStoryAssigned:
 		return s.projectStoryAssigned(evt.StoryID, payload)
 	case EventStoryStarted:
-		return s.updateStoryStatus(evt.StoryID, "in_progress")
+		return s.projectStoryStarted(evt.StoryID, payload)
 	case EventStoryProgress:
 		return nil // progress events are informational only
 	case EventStoryCompleted:
@@ -854,6 +854,23 @@ func (s *SQLiteStore) projectStoryMerged(evt Event) error {
 	_, err := s.db.Exec(
 		`UPDATE stories SET status = 'merged', merged_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
 		evt.Timestamp, evt.StoryID,
+	)
+	return err
+}
+
+// projectStoryStarted marks a story in_progress and records the branch the
+// agent is working on. STORY_STARTED is the only event that carries the branch
+// value, and the projection-backed CLI commands (nxd merge/gc/archive/review/
+// status) read stories.branch; dropping it here left that column permanently
+// empty and those commands broken (merge against an empty name, gc/archive
+// skipping every story, review/status never showing the branch). The
+// COALESCE(NULLIF(?, '')) guard keeps a replay carrying an empty branch from
+// clobbering a branch already recorded by an earlier re-dispatch.
+func (s *SQLiteStore) projectStoryStarted(storyID string, payload map[string]any) error {
+	branch := payloadStr(payload, "branch")
+	_, err := s.db.Exec(
+		`UPDATE stories SET status = 'in_progress', branch = COALESCE(NULLIF(?, ''), branch), updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+		branch, storyID,
 	)
 	return err
 }

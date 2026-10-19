@@ -86,6 +86,55 @@ func TestProject_AllEventTypes_NoErrors(t *testing.T) {
 	}
 }
 
+// TestProjectStoryStarted_PersistsBranch locks in the wiring fix: STORY_STARTED
+// is the only event that carries the agent's branch, and the projection-backed
+// CLI commands (nxd merge/gc/archive/review/status) read stories.branch. The
+// handler previously dropped the payload and only set status, leaving the
+// column permanently empty. It must now persist the branch, and a later
+// branchless replay must not clobber it.
+func TestProjectStoryStarted_PersistsBranch(t *testing.T) {
+	ps, err := NewSQLiteStore(filepath.Join(t.TempDir(), "nxd.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer func() { _ = ps.Close() }()
+
+	seed := []Event{
+		NewEvent(EventReqSubmitted, "test", "", map[string]any{"id": "R", "title": "t", "description": "d", "repo_path": "/tmp"}),
+		NewEvent(EventStoryCreated, "test", "S1", map[string]any{"id": "S1", "req_id": "R", "title": "story", "complexity": 3}),
+		NewEvent(EventStoryStarted, "agent-1", "S1", map[string]any{"branch": "nxd/S1", "runtime": "gemma"}),
+	}
+	for _, evt := range seed {
+		if err := ps.Project(evt); err != nil {
+			t.Fatalf("Project(%s): %v", evt.Type, err)
+		}
+	}
+
+	story, err := ps.GetStory("S1")
+	if err != nil {
+		t.Fatalf("GetStory: %v", err)
+	}
+	if story.Status != "in_progress" {
+		t.Errorf("status = %q, want in_progress", story.Status)
+	}
+	if story.Branch != "nxd/S1" {
+		t.Fatalf("branch = %q, want nxd/S1 (STORY_STARTED branch was dropped)", story.Branch)
+	}
+
+	// A branchless replay (e.g. an older event with no branch payload) must
+	// not clobber the recorded branch.
+	if err := ps.Project(NewEvent(EventStoryStarted, "agent-1", "S1", map[string]any{"runtime": "gemma"})); err != nil {
+		t.Fatalf("Project(replay): %v", err)
+	}
+	story, err = ps.GetStory("S1")
+	if err != nil {
+		t.Fatalf("GetStory after replay: %v", err)
+	}
+	if story.Branch != "nxd/S1" {
+		t.Errorf("branch after branchless replay = %q, want nxd/S1 (must not be clobbered)", story.Branch)
+	}
+}
+
 // TestProject_AgentTerminated_TransitionsRow locks in the wiring fix: an
 // AGENT_TERMINATED event (dashboard kill / controller auto-cancel) must
 // transition the agent row to status='terminated' and clear its
