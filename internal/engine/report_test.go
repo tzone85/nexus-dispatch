@@ -329,6 +329,51 @@ func TestReportBuilder_Build_LLMUsageBreakdown(t *testing.T) {
 	}
 }
 
+func TestReportBuilder_Build_EffortCostScopedToRequirement(t *testing.T) {
+	// metrics.jsonl accumulates across every requirement ever run. The Effort
+	// summary cost must price only THIS requirement's tokens, matching the
+	// LLMUsage breakdown — otherwise another requirement's spend inflates the
+	// client-facing cost (a cross-requirement double-count).
+	es, ps, cleanup := setupReportStores(t)
+	defer cleanup()
+
+	dir := t.TempDir()
+	rec := metrics.NewRecorder(filepath.Join(dir, "metrics.jsonl"))
+	now := time.Now()
+	for _, entry := range []metrics.MetricEntry{
+		{Timestamp: now, ReqID: "req-001", StoryID: "s-001", Model: "model-x", TokensIn: 2000, TokensOut: 1000, Success: true},
+		// A different requirement's large spend must NOT be counted.
+		{Timestamp: now, ReqID: "other-req", StoryID: "s-999", Model: "model-x", TokensIn: 500000, TokensOut: 500000, Success: true},
+	} {
+		if err := rec.Record(entry); err != nil {
+			t.Fatalf("record metric: %v", err)
+		}
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("close metrics recorder: %v", err)
+	}
+
+	cfg := config.DefaultConfig()
+	cfg.Workspace.StateDir = dir
+	cfg.Billing.LLMCosts.Mode = "per_token"
+	cfg.Billing.LLMCosts.Rates = map[string]config.TokenRate{
+		"model-x": {InputPer1K: 1.0, OutputPer1K: 1.0},
+	}
+	rb := engine.NewReportBuilder(es, ps, cfg)
+
+	report, err := rb.Build("req-001")
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	// Only req-001: 2000/1000*1.0 + 1000/1000*1.0 = 3.0. If other-req leaked in
+	// it would be ~1003.0.
+	got := report.Effort.Summary.LLMCost
+	if got < 2.999 || got > 3.001 {
+		t.Fatalf("effort LLM cost must price only req-001's tokens (want 3.0), got %.4f", got)
+	}
+}
+
 func TestReportBuilder_Build_StatusClassification(t *testing.T) {
 	es, ps, cleanup := setupReportStores(t)
 	defer cleanup()

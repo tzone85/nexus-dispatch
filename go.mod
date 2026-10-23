@@ -13,7 +13,7 @@ go 1.26.1
 // update checker, notifier webhook, docker/pg client, svg validation).
 // With GOTOOLCHAIN=auto (default), older local installs fetch 1.26.6 on
 // first build instead of compiling against a vulnerable stdlib.
-toolchain go1.26.6
+toolchain go1.26.9
 
 require (
 	github.com/charmbracelet/bubbletea v1.3.10
@@ -49,5 +49,5 @@ require (
 	github.com/rogpeppe/go-internal v1.15.0 // indirect
 	github.com/spf13/pflag v1.0.9 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
-	golang.org/x/text v0.39.0 // indirect
+	golang.org/x/text v0.41.0 // indirect
 )

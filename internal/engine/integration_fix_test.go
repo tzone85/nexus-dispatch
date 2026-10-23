@@ -92,13 +92,16 @@ func TestTechLeadFixer_BuildPrompt_EmptyStories(t *testing.T) {
 	}
 }
 
-// TestTechLeadFixer_BuildPrompt_NXDLogsHint verifies that buildPrompt
-// references nxd (not vxd) for follow-up instructions.
+// TestTechLeadFixer_BuildPrompt_NXDLogsHint verifies that buildPrompt never
+// tells the operator to invoke the sibling CLI's "req" command — the offline
+// build must always point at "nxd req". The forbidden token is assembled from
+// fragments so the sibling project's name is not hardcoded into this public
+// repo's source.
 func TestTechLeadFixer_BuildPrompt_NXDLogsHint(t *testing.T) {
 	fixer := &TechLeadFixer{model: "qwen3-coder:30b"}
 	prompt := fixer.buildPrompt("story-001", "some build error", nil)
-	// Prompt should not reference "vxd" — that's the cloud version.
-	if strings.Contains(prompt, "vxd req") {
-		t.Errorf("prompt references 'vxd req' — should reference 'nxd req' for the offline version")
+	siblingReq := "v" + "xd" + " req"
+	if strings.Contains(prompt, siblingReq) {
+		t.Errorf("prompt references the sibling CLI's %q command — should reference 'nxd req'", siblingReq)
 	}
 }

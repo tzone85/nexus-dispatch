@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -8,7 +9,14 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
+
+// bridgeTimeout bounds a single bridge invocation. It is a var (not a const) so
+// tests can shorten it. The Python side does local ChromaDB / embedding work, so
+// the window is generous, but it must be finite: runBridge is on the synchronous
+// critical path and a hung bridge would otherwise stall the caller forever.
+var bridgeTimeout = 30 * time.Second
 
 // SearchResult represents a single result returned by a MemPalace search.
 type SearchResult struct {
@@ -141,9 +149,23 @@ func (mp *MemPalace) runBridge(args ...string) (string, error) {
 	}
 	cmdArgs = append(cmdArgs, args...)
 
-	cmd := exec.Command("python3", cmdArgs...)
+	// Bound every bridge invocation. The Python side does local ChromaDB /
+	// embedding work that can block on I/O or lock contention, and runBridge is
+	// on the synchronous critical path — the resume-time health check, executor
+	// provisioning (Search), and the review→QA→merge pipeline (Mine). Graceful
+	// degradation only handles *errors*; a hang is not an error, so without a
+	// deadline a stuck bridge process would stall the calling goroutine, and the
+	// whole pipeline, forever. On timeout the context kills the process and we
+	// return an error, which every caller already treats as "bridge unavailable".
+	ctx, cancel := context.WithTimeout(context.Background(), bridgeTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "python3", cmdArgs...)
 	out, err := cmd.Output()
 	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return "", fmt.Errorf("bridge command timed out after %s: %w", bridgeTimeout, ctx.Err())
+		}
 		return "", fmt.Errorf("bridge command failed: %w", err)
 	}
 	return strings.TrimSpace(string(out)), nil
