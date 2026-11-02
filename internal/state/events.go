@@ -134,6 +134,18 @@ const (
 	// EventReqPlanningStarted is a heartbeat emitted before the Tech Lead
 	// LLM call so operators can see progress while planning runs.
 	EventReqPlanningStarted EventType = "REQ_PLANNING_STARTED"
+
+	// EventStorySplitFailed records a partial-split failure (some child
+	// stories persisted before the split aborted) so operators can recover.
+	// The DAG is intentionally NOT mutated, so the parent remains the
+	// canonical story for retry. Informational only — no projection change.
+	EventStorySplitFailed EventType = "STORY_SPLIT_FAILED"
+
+	// EventPipelineStalled is emitted during auto-resume when unfinished
+	// stories remain but none are dispatchable (all escalation tiers
+	// exhausted or dependencies unmet). Informational / diagnostic only —
+	// no projection change.
+	EventPipelineStalled EventType = "PIPELINE_STALLED"
 )
 
 // Event represents a single domain event in the append-only event store.
