@@ -11,9 +11,12 @@ go 1.26.1
 // limit), GO-2026-5972 (encoding/asn1 recursion depth) and GO-2026-5026
 // (golang.org/x/net/idna Punycode). NXD calls all of them (web server,
 // update checker, notifier webhook, docker/pg client, svg validation).
-// With GOTOOLCHAIN=auto (default), older local installs fetch 1.26.6 on
+// go1.26.10 clears GO-2026-6809 (crypto/x509 Certificate.Verify trusting
+// compromised intermediate certificates), which govulncheck traces through
+// the web server's TLS verification path.
+// With GOTOOLCHAIN=auto (default), older local installs fetch this patch on
 // first build instead of compiling against a vulnerable stdlib.
-toolchain go1.26.9
+toolchain go1.26.10
 
 require (
 	github.com/charmbracelet/bubbletea v1.3.10

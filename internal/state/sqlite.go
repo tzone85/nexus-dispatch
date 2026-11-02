@@ -462,7 +462,8 @@ func (s *SQLiteStore) projectLocked(evt Event) error {
 	case EventReqBudgetWarning, EventReqBudgetExceeded, EventRecoveryCompleted, EventReqEstimated,
 		EventAgentCheckpoint, EventSupervisorCheck, EventSupervisorReprioritize, EventSupervisorDriftDetected,
 		EventControllerAnalysis, EventControllerAction, EventControllerStuckDetected, EventUserDirective,
-		EventDirectiveAcked, EventHumanReviewNeeded, EventStageCompleted:
+		EventDirectiveAcked, EventHumanReviewNeeded, EventStageCompleted,
+		EventStorySplitFailed, EventPipelineStalled:
 		// Recorded in the log for diagnostics, metrics and the dashboard
 		// timeline; nothing in the projection tables represents them. Listed
 		// so TestProjectLocked_EveryKnownTypeHasACase keeps this switch
