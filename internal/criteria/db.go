@@ -60,7 +60,9 @@ func evaluateMigrationSucceeds(ctx context.Context, workDir string, c Criterion)
 	// evaluation against an externally-provisioned DB.
 	cmd := shellexec.CommandContext(ctx, c.Command)
 	cmd.Dir = workDir
-	cmd.Env = append(os.Environ(), "DATABASE_URL="+dsn)
+	// The migration command can originate from an LLM "split" action, so run it
+	// with NXD's credentials scrubbed; only the story DB's DATABASE_URL is added.
+	cmd.Env = append(shellexec.ScrubbedEnviron(), "DATABASE_URL="+dsn)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return Result{Criterion: c, Passed: false,

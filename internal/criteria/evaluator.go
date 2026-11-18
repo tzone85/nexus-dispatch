@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/tzone85/nexus-dispatch/internal/sanitize"
+	"github.com/tzone85/nexus-dispatch/internal/shellexec"
 )
 
 // resolveWorkDirPath joins workDir and rel, refusing any rel that is
@@ -192,6 +193,8 @@ func evalTestPasses(ctx context.Context, workDir string, c Criterion) Result {
 	args := normalizeGoTestArgs(c.Target)
 	cmd := exec.CommandContext(ctx, "go", append([]string{"test"}, args...)...)
 	cmd.Dir = workDir
+	// go test runs the agent's own test code; withhold NXD's credentials.
+	cmd.Env = shellexec.ScrubbedEnviron()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return Result{
@@ -240,6 +243,8 @@ func evalCoverageAbove(ctx context.Context, workDir string, c Criterion) Result 
 
 	cmd := exec.CommandContext(ctx, "go", "test", "-coverprofile", profilePath, target)
 	cmd.Dir = workDir
+	// go test runs the agent's own test code; withhold NXD's credentials.
+	cmd.Env = shellexec.ScrubbedEnviron()
 	out, err := cmd.CombinedOutput()
 	output := string(out)
 	if err != nil {
@@ -332,6 +337,9 @@ func evalCommandSucceeds(ctx context.Context, workDir string, c Criterion) Resul
 	}
 	cmd := exec.CommandContext(ctx, parts[0], parts[1:]...)
 	cmd.Dir = workDir
+	// The command (go test / make / …) runs agent-authored code; withhold
+	// NXD's credentials so they cannot be read and exfiltrated.
+	cmd.Env = shellexec.ScrubbedEnviron()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return Result{
