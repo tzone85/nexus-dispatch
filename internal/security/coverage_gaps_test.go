@@ -195,6 +195,90 @@ func TestParseNpmAudit_FallsBackToMapKeyForName(t *testing.T) {
 	}
 }
 
+// TestParseGosec_CompileFailureIsCoverageLoss guards the coverage-loss gap:
+// gosec emits valid JSON with a populated "Golang errors" map and an empty
+// Issues array (plus a non-zero exit that Scanner.Run ignores) when it cannot
+// compile the packages. Nothing was inspected, so it must surface as an error
+// (→ failed), not a clean SAST run.
+func TestParseGosec_CompileFailureIsCoverageLoss(t *testing.T) {
+	out := []byte(`{"Golang errors":{"pkg/foo/bar.go":[{"line":3,"column":8,"error":"could not import x (missing)"}]},"Issues":[],"Stats":{"files":0,"lines":0}}`)
+	fs, err := parseGosec(out, "/repo")
+	if err == nil {
+		t.Fatalf("gosec that compiled nothing must surface as a failure, got findings=%v err=nil", fs)
+	}
+	if len(fs) != 0 {
+		t.Errorf("a failed gosec run must not report findings, got %v", fs)
+	}
+}
+
+// TestParseGosec_PartialRunKeepsFindings verifies the narrow guard does not
+// discard real findings: when some packages compiled (non-empty Issues) and
+// others errored, the genuine findings must still be returned (recorded ran) —
+// routing the whole run to failed would lose them.
+func TestParseGosec_PartialRunKeepsFindings(t *testing.T) {
+	out := []byte(`{"Golang errors":{"pkg/broken/x.go":[{"line":1,"column":1,"error":"boom"}]},"Issues":[{"severity":"HIGH","rule_id":"G101","details":"hardcoded creds","file":"main.go","line":"7","cwe":{"id":"798"}}]}`)
+	fs, err := parseGosec(out, "/repo")
+	if err != nil {
+		t.Fatalf("a partial gosec run must keep its findings, got err=%v", err)
+	}
+	if len(fs) != 1 || fs[0].RuleID != "G101" {
+		t.Fatalf("expected the one real finding preserved, got %v", fs)
+	}
+}
+
+// TestParseGosec_CleanRunNoError confirms a genuine clean run (no compile
+// errors, no issues) is not mistaken for a failure.
+func TestParseGosec_CleanRunNoError(t *testing.T) {
+	out := []byte(`{"Golang errors":{},"Issues":[],"Stats":{"files":12,"lines":3400}}`)
+	fs, err := parseGosec(out, "/repo")
+	if err != nil {
+		t.Fatalf("a clean gosec run must not be an error: %v", err)
+	}
+	if len(fs) != 0 {
+		t.Errorf("a clean gosec run must report no findings, got %v", fs)
+	}
+}
+
+// TestParseNpmAudit_ErrorObjectIsFailureNotClean guards the coverage-loss gap:
+// npm v7+ writes a JSON error object to stdout (in place of a report) when it
+// cannot audit — no lockfile, or an unreachable registry on NXD's offline-first
+// hosts. That object parses cleanly and leaves Vulnerabilities nil, so it must
+// be surfaced as an error (→ failed list) rather than counted as a clean scan.
+func TestParseNpmAudit_ErrorObjectIsFailureNotClean(t *testing.T) {
+	cases := []struct {
+		name string
+		out  string
+	}{
+		{"no lockfile", `{"error":{"code":"ENOLOCK","summary":"This command requires an existing lockfile.","detail":""}}`},
+		{"registry unreachable", `{"error":{"code":"ENETUNREACH","summary":"request to https://registry.npmjs.org/-/npm/v1/security/audits failed"}}`},
+		{"bare string error", `{"error":"audit endpoint returned an error"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fs, err := parseNpmAudit([]byte(tc.out))
+			if err == nil {
+				t.Fatalf("an npm audit error object must surface as a failure, got findings=%v err=nil", fs)
+			}
+			if len(fs) != 0 {
+				t.Errorf("a failed audit must not report findings, got %v", fs)
+			}
+		})
+	}
+}
+
+// TestParseNpmAudit_CleanReportIsNoError confirms the guard does not mistake a
+// genuine clean audit (report present, zero vulnerabilities) for a failure.
+func TestParseNpmAudit_CleanReportIsNoError(t *testing.T) {
+	out := []byte(`{"vulnerabilities":{},"metadata":{"vulnerabilities":{"total":0}}}`)
+	fs, err := parseNpmAudit(out)
+	if err != nil {
+		t.Fatalf("a clean audit (empty vulnerabilities) must not be an error: %v", err)
+	}
+	if len(fs) != 0 {
+		t.Errorf("a clean audit must report no findings, got %v", fs)
+	}
+}
+
 func TestParseGovulncheck_MalformedLinesSkipped(t *testing.T) {
 	out := []byte("Vulnerability #1 without colon\nVulnerability #2:   \nVulnerability #3: GO-2025-999\n")
 	fs, err := parseGovulncheck(out)
