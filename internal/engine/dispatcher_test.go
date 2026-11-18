@@ -170,6 +170,63 @@ func TestDispatcher_EmptyWave(t *testing.T) {
 	}
 }
 
+// TestDispatchWave_SkipsMergeReadyStory proves a story awaiting human merge
+// review (status "merge_ready" under merge.review_before_merge) is not
+// re-dispatched. Such a story is not in `completed` (its dependents must stay
+// blocked), so ReadyNodes returns it every wave; before the fix DispatchWave
+// re-spawned it, clobbering the merge_ready state and looping forever. An
+// independent draft story in the same wave must still be dispatched.
+func TestDispatchWave_SkipsMergeReadyStory(t *testing.T) {
+	es, ps, cleanup := newTestStores(t)
+	defer cleanup()
+
+	for _, s := range []struct{ id, title string }{
+		{"s-ready", "Awaiting merge"},
+		{"s-fresh", "Fresh work"},
+	} {
+		evt := state.NewEvent(state.EventStoryCreated, "tech-lead", s.id, map[string]any{
+			"id": s.id, "req_id": "r-001", "title": s.title, "description": "d", "complexity": 3,
+		})
+		if err := ps.Project(evt); err != nil {
+			t.Fatalf("project story %s: %v", s.id, err)
+		}
+	}
+	// s-ready has finished execution and is waiting for a human merge.
+	mr := state.NewEvent(state.EventStoryMergeReady, "", "s-ready", nil)
+	if err := ps.Project(mr); err != nil {
+		t.Fatalf("project merge_ready: %v", err)
+	}
+
+	dispatcher := engine.NewDispatcher(config.DefaultConfig(), es, ps)
+	dag := graph.New()
+	dag.AddNode("s-ready")
+	dag.AddNode("s-fresh")
+	stories := []engine.PlannedStory{
+		{ID: "s-ready", Title: "Awaiting merge", Complexity: 3},
+		{ID: "s-fresh", Title: "Fresh work", Complexity: 3},
+	}
+
+	// Both nodes are "ready" per the DAG (no deps, neither in completed), but
+	// s-ready must be skipped and s-fresh must still dispatch.
+	assignments, err := dispatcher.DispatchWave(dag, map[string]bool{}, "r-001", stories, 1)
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if len(assignments) != 1 || assignments[0].StoryID != "s-fresh" {
+		t.Fatalf("expected only s-fresh dispatched, got %+v", assignments)
+	}
+
+	// The merge_ready story's status must be untouched — not clobbered to
+	// assigned/in_progress by a spurious re-dispatch.
+	got, err := ps.GetStory("s-ready")
+	if err != nil {
+		t.Fatalf("get s-ready: %v", err)
+	}
+	if got.Status != "merge_ready" {
+		t.Fatalf("merge_ready story was re-dispatched: status is now %q", got.Status)
+	}
+}
+
 func TestDispatcher_EventEmission(t *testing.T) {
 	es, ps, cleanup := newTestStores(t)
 	defer cleanup()
