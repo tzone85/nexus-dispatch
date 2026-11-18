@@ -3,10 +3,27 @@ package git
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
 )
+
+// newNetworkGitCmd builds a git command for a remote (network) operation with
+// interactive credential prompting disabled.
+//
+// Without GIT_TERMINAL_PROMPT=0, git blocks indefinitely on a terminal prompt
+// when credentials are missing (e.g. a private remote in a headless pipeline).
+// The post-merge pipeline serializes fetch/push/delete under a single
+// process-wide merge lock, so one such hang would stall every story's merge,
+// not just the current one. Disabling the prompt turns a missing-credential
+// situation into a prompt, non-blocking error instead.
+func newNetworkGitCmd(repoDir string, args ...string) *exec.Cmd {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = repoDir
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GCM_INTERACTIVE=never")
+	return cmd
+}
 
 // PRInfo holds metadata about a GitHub pull request.
 type PRInfo struct {
@@ -87,8 +104,7 @@ func PushBranch(repoDir, branch string) error {
 	if !HasRemote(repoDir, "origin") {
 		return nil
 	}
-	cmd := exec.Command("git", "push", "-u", "origin", branch)
-	cmd.Dir = repoDir
+	cmd := newNetworkGitCmd(repoDir, "push", "-u", "origin", branch)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("git push: %w (%s)", err, strings.TrimSpace(string(out)))
@@ -102,8 +118,7 @@ func DeleteRemoteBranch(repoDir, branch string) error {
 	if !HasRemote(repoDir, "origin") {
 		return nil
 	}
-	cmd := exec.Command("git", "push", "origin", "--delete", branch)
-	cmd.Dir = repoDir
+	cmd := newNetworkGitCmd(repoDir, "push", "origin", "--delete", branch)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("git push --delete: %w (%s)", err, strings.TrimSpace(string(out)))
@@ -157,8 +172,7 @@ func FetchBranch(repoDir, branch string) error {
 		return nil
 	}
 
-	cmd := exec.Command("git", "fetch", "origin", branch)
-	cmd.Dir = repoDir
+	cmd := newNetworkGitCmd(repoDir, "fetch", "origin", branch)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("git fetch: %w (%s)", err, strings.TrimSpace(string(out)))
