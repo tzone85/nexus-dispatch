@@ -343,18 +343,19 @@ type SuccessCriterion struct {
 	SchemaBaseline string `yaml:"schema_baseline,omitempty"` // schema_changed: path to baseline file
 }
 
-// validCriteriaKinds is the set of allowed QA criteria kinds.
-// Must stay in sync with criteria.Type constants in internal/criteria/types.go.
+// validCriteriaKinds is the set of allowed QA criteria kinds. It must stay in
+// sync with the criteria.Type constants the evaluator actually implements
+// (internal/criteria/types.go + the switch in evaluator.go): a kind accepted
+// here but absent from that switch evaluates to "unknown criterion type" →
+// Passed=false forever, so a story using it can never pass QA (and, on the
+// native runtime, can never declare completion). Only list kinds with a real
+// evaluator case.
 var validCriteriaKinds = map[string]bool{
-	"output_contains":     true,
-	"output_not_contains": true,
-	"file_exists":         true,
-	"file_contains":       true,
-	"file_not_empty":      true,
-	"exit_code_zero":      true,
-	"test_passes":         true,
-	"coverage_above":      true,
-	"command_succeeds":    true,
+	"file_exists":      true,
+	"file_contains":    true,
+	"test_passes":      true,
+	"coverage_above":   true,
+	"command_succeeds": true,
 	// SP5 DB criteria
 	"migration_succeeds": true,
 	"schema_changed":     true,
