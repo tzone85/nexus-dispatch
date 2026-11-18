@@ -6,6 +6,7 @@ import (
 
 	"github.com/tzone85/nexus-dispatch/internal/config"
 	"github.com/tzone85/nexus-dispatch/internal/graph"
+	"github.com/tzone85/nexus-dispatch/internal/sanitize"
 	"github.com/tzone85/nexus-dispatch/internal/state"
 )
 
@@ -145,6 +146,14 @@ func (e *EscalationMachine) ValidateSplit(parentSplitDepth int, children []Split
 
 	suffixSet := make(map[string]bool, len(children))
 	for _, child := range children {
+		// Child IDs (parentID + "-" + LLM-supplied suffix) become worktree dir
+		// names, git branch refs, and artifact keys. Reject any that is not a
+		// plain identifier before the split is applied — matching the planner's
+		// plan-time validation so no split path can mint an ID the executor
+		// would later have to reject at the worktree sink.
+		if !sanitize.ValidIdentifier(child.ID) {
+			return fmt.Errorf("child story id %q is not a valid identifier (bad suffix %q)", child.ID, child.Suffix)
+		}
 		if suffixSet[child.Suffix] {
 			return fmt.Errorf("duplicate child suffix: %q", child.Suffix)
 		}
