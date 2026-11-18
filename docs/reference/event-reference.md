@@ -1,6 +1,6 @@
 # NXD Event Reference
 
-Every action in NXD produces an immutable event. `internal/state/events.go` defines **65 event types**; a few are defined but not emitted by the running pipeline (noted below), and the monitor also emits one raw string, `PIPELINE_STALLED`. The detailed entries below cover the core requirement → planning → dispatch → review → QA → security → merge pipeline. The remaining types — added across 2026-04 → 2026-06 for the controller, devdb lifecycle, conflict resolver, integration build, and stage timing — are summarised in the *Additional events* section at the bottom of this page. The canonical list of strings lives in `internal/state/events.go`; the test `internal/config/example_gen_test.go` guards the generated example config from drifting, and a future generator can do the same for this page.
+Every action in NXD produces an immutable event. `internal/state/events.go` defines **67 event types**; a few are defined but not emitted by the running pipeline (noted below). The detailed entries below cover the core requirement → planning → dispatch → review → QA → security → merge pipeline. The remaining types — added across 2026-04 → 2026-06 for the controller, devdb lifecycle, conflict resolver, integration build, and stage timing — are summarised in the *Additional events* section at the bottom of this page. The canonical list of strings lives in `internal/state/events.go`; the test `internal/config/example_gen_test.go` guards the generated example config from drifting, and a future generator can do the same for this page.
 
 ## Event Structure
 
@@ -376,7 +376,8 @@ shape, grep `internal/engine/` or `internal/state/events.go`.
 - **STORY_MERGE_READY** — review, QA, and the security gate passed with `merge.review_before_merge: true`; the story waits for a human merge
 - **STORY_ESCALATED** — story bumped to a higher escalation tier (see STORY_ESCALATED above)
 - **STORY_INTEGRATION_FAILED** — post-merge integration build failed; the Tech Lead model drafts a fix description, which is logged
-- **PIPELINE_STALLED** — raw string, not an `EventType` constant: stories remain but none are dispatchable (payload: `req_id`, `pending_count`, `total_stories`, `reason`)
+- **STORY_SPLIT_FAILED** — a split aborted after some child stories were already created; the DAG is left unchanged so the parent remains the retry target (payload: `parent_story_id`, `reason`, `created_children`, `error`)
+- **PIPELINE_STALLED** — stories remain but none are dispatchable; all escalation tiers exhausted or dependencies unmet (payload: `req_id`, `pending_count`, `total_stories`, `reason`)
 
 ### Requirement-level
 - **REQ_PLANNING_STARTED** — Tech Lead began decomposition (kicks off planner stage timing)

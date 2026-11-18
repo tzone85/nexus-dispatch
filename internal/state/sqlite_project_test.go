@@ -419,6 +419,40 @@ func TestProject_UnknownType_LogsAndAdvancesWatermark(t *testing.T) {
 	}
 }
 
+// TestProject_FirstPartyInformationalEvents_NoUnknownLog guards against a
+// regression where STORY_SPLIT_FAILED / PIPELINE_STALLED were emitted by the
+// monitor as raw string literals with no EventType constant, so they fell to
+// the default arm: Project logged the misleading "event log is newer than this
+// binary?" warning on every emit and every rebuild, and they escaped the
+// exhaustiveness guard. They must now project as deliberate no-ops, silently.
+func TestProject_FirstPartyInformationalEvents_NoUnknownLog(t *testing.T) {
+	ps, err := NewSQLiteStore(filepath.Join(t.TempDir(), "nxd.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer func() { _ = ps.Close() }()
+
+	var logs bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(prev) })
+
+	for _, typ := range []EventType{EventStorySplitFailed, EventPipelineStalled} {
+		// projectLocked must not route these to the default (errUnprojected) arm.
+		if err := ps.projectLocked(NewEvent(typ, "monitor", "S1", nil)); errors.Is(err, errUnprojected) {
+			t.Errorf("%s fell to the default arm; it must be a declared projection case", typ)
+		}
+		// Project is the path that logs the forward-compat warning on an
+		// unhandled type; it must stay silent for these first-party events.
+		if err := ps.Project(NewEvent(typ, "monitor", "S1", nil)); err != nil {
+			t.Errorf("Project(%s) returned %v", typ, err)
+		}
+	}
+	if strings.Contains(logs.String(), "ignoring unknown event type") {
+		t.Fatalf("first-party events must not log the forward-compat warning, got: %q", logs.String())
+	}
+}
+
 // TestProject_UnknownType_LogQuoted: the event type and id come from
 // events.jsonl; a newline in either must not forge a second log line.
 func TestProject_UnknownType_LogQuoted(t *testing.T) {

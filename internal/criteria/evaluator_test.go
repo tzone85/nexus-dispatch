@@ -143,6 +143,30 @@ func TestTestPasses_AcceptsFullGoTestCommand(t *testing.T) {
 	}
 }
 
+// TestTestPasses_ScrubsSecretsFromAgentTests proves that a credential held in
+// NXD's own process environment is NOT visible to the agent-authored test code
+// that `test_passes` runs. Without the env scrub the planted key would leak
+// into the child `go test` process and the module's test would fail.
+func TestTestPasses_ScrubsSecretsFromAgentTests(t *testing.T) {
+	t.Setenv("NXD_PLANTED_ANTHROPIC_API_KEY", "sk-should-not-leak")
+
+	dir := t.TempDir()
+	mustWriteFile(t, filepath.Join(dir, "go.mod"), "module scrubtest\n\ngo 1.21\n")
+	mustWriteFile(t, filepath.Join(dir, "main.go"), "package scrubtest\n\nfunc Noop() {}\n")
+	// The agent's test asserts the orchestrator secret is absent from its env.
+	mustWriteFile(t, filepath.Join(dir, "main_test.go"),
+		"package scrubtest\n\nimport (\n\t\"os\"\n\t\"testing\"\n)\n\n"+
+			"func TestNoSecretLeak(t *testing.T) {\n"+
+			"\tif v := os.Getenv(\"NXD_PLANTED_ANTHROPIC_API_KEY\"); v != \"\" {\n"+
+			"\t\tt.Fatalf(\"orchestrator secret leaked into agent test env: %q\", v)\n"+
+			"\t}\n}\n")
+
+	r := Evaluate(context.Background(), dir, Criterion{Type: TypeTestPasses, Target: "go test ./..."})
+	if !r.Passed {
+		t.Fatalf("expected pass (secret scrubbed), got: %s\n%s", r.Message, r.Actual)
+	}
+}
+
 func TestCommandSucceeds_Fail(t *testing.T) {
 	// `go test` on an empty dir fails (no go.mod) — allowlisted but exits non-zero.
 	r := Evaluate(context.Background(), t.TempDir(), Criterion{Type: TypeCommandSucceeds, Target: "go test ./..."})

@@ -122,7 +122,7 @@ func (m *Monitor) emitSplitFailed(parentID, reason string, createdChildren []str
 	if cause != nil {
 		payload["error"] = cause.Error()
 	}
-	evt := state.NewEvent("STORY_SPLIT_FAILED", "monitor", parentID, payload)
+	evt := state.NewEvent(state.EventStorySplitFailed, "monitor", parentID, payload)
 	if err := m.eventStore.Append(evt); err != nil {
 		log.Printf("[split] failed to append SPLIT_FAILED for %s: %v", parentID, err)
 	}
@@ -1311,7 +1311,7 @@ func (m *Monitor) dispatchNextWave(ctx context.Context, rc *RunContext, repoDir 
 			log.Printf("[STALL] requirement %s has %d unfinished stories but none are dispatchable — all escalation tiers exhausted or dependencies unmet", rc.ReqID, pendingCount)
 			log.Printf("[STALL] run 'nxd status --req %s' to inspect, then 'nxd resume %s --godmode' to retry", rc.ReqID, rc.ReqID)
 			emitEventOrLog(m.eventStore, m.projStore,
-				state.NewEvent("PIPELINE_STALLED", "monitor", "", map[string]any{
+				state.NewEvent(state.EventPipelineStalled, "monitor", "", map[string]any{
 					"req_id":        rc.ReqID,
 					"pending_count": pendingCount,
 					"total_stories": len(stories),

@@ -908,6 +908,10 @@ func (g *GemmaRuntime) execRunCommand(ctx context.Context, call llm.ToolCall, wo
 	defer cancel()
 	cmd := shellexec.CommandContext(cmdCtx, args.Command)
 	cmd.Dir = workDir
+	// Agent-authored code runs here (go test runs the agent's tests, make runs
+	// the agent's Makefile). Withhold NXD's credentials (e.g. ANTHROPIC_API_KEY)
+	// so a prompt-injected agent cannot read and exfiltrate them.
+	cmd.Env = shellexec.ScrubbedEnviron()
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
