@@ -14,9 +14,12 @@ go 1.26.1
 // go1.26.10 additionally clears GO-2026-6809 (crypto/x509 distrusts
 // compromised intermediate certificates), which govulncheck reports as
 // called via web.Server.Start -> http.Server.Serve -> x509.Certificate.Verify.
-// With GOTOOLCHAIN=auto (default), older local installs fetch 1.26.10 on
+// go1.26.11 additionally clears GO-2026-6859 (net/http), which govulncheck
+// reports as called via web.Server.Start -> http.Server.Serve and the
+// notifier/update-checker HTTP clients.
+// With GOTOOLCHAIN=auto (default), older local installs fetch 1.26.11 on
 // first build instead of compiling against a vulnerable stdlib.
-toolchain go1.26.10
+toolchain go1.26.11
 
 require (
 	github.com/charmbracelet/bubbletea v1.3.10
