@@ -55,6 +55,24 @@ func NewDispatcher(cfg config.Config, es state.EventStore, ps state.ProjectionSt
 	}
 }
 
+// filterDispatchable drops ready stories that must not be (re-)dispatched
+// because they are awaiting a human action rather than execution. Currently
+// that is stories in the "merge_ready" state (merge.review_before_merge): they
+// have finished execution and are waiting for an operator merge, so re-running
+// them would loop forever and destroy the merge_ready state. A story whose
+// status cannot be read is kept (dispatched) so a transient projection lookup
+// error never silently drops real work.
+func (d *Dispatcher) filterDispatchable(ids []string) []string {
+	var out []string
+	for _, id := range ids {
+		if s, err := d.projStore.GetStory(id); err == nil && s.Status == "merge_ready" {
+			continue
+		}
+		out = append(out, id)
+	}
+	return out
+}
+
 // DispatchWave identifies stories ready for execution (all dependencies
 // satisfied) and assigns each to an agent role based on complexity. It returns
 // assignments for all dispatchable stories and emits AGENT_SPAWNED and
@@ -66,6 +84,15 @@ func NewDispatcher(cfg config.Config, es state.EventStore, ps state.ProjectionSt
 // dispatched with overlap filtering to prevent file conflicts.
 func (d *Dispatcher) DispatchWave(dag *graph.DAG, completed map[string]bool, reqID string, stories []PlannedStory, waveNumber int) ([]Assignment, error) {
 	readyIDs := dag.ReadyNodes(completed)
+	// A story awaiting human merge review (status "merge_ready", set under
+	// merge.review_before_merge) is neither complete — its dependents stay
+	// blocked because it is not in `completed` — nor dispatchable. It is not in
+	// `completed`, so ReadyNodes returns it every wave; re-dispatching would
+	// clobber the merge_ready state and re-run the story forever. Drop such
+	// stories here so auto-resume waits for the operator to merge them (via
+	// `nxd merge`/`nxd review`), after which they project to "merged" and their
+	// dependents are released.
+	readyIDs = d.filterDispatchable(readyIDs)
 	if len(readyIDs) == 0 {
 		return nil, nil
 	}

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/tzone85/nexus-dispatch/internal/state"
@@ -100,6 +101,16 @@ func (l *Lifecycle) Provision(ctx context.Context, storyID, project, worktreeDir
 	db.Provider = l.provider.Name()
 
 	if err := WriteEnvFiles(worktreeDir, db); err != nil {
+		// The database was already created above; if we cannot wire it into the
+		// worktree it is unusable, so tear it down before returning. Otherwise it
+		// orphans in the shared Postgres container: the caller leaves result.DB
+		// zero-valued (so the monitor's release defer, guarded on DB.ID != "",
+		// never fires) and ReleaseOrphans deliberately preserves DBs with a zero
+		// CreatedAt for human review. Best-effort — a failed teardown is logged,
+		// not surfaced over the original error.
+		if delErr := l.provider.Delete(ctx, db.ID); delErr != nil {
+			log.Printf("[devdb] failed to tear down DB %s after envfile error (manual cleanup needed): %v", db.ID, delErr)
+		}
 		l.emitFailed(storyID, name, fmt.Sprintf("envfile: %v", err))
 		return DB{}, fmt.Errorf("devdb write envfile: %w", err)
 	}
