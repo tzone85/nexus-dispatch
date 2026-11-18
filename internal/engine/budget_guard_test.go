@@ -1,7 +1,9 @@
 package engine
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -9,6 +11,16 @@ import (
 	"github.com/tzone85/nexus-dispatch/internal/metrics"
 	"github.com/tzone85/nexus-dispatch/internal/state"
 )
+
+// writeUnreadableLedger writes a metrics ledger whose single line exceeds
+// ReadAll's 1MB scanner buffer, so ReadAll returns a genuine read error
+// (bufio.ErrTooLong) — distinct from a missing file, which reads as empty.
+func writeUnreadableLedger(t *testing.T, path string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(strings.Repeat("a", 2<<20)), 0o600); err != nil {
+		t.Fatalf("setup unreadable ledger: %v", err)
+	}
+}
 
 func budgetBilling(budget, warnPct float64) config.BillingConfig {
 	return config.BillingConfig{
@@ -92,6 +104,16 @@ func TestBudgetGuard_Check(t *testing.T) {
 			t.Errorf("subscription mode must never trip the guard, got %v", st.State)
 		}
 	})
+
+	t.Run("unreadable ledger is undetermined, not zero", func(t *testing.T) {
+		bad := filepath.Join(t.TempDir(), "metrics.jsonl")
+		writeUnreadableLedger(t, bad)
+		g := NewBudgetGuard(budgetBilling(4, 80), bad)
+		st := g.Check("req-a")
+		if !st.Undetermined {
+			t.Fatalf("a failed ledger read must be Undetermined (fail safe, not $0), got %+v", st)
+		}
+	})
 }
 
 func TestBudgetGuard_MarkWarnedOnce(t *testing.T) {
@@ -159,6 +181,26 @@ func TestMonitor_EnforceBudget(t *testing.T) {
 		m := NewMonitor(nil, nil, nil, nil, nil, config.Config{}, es, ps)
 		if m.enforceBudget("story-ng") {
 			t.Fatal("nil guard must never stop the pipeline")
+		}
+	})
+
+	t.Run("unreadable ledger fails safe: pauses without a false overrun", func(t *testing.T) {
+		es, ps := capacityTestStores(t)
+		seedCapacityStory(t, es, ps, "req-bad", "story-bad")
+		path := filepath.Join(t.TempDir(), "metrics.jsonl")
+		writeUnreadableLedger(t, path)
+		m := NewMonitor(nil, nil, nil, nil, nil, config.Config{}, es, ps)
+		m.SetBudgetGuard(NewBudgetGuard(budgetBilling(10, 80), path))
+
+		if !m.enforceBudget("story-bad") {
+			t.Fatal("an unreadable ledger must fail safe and stop the pipeline")
+		}
+		if evts, _ := es.List(state.EventFilter{Type: state.EventReqPaused}); len(evts) != 1 {
+			t.Errorf("want the requirement paused once for review, got %d", len(evts))
+		}
+		// We could not prove spend was exceeded, so no REQ_BUDGET_EXCEEDED.
+		if evts, _ := es.List(state.EventFilter{Type: state.EventReqBudgetExceeded}); len(evts) != 0 {
+			t.Errorf("must not emit a false REQ_BUDGET_EXCEEDED, got %d", len(evts))
 		}
 	})
 }

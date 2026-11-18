@@ -105,3 +105,18 @@ func TestTechLeadFixer_BuildPrompt_NXDLogsHint(t *testing.T) {
 		t.Errorf("prompt references the sibling CLI's %q command — should reference 'nxd req'", siblingReq)
 	}
 }
+
+// TestTechLeadFixer_DispatchHint verifies that the operator-facing dispatch
+// hint re-dispatches through the nxd CLI (this project's offline-first tool)
+// and embeds the suggested fix, so the hint an operator copies from the
+// integration-fixer log is directly actionable.
+func TestTechLeadFixer_DispatchHint(t *testing.T) {
+	const fix = "reconcile the HTTP handler signature with the server wiring"
+	hint := dispatchHint(fix)
+	if !strings.HasPrefix(hint, "nxd req ") {
+		t.Errorf("dispatch hint must re-dispatch via 'nxd req', got: %q", hint)
+	}
+	if !strings.Contains(hint, fix) {
+		t.Errorf("dispatch hint must embed the fix description, got: %q", hint)
+	}
+}

@@ -9,6 +9,7 @@ import (
 
 	"github.com/tzone85/nexus-dispatch/internal/config"
 	"github.com/tzone85/nexus-dispatch/internal/llm"
+	"github.com/tzone85/nexus-dispatch/internal/security"
 	"github.com/tzone85/nexus-dispatch/internal/state"
 )
 
@@ -203,6 +204,47 @@ func makeEmptyWorktree(t *testing.T, branch string) string {
 	run("commit", "-m", "base")
 	run("checkout", "-b", branch)
 	return dir
+}
+
+// TestPostExecutionPipeline_SecurityGateErrorFailsClosed verifies that a
+// security gate which ERRORS (e.g. a corrupt/unreadable knowledge base) fails
+// CLOSED: the story is never certified clean, so the requirement pauses for
+// review instead of merging unscanned. Previously the monitor logged the error
+// and continued to merge, silently bypassing the deterministic scanners that
+// are the real merge blockers.
+func TestPostExecutionPipeline_SecurityGateErrorFailsClosed(t *testing.T) {
+	es, ps := capacityTestStores(t)
+	seedCapacityStory(t, es, ps, "r-secerr", "s-pe-cap")
+
+	worktree := makeWorktreeWithDiff(t)
+
+	// A corrupt KB makes ReviewStory return an error before it can scan.
+	kbPath := t.TempDir() + "/kb.json"
+	if err := os.WriteFile(kbPath, []byte("{corrupt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gate := NewSecurityGate(nil, "test-model", 1000, kbPath, security.SeverityHigh, false, es, ps)
+
+	// nil reviewer + nil qa → the pipeline reaches the security gate directly.
+	m := NewMonitor(nil, nil, nil, nil, nil, config.Config{}, es, ps)
+	m.SetSecurityGate(gate)
+
+	ag := ActiveAgent{
+		Assignment: Assignment{
+			StoryID: "s-pe-cap", AgentID: "agent-1",
+			SessionName: "nxd-test-secerr", Branch: "nxd/s-pe-cap",
+		},
+		WorktreePath: worktree,
+	}
+
+	m.postExecutionPipeline(context.Background(), ag, worktree)
+
+	if paused, _ := es.List(state.EventFilter{Type: state.EventReqPaused}); len(paused) < 1 {
+		t.Error("a security-gate error must fail closed and PAUSE the requirement")
+	}
+	if merged, _ := es.List(state.EventFilter{Type: state.EventStoryMerged, StoryID: "s-pe-cap"}); len(merged) != 0 {
+		t.Errorf("a security-gate error must NOT merge the story; got %d STORY_MERGED", len(merged))
+	}
 }
 
 // TestPostExecutionPipeline_EmptyDiffCapacity verifies that when a native agent
